@@ -611,21 +611,24 @@ html, body, #root {
   background: var(--accent-soft);
 }
 
-/* progress bar */
+/* progress bar — GPU-composited (transform only, no width/left) */
 .url-progress {
   position: absolute;
   bottom: -1px;
   left: 0;
+  right: 0;
   height: 2px;
   background: linear-gradient(90deg, var(--accent), #818cf8);
   border-radius: 1px;
+  transform-origin: left center;
   animation: progress 1.5s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 @keyframes progress {
-  0% { width: 0; left: 0; opacity: 1; }
-  50% { width: 60%; left: 20%; opacity: 1; }
-  100% { width: 0; left: 100%; opacity: 0; }
+  0% { transform: translateX(0) scaleX(0); opacity: 1; }
+  50% { transform: translateX(20%) scaleX(0.6); opacity: 1; }
+  100% { transform: translateX(100%) scaleX(0); opacity: 0; }
 }
 
 /* ===== SHIELD BADGE ===== */

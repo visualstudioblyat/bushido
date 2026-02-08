@@ -10,8 +10,16 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
-    target: ["es2021", "chrome100", "safari13"],
+    target: "esnext",
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_DEBUG,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom"],
+          tauri: ["@tauri-apps/api"],
+        },
+      },
+    },
   },
 });

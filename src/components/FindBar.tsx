@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
@@ -6,7 +6,7 @@ interface Props {
   onClose: () => void;
 }
 
-export default function FindBar({ tabId, onClose }: Props) {
+export default memo(function FindBar({ tabId, onClose }: Props) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -14,14 +14,14 @@ export default function FindBar({ tabId, onClose }: Props) {
     inputRef.current?.focus();
   }, []);
 
-  const find = (forward = true) => {
+  const find = useCallback((forward = true) => {
     invoke("find_in_page", { id: tabId, query, forward });
-  };
+  }, [tabId, query]);
 
-  const close = () => {
+  const close = useCallback(() => {
     invoke("find_in_page", { id: tabId, query: "", forward: true });
     onClose();
-  };
+  }, [tabId, onClose]);
 
   return (
     <div className="find-bar">
@@ -54,4 +54,4 @@ export default function FindBar({ tabId, onClose }: Props) {
       </button>
     </div>
   );
-}
+});

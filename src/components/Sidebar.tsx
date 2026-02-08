@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, memo } from "react";
 import { Tab, Workspace } from "../types";
 import logoSrc from "../assets/logo.png";
 
@@ -99,7 +99,7 @@ function flattenTree(nodes: TabNode[]): TabNode[] {
   return result;
 }
 
-export default function Sidebar({
+export default memo(function Sidebar({
   tabs, pinnedTabs, activeTab, open, compact,
   onSelect, onClose, onPin, onNew, onToggle, onReorder,
   workspaces, activeWorkspaceId,
@@ -118,6 +118,31 @@ export default function Sidebar({
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [search, setSearch] = useState("");
   const [wsDropTarget, setWsDropTarget] = useState<string | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // memoize tree building + filtering (avoids recomputing on every render)
+  const { filteredPinned, flatTabs } = useMemo(() => {
+    const q = search.toLowerCase();
+    const fp = search ? pinnedTabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : pinnedTabs;
+    const ft = search ? tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : tabs;
+    const tree = buildTree(ft);
+    const flat = flattenTree(tree);
+    return { filteredPinned: fp, flatTabs: flat };
+  }, [tabs, pinnedTabs, search]);
+
+  // tab list virtualization — only render visible tabs + 2 overscan
+  const TAB_HEIGHT = 36;
+  const visibleCount = Math.ceil((listRef.current?.clientHeight || 400) / TAB_HEIGHT) + 4;
+  const startIdx = Math.floor(scrollTop / TAB_HEIGHT);
+  const endIdx = Math.min(startIdx + visibleCount, flatTabs.length);
+  const visibleTabs = flatTabs.slice(startIdx, endIdx);
+  const topPad = startIdx * TAB_HEIGHT;
+  const bottomPad = Math.max(0, (flatTabs.length - endIdx) * TAB_HEIGHT);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
 
   const handleMouseEnter = useCallback(() => {
     if (!compact) return;
@@ -336,37 +361,26 @@ export default function Sidebar({
               )}
             </div>
 
-            {(() => {
-              const q = search.toLowerCase();
-              const filteredPinned = search ? pinnedTabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : pinnedTabs;
-              const filteredTabs = search ? tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : tabs;
-              return (
-                <>
-                  {filteredPinned.length > 0 && (
-                    <div className="pinned-section">
-                      <div className="section-label">pinned</div>
-                      <div className="pinned-grid">
-                        {filteredPinned.map(t => renderTab(t, true))}
-                      </div>
-                    </div>
-                  )}
+            {filteredPinned.length > 0 && (
+              <div className="pinned-section">
+                <div className="section-label">pinned</div>
+                <div className="pinned-grid">
+                  {filteredPinned.map(t => renderTab(t, true))}
+                </div>
+              </div>
+            )}
 
-                  <div className="tab-section">
-                    <div className="section-label">
-                      <span>tabs</span>
-                      <span className="tab-count">{filteredTabs.length}</span>
-                    </div>
-                    <div className="tab-list">
-                      {(() => {
-                        const tree = buildTree(filteredTabs);
-                        const flat = flattenTree(tree);
-                        return flat.map((node, i) => renderTab(node.tab, false, i, node.depth, node.children.length));
-                      })()}
-                    </div>
-                  </div>
-                </>
-              );
-            })()}
+            <div className="tab-section">
+              <div className="section-label">
+                <span>tabs</span>
+                <span className="tab-count">{flatTabs.length}</span>
+              </div>
+              <div className="tab-list" ref={listRef} onScroll={handleScroll}>
+                <div style={{ height: topPad }} />
+                {visibleTabs.map((node, i) => renderTab(node.tab, false, startIdx + i, node.depth, node.children.length))}
+                <div style={{ height: bottomPad }} />
+              </div>
+            </div>
 
             <button className="new-tab-btn" onClick={onNew}>
               <span className="new-tab-icon">+</span>
@@ -434,4 +448,4 @@ export default function Sidebar({
       )}
     </>
   );
-}
+});

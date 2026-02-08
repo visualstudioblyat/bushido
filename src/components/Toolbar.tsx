@@ -1,4 +1,4 @@
-import { useState, useEffect, RefObject } from "react";
+import { useState, useEffect, useMemo, useCallback, RefObject, memo } from "react";
 
 interface Props {
   url: string;
@@ -14,7 +14,7 @@ interface Props {
   compact: boolean;
 }
 
-export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, loading, inputRef, blockedCount, whitelisted, onToggleWhitelist, compact }: Props) {
+export default memo(function Toolbar({ url, onNavigate, onBack, onForward, onReload, loading, inputRef, blockedCount, whitelisted, onToggleWhitelist, compact }: Props) {
   const [input, setInput] = useState(url);
   const [focused, setFocused] = useState(false);
 
@@ -22,20 +22,21 @@ export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, 
     if (!focused) setInput(url);
   }, [url, focused]);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
       onNavigate(input.trim());
       inputRef.current?.blur();
     }
-  };
+  }, [input, onNavigate, inputRef]);
 
-  const displayUrl = focused ? input : (() => {
+  const displayUrl = useMemo(() => {
+    if (focused) return input;
     try {
       const u = new URL(input);
       return u.hostname + (u.pathname !== "/" ? u.pathname : "");
     } catch { return input; }
-  })();
+  }, [focused, input]);
 
   return (
     <div className={`toolbar ${compact ? "compact" : ""}`}>
@@ -93,7 +94,7 @@ export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, 
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M8 1L2 4V7.5C2 11.1 4.5 14.4 8 15.2C11.5 14.4 14 11.1 14 7.5V4L8 1Z"
                 stroke={whitelisted ? "var(--text-dim)" : blockedCount > 0 ? "var(--success)" : "var(--text-dim)"}
-                strokeWidth="1.3" strokeLinejoin="round" fill={whitelisted ? "none" : "none"}/>
+                strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
           {whitelisted ? (
             <path d="M5 5.5L11 10.5M11 5.5L5 10.5" stroke="var(--text-dim)" strokeWidth="1.2"
                   strokeLinecap="round"/>
@@ -108,4 +109,4 @@ export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, 
       </div>
     </div>
   );
-}
+});

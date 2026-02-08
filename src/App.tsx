@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
@@ -28,14 +28,14 @@ export default function App() {
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
 
-  // derived state
-  const activeWs = workspaces.find(w => w.id === activeWorkspaceId);
+  // derived state (memoized to avoid recomputing on every render)
+  const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
   const activeTab = activeWs?.activeTabId || "";
-  const currentWsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId);
+  const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
   const sidebarW = compactMode ? 3 : sidebarOpen ? 260 : 54;
   const topOffset = compactMode ? 40 : 88;
-  const pinnedTabs = currentWsTabs.filter(t => t.pinned);
-  const regularTabs = currentWsTabs.filter(t => !t.pinned);
+  const pinnedTabs = useMemo(() => currentWsTabs.filter(t => t.pinned), [currentWsTabs]);
+  const regularTabs = useMemo(() => currentWsTabs.filter(t => !t.pinned), [currentWsTabs]);
 
   // clear loading after a delay since webview2 child events are unreliable
   const clearLoading = useCallback((tabId: string, ms = 2000) => {
@@ -161,39 +161,36 @@ export default function App() {
 
   // listen for webview events from rust
   useEffect(() => {
-    const unlisten: (() => void)[] = [];
+    const promises = [
+      listen<{ id: string; url: string }>("tab-url-changed", (e) => {
+        let favicon: string | undefined;
+        let domain = "";
+        try {
+          const host = new URL(e.payload.url).hostname;
+          if (host) favicon = `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
+          domain = host;
+        } catch {}
+        setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, url: e.payload.url, favicon } : t));
+        if (domain) {
+          invoke<boolean>("is_whitelisted", { domain }).then(wl => {
+            setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, whitelisted: wl } : t));
+          });
+        }
+      }),
+      listen<{ id: string; title: string }>("tab-title-changed", (e) => {
+        setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, title: e.payload.title, loading: false } : t));
+      }),
+      listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
+        setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, loading: e.payload.loading } : t));
+      }),
+      listen<{ id: string; count: number }>("tab-blocked-count", (e) => {
+        setTabs(prev => prev.map(t =>
+          t.id === e.payload.id ? { ...t, blockedCount: e.payload.count } : t
+        ));
+      }),
+    ];
 
-    listen<{ id: string; url: string }>("tab-url-changed", (e) => {
-      let favicon: string | undefined;
-      let domain = "";
-      try {
-        const host = new URL(e.payload.url).hostname;
-        if (host) favicon = `https://www.google.com/s2/favicons?domain=${host}&sz=32`;
-        domain = host;
-      } catch {}
-      setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, url: e.payload.url, favicon } : t));
-      if (domain) {
-        invoke<boolean>("is_whitelisted", { domain }).then(wl => {
-          setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, whitelisted: wl } : t));
-        });
-      }
-    }).then(u => unlisten.push(u));
-
-    listen<{ id: string; title: string }>("tab-title-changed", (e) => {
-      setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, title: e.payload.title, loading: false } : t));
-    }).then(u => unlisten.push(u));
-
-    listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
-      setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, loading: e.payload.loading } : t));
-    }).then(u => unlisten.push(u));
-
-    listen<{ id: string; count: number }>("tab-blocked-count", (e) => {
-      setTabs(prev => prev.map(t =>
-        t.id === e.payload.id ? { ...t, blockedCount: e.payload.count } : t
-      ));
-    }).then(u => unlisten.push(u));
-
-    return () => unlisten.forEach(u => u());
+    return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
 
   // resize webviews when sidebar/topOffset changes
@@ -390,7 +387,7 @@ export default function App() {
     clearLoading(activeTab, 3000);
   }, [activeTab, clearLoading]);
 
-  const current = tabs.find(t => t.id === activeTab);
+  const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
 
   const toggleWhitelist = useCallback(() => {
     if (!activeTab) return;
@@ -448,18 +445,29 @@ export default function App() {
     return () => { delete (window as any).__bushidoGlobalShortcut; };
   }, []);
 
+  // stable callbacks for child components (prevents re-renders from new arrow refs)
+  const toggleSidebar = useCallback(() => setSidebarOpen(p => !p), []);
+  const addChildTab = useCallback((parentId: string) => addTab(NEW_TAB_URL, parentId), [addTab]);
+  const goBack = useCallback(() => invoke("go_back", { id: activeTab }), [activeTab]);
+  const goForward = useCallback(() => invoke("go_forward", { id: activeTab }), [activeTab]);
+  const goReload = useCallback(() => invoke("reload_tab", { id: activeTab }), [activeTab]);
+  const closeFindBar = useCallback(() => setFindOpen(false), []);
+  const minimizeWindow = useCallback(() => invoke("minimize_window"), []);
+  const maximizeWindow = useCallback(() => invoke("maximize_window"), []);
+  const closeWindow = useCallback(() => invoke("close_window"), []);
+
   return (
     <div className="browser">
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-title">{current?.title || "Bushido"}</div>
         <div className="titlebar-controls">
-          <button className="win-btn" onClick={() => invoke("minimize_window")} title="Minimize">
+          <button className="win-btn" onClick={minimizeWindow} title="Minimize">
             <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
           </button>
-          <button className="win-btn" onClick={() => invoke("maximize_window")} title="Maximize">
+          <button className="win-btn" onClick={maximizeWindow} title="Maximize">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" strokeWidth="1"/></svg>
           </button>
-          <button className="win-btn win-close" onClick={() => invoke("close_window")} title="Close">
+          <button className="win-btn win-close" onClick={closeWindow} title="Close">
             <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" strokeWidth="1.2"/></svg>
           </button>
         </div>
@@ -477,7 +485,7 @@ export default function App() {
           onPin={pinTab}
           onNew={addTab}
           onReorder={reorderTabs}
-          onToggle={() => setSidebarOpen(p => !p)}
+          onToggle={toggleSidebar}
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspaceId}
           onSwitchWorkspace={switchWorkspace}
@@ -486,7 +494,7 @@ export default function App() {
           onRenameWorkspace={renameWorkspace}
           onRecolorWorkspace={recolorWorkspace}
           onToggleCollapse={toggleCollapse}
-          onAddChildTab={(parentId: string) => addTab(NEW_TAB_URL, parentId)}
+          onAddChildTab={addChildTab}
           onMoveTabToWorkspace={moveTabToWorkspace}
         />
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
@@ -494,9 +502,9 @@ export default function App() {
           <Toolbar
             url={current?.url || ""}
             onNavigate={navigate}
-            onBack={() => invoke("go_back", { id: activeTab })}
-            onForward={() => invoke("go_forward", { id: activeTab })}
-            onReload={() => invoke("reload_tab", { id: activeTab })}
+            onBack={goBack}
+            onForward={goForward}
+            onReload={goReload}
             loading={current?.loading || false}
             inputRef={urlBarRef}
             blockedCount={current?.blockedCount || 0}
@@ -505,7 +513,7 @@ export default function App() {
             compact={compactMode}
           />
           {findOpen && activeTab && (
-            <FindBar tabId={activeTab} onClose={() => setFindOpen(false)} />
+            <FindBar tabId={activeTab} onClose={closeFindBar} />
           )}
           <WebviewPanel />
         </div>
