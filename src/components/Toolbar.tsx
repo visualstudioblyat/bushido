@@ -9,9 +9,12 @@ interface Props {
   loading: boolean;
   inputRef: RefObject<HTMLInputElement>;
   blockedCount: number;
+  whitelisted: boolean;
+  onToggleWhitelist: () => void;
+  compact: boolean;
 }
 
-export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, loading, inputRef, blockedCount }: Props) {
+export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, loading, inputRef, blockedCount, whitelisted, onToggleWhitelist, compact }: Props) {
   const [input, setInput] = useState(url);
   const [focused, setFocused] = useState(false);
 
@@ -35,7 +38,7 @@ export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, 
   })();
 
   return (
-    <div className="toolbar">
+    <div className={`toolbar ${compact ? "compact" : ""}`}>
       <div className="nav-buttons">
         <button className="nav-btn" onClick={onBack} title="Back (Alt+←)">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -82,17 +85,24 @@ export default function Toolbar({ url, onNavigate, onBack, onForward, onReload, 
         {loading && <div className="url-progress" />}
       </form>
 
-      <div className="shield-badge" title={`${blockedCount} tracker${blockedCount !== 1 ? 's' : ''} blocked`}>
+      <div
+        className={`shield-badge ${whitelisted ? "shield-off" : ""}`}
+        title={whitelisted ? "shields down (click to enable)" : `${blockedCount} tracker${blockedCount !== 1 ? 's' : ''} blocked (click to disable for this site)`}
+        onClick={onToggleWhitelist}
+      >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M8 1L2 4V7.5C2 11.1 4.5 14.4 8 15.2C11.5 14.4 14 11.1 14 7.5V4L8 1Z"
-                stroke={blockedCount > 0 ? "var(--success)" : "var(--text-dim)"}
-                strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
-          {blockedCount > 0 && (
+                stroke={whitelisted ? "var(--text-dim)" : blockedCount > 0 ? "var(--success)" : "var(--text-dim)"}
+                strokeWidth="1.3" strokeLinejoin="round" fill={whitelisted ? "none" : "none"}/>
+          {whitelisted ? (
+            <path d="M5 5.5L11 10.5M11 5.5L5 10.5" stroke="var(--text-dim)" strokeWidth="1.2"
+                  strokeLinecap="round"/>
+          ) : blockedCount > 0 ? (
             <path d="M5.5 8L7 9.5L10.5 6" stroke="var(--success)" strokeWidth="1.3"
                   strokeLinecap="round" strokeLinejoin="round"/>
-          )}
+          ) : null}
         </svg>
-        {blockedCount > 0 && (
+        {!whitelisted && blockedCount > 0 && (
           <span className="shield-count">{blockedCount > 99 ? '99+' : blockedCount}</span>
         )}
       </div>
