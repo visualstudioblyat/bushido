@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicoverbruggen/tauri-plugin-theme/main/.schema/config.schema.json",
+  "productName": "Bushido",
+  "version": "0.0.1",
+  "identifier": "com.bushido.browser",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Bushido",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

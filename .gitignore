@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/WixTools/
+src-tauri/Cargo.lock
+*.log
+.env
+.DS_Store
+Thumbs.db
