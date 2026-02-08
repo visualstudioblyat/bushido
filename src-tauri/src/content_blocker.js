@@ -342,4 +342,53 @@
         scanDOM();
     }
     window.addEventListener('load', scanDOM);
+
+    // 11. webrtc leak prevention
+    try {
+        var origRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+        if (origRTC) {
+            var wrappedRTC = function(config, constraints) {
+                if (config && config.iceServers) {
+                    config.iceServers = config.iceServers.filter(function(s) {
+                        var urls = s.urls || s.url || '';
+                        if (typeof urls === 'string') urls = [urls];
+                        return !urls.some(function(u) { return u.indexOf('stun:') === 0 || u.indexOf('turn:') === 0; });
+                    });
+                }
+                return new origRTC(config, constraints);
+            };
+            wrappedRTC.prototype = origRTC.prototype;
+            window.RTCPeerConnection = wrappedRTC;
+            if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = wrappedRTC;
+        }
+    } catch(e) {}
+
+    // 12. privacy headers via meta tags
+    try {
+        var meta = document.createElement('meta');
+        meta.setAttribute('name', 'referrer');
+        meta.setAttribute('content', 'origin');
+        (document.head || document.documentElement).appendChild(meta);
+    } catch(e) {}
+
+    // 13. navigator privacy properties
+    try {
+        Object.defineProperty(navigator, 'doNotTrack', { get: function() { return '1'; }, configurable: true });
+    } catch(e) {}
+    try {
+        Object.defineProperty(navigator, 'globalPrivacyControl', { get: function() { return true; }, configurable: true });
+    } catch(e) {}
+
+    // 14. block navigator.plugins enumeration (fingerprinting)
+    try {
+        Object.defineProperty(navigator, 'plugins', { get: function() { return []; }, configurable: true });
+        Object.defineProperty(navigator, 'mimeTypes', { get: function() { return []; }, configurable: true });
+    } catch(e) {}
+
+    // 15. block battery api (fingerprinting)
+    try {
+        if (navigator.getBattery) {
+            navigator.getBattery = undefined;
+        }
+    } catch(e) {}
 })();
