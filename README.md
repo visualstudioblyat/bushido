@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app-icon.svg" alt="Bushido Logo" width="128" height="128">
+  <img src="logo.png" alt="Bushido Logo" width="128" height="128">
 </p>
 
 <h1 align="center">Bushido Browser</h1>
