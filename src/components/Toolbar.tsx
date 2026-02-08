@@ -7,7 +7,7 @@ interface Props {
   onForward: () => void;
   onReload: () => void;
   loading: boolean;
-  inputRef: RefObject<HTMLInputElement | null>;
+  inputRef: RefObject<HTMLInputElement>;
   blockedCount: number;
 }
 
