@@ -147,17 +147,22 @@ html, body, #root {
 }
 
 .logo {
-  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo img {
+  flex-shrink: 0;
+}
+
+.logo span {
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 3px;
   background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-}
-
-.sidebar.collapsed .logo {
-  font-size: 14px;
-  letter-spacing: 0;
 }
 
 .sidebar-toggle {

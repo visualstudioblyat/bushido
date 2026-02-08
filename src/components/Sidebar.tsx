@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { Tab } from "../types";
+import logoSrc from "../assets/logo.png";
 
 interface Props {
   tabs: Tab[];
@@ -96,7 +97,10 @@ export default function Sidebar({ tabs, pinnedTabs, activeTab, open, onSelect, o
     <>
       <div className={`sidebar ${open ? "" : "collapsed"}`}>
         <div className="sidebar-header">
-          <span className="logo">武士道</span>
+          <div className="logo">
+            <img src={logoSrc} alt="Bushido" width={22} height={22} />
+            {open && <span>BUSHIDO</span>}
+          </div>
           <button className="sidebar-toggle" onClick={onToggle}>
             {open ? "‹" : "›"}
           </button>
