@@ -2,6 +2,36 @@
 
 ---
 
+## v0.5.0
+
+**2026-02-09**
+
+### Added
+
+- **New Tab Page** — `bushido://newtab` is a real page now. Clock, greeting that knows what time of day it is, search bar, top sites grid. All React-rendered, no webview spawned. Toggle any of it off in settings.
+- **Command Palette** (`Ctrl+K`) — type to search your tabs, bookmarks, history, or pick from 7 actions. Fuzzy matching, arrow keys, enter to go. Shows recent stuff when you haven't typed anything yet.
+- **Reader Mode** (`Ctrl+Shift+R`) — strips pages down to just the text and images. Pick your font, theme (dark/light/sepia), line width. Click again to exit.
+- **Picture-in-Picture** — bushido watches for videos on the page. When it finds one, PiP button shows up in the sidebar. One click, video pops out. Shadow DOM so sites can't block the button.
+- **Tab Suspender** — tabs you haven't touched in 5 minutes get put to sleep. Webview destroyed, zzz badge on the tab. Click it and it comes back. Pinned tabs never sleep.
+- **Settings** (`bushido://settings`) — gear icon in sidebar. Search engine, privacy toggles, appearance, shortcuts reference, about. Saved to disk, loads before anything else on startup.
+- **Search engine selector** — swap between Google, DuckDuckGo, Brave, Bing, or drop in your own URL. Works in the URL bar and the NTP search.
+
+### Changed
+
+- **Settings aren't fake anymore** — every toggle does what it says. Turn off ad blocker? Content scripts stop injecting. Turn off HTTPS-only? HTTP works again. Set startup to "new tab"? Session doesn't restore. All of it flows through to Rust.
+- **Settings load first** — `Promise.all` grabs settings and session in parallel, but settings get applied before any tabs are created. No more race condition.
+- **Compact mode stays in sync** — flip it in settings, `Ctrl+Shift+B` knows. Flip it with the shortcut, settings knows. They're the same state now.
+- **Suspend timeout is configurable** — was hardcoded to 5 minutes, now reads from settings. Set it to 30 or turn it off entirely.
+
+### Security
+
+- **CSP locked down** — strict policy in tauri.conf.json. Separate `devCsp` so Vite HMR still works during dev.
+- **Killed `tauri-plugin-shell`** — replaced with `tauri-plugin-opener`. The old one had a CVE (CVE-2025-31477).
+- **Nuked `eval_tab`** — used to let the frontend run arbitrary JS on any webview. Replaced with 3 named commands (`detect_video`, `toggle_reader`, `toggle_pip`). That's it, nothing else gets evaled.
+- **Title sanitization** — HTML tags get stripped from tab titles. No more `<script>` in your tab name.
+
+---
+
 ## v0.4.0
 
 **2026-02-09**

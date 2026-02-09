@@ -12,6 +12,8 @@
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyB') action = 'toggle-sidebar';
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyD') action = 'bookmark';
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyH') action = 'history';
+    else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyK') action = 'command-palette';
+    else if (e.ctrlKey && e.shiftKey && e.code === 'KeyR') action = 'reader-mode';
     if (action) {
       e.preventDefault();
       e.stopImmediatePropagation();

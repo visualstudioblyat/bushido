@@ -2,6 +2,13 @@ import { useState, useCallback, useRef, useEffect, useMemo, memo, RefObject } fr
 import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult } from "../types";
 import logoSrc from "../assets/logo.png";
 
+const GearIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+    <path d="M9 11.25a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" stroke="currentColor" strokeWidth="1.3"/>
+    <path d="M14.7 11.1l.8 1.4a.9.9 0 01-.3 1.2l-1.5.9a.9.9 0 01-1.1-.1l-.6-.6a5.4 5.4 0 01-1.5.4v.8a.9.9 0 01-.9.9h-1.8a.9.9 0 01-.9-.9v-.8a5.4 5.4 0 01-1.5-.4l-.6.6a.9.9 0 01-1.1.1l-1.5-.9a.9.9 0 01-.3-1.2l.8-1.4a5.4 5.4 0 010-4.2l-.8-1.4a.9.9 0 01.3-1.2l1.5-.9a.9.9 0 011.1.1l.6.6A5.4 5.4 0 017.2 3v-.8a.9.9 0 01.9-.9h1.8a.9.9 0 01.9.9V3a5.4 5.4 0 011.5.4l.6-.6a.9.9 0 011.1-.1l1.5.9a.9.9 0 01.3 1.2l-.8 1.4a5.4 5.4 0 010 4.2z" stroke="currentColor" strokeWidth="1.3"/>
+  </svg>
+);
+
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
 
 interface Props {
@@ -47,6 +54,14 @@ interface Props {
   onInputChange: (query: string) => void;
   isBookmarked: boolean;
   onToggleBookmark: () => void;
+  onToggleReader: () => void;
+  isReaderActive: boolean;
+  readerSettings: { fontSize: number; font: "serif" | "sans"; theme: "dark" | "light" | "sepia"; lineWidth: number };
+  onUpdateReaderSettings: (update: Partial<{ fontSize: number; font: "serif" | "sans"; theme: "dark" | "light" | "sepia"; lineWidth: number }>) => void;
+  hasVideo: boolean;
+  pipActive: boolean;
+  onTogglePip: () => void;
+  onOpenSettings: () => void;
 }
 
 interface CtxMenu {
@@ -132,6 +147,9 @@ export default memo(function Sidebar({
   blockedCount, whitelisted, onToggleWhitelist,
   suggestions, topSites, onSuggestionSelect, onInputChange,
   isBookmarked, onToggleBookmark,
+  onToggleReader, isReaderActive, readerSettings, onUpdateReaderSettings,
+  hasVideo, pipActive, onTogglePip,
+  onOpenSettings,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -300,7 +318,7 @@ export default memo(function Sidebar({
   const renderTab = (tab: Tab, isPinned: boolean, idx?: number, depth = 0, childCount = 0) => (
     <div
       key={tab.id}
-      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${isPinned ? "pinned" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
+      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
@@ -347,7 +365,9 @@ export default memo(function Sidebar({
         </button>
       )}
       <div className="tab-info">
-        {tab.loading ? (
+        {tab.suspended ? (
+          <div className="tab-zzz">zzz</div>
+        ) : tab.loading ? (
           <div className="tab-spinner" />
         ) : (
           <div className="tab-favicon">
@@ -387,7 +407,9 @@ export default memo(function Sidebar({
           <>
             {/* top row: logo left, star + shield right */}
             <div className="sidebar-header-row">
-              <img src={logoSrc} alt="Bushido" width={20} height={20} className="sidebar-nav-logo" />
+              <button className="settings-btn" onClick={onOpenSettings} title="Settings">
+                <GearIcon />
+              </button>
               <div className="nav-right">
                 <div
                   className={`bookmark-btn ${isBookmarked ? "bookmarked" : ""}`}
@@ -495,12 +517,20 @@ export default memo(function Sidebar({
                         <path d="M5.5 3.5V2.5H10.5V3.5" stroke="currentColor" strokeWidth="1.3"/>
                       </svg>
                     </button>
-                    <button className="ext-action-btn" title="Reader mode">
+                    <button className={`ext-action-btn ${isReaderActive ? "ext-active" : ""}`} onClick={onToggleReader} title="Reader mode (Ctrl+Shift+R)">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path d="M2 3H6C7.1 3 8 3.9 8 5V14C8 13 7 12 6 12H2V3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
                         <path d="M14 3H10C8.9 3 8 3.9 8 5V14C8 13 9 12 10 12H14V3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
                       </svg>
                     </button>
+                    {hasVideo && (
+                      <button className={`ext-action-btn ${pipActive ? "ext-active" : ""}`} onClick={onTogglePip} title="Picture in Picture">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <rect x="1" y="2.5" width="14" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                          <rect x="8" y="7" width="6" height="5" rx="1" fill="currentColor" opacity="0.3" stroke="currentColor" strokeWidth="1"/>
+                        </svg>
+                      </button>
+                    )}
                     <button className="ext-action-btn" title="Share">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path d="M8 2V10M8 2L5 5M8 2L11 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -539,6 +569,24 @@ export default memo(function Sidebar({
                     </div>
                   </div>
 
+                  {/* Reader settings (shown when reader is active) */}
+                  {isReaderActive && (
+                    <div className="reader-settings">
+                      <div className="reader-settings-row">
+                        <button className="reader-size-btn" onClick={() => onUpdateReaderSettings({ fontSize: Math.max(12, readerSettings.fontSize - 2) })}>A-</button>
+                        <span className="reader-size-label">{readerSettings.fontSize}px</span>
+                        <button className="reader-size-btn" onClick={() => onUpdateReaderSettings({ fontSize: Math.min(28, readerSettings.fontSize + 2) })}>A+</button>
+                        <button className={`reader-font-btn ${readerSettings.font === "serif" ? "active" : ""}`} onClick={() => onUpdateReaderSettings({ font: "serif" })}>Serif</button>
+                        <button className={`reader-font-btn ${readerSettings.font === "sans" ? "active" : ""}`} onClick={() => onUpdateReaderSettings({ font: "sans" })}>Sans</button>
+                      </div>
+                      <div className="reader-settings-row">
+                        <button className={`reader-theme-dot ${readerSettings.theme === "dark" ? "active" : ""}`} style={{ background: "#09090b" }} onClick={() => onUpdateReaderSettings({ theme: "dark" })} />
+                        <button className={`reader-theme-dot ${readerSettings.theme === "light" ? "active" : ""}`} style={{ background: "#fafafa" }} onClick={() => onUpdateReaderSettings({ theme: "light" })} />
+                        <button className={`reader-theme-dot ${readerSettings.theme === "sepia" ? "active" : ""}`} style={{ background: "#f4ecd8" }} onClick={() => onUpdateReaderSettings({ theme: "sepia" })} />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Footer */}
                   <div className="ext-footer">
                     <div className="ext-security">
@@ -570,7 +618,7 @@ export default memo(function Sidebar({
                             : <span className="topsite-placeholder">{domain.charAt(0).toUpperCase()}</span>
                           }
                         </div>
-                        <span className="topsite-label">{s.title || domain}</span>
+                        <span className="topsite-label">{domain || s.title}</span>
                       </div>
                     );
                   })}
@@ -691,7 +739,7 @@ export default memo(function Sidebar({
             </div>
 
             <div className="sidebar-bottom-btns">
-              <button className="new-tab-btn" onClick={onNew}>
+              <button className="new-tab-btn" onClick={() => onNew()}>
                 <span className="new-tab-icon">+</span>
                 <span>new tab</span>
               </button>

@@ -10,6 +10,8 @@ export interface Tab {
   workspaceId: string;
   parentId?: string;
   collapsed?: boolean;
+  suspended?: boolean;
+  lastActiveAt?: number;
 }
 
 export interface Workspace {
@@ -62,3 +64,37 @@ export interface FrecencyResult {
   score: number;
   type: 'history' | 'bookmark';
 }
+
+export interface BushidoSettings {
+  searchEngine: "google" | "duckduckgo" | "brave" | "bing" | "custom";
+  customSearchUrl: string;
+  onStartup: "restore" | "newtab";
+  showTopSites: boolean;
+  showClock: boolean;
+  showGreeting: boolean;
+  downloadLocation: string;
+  askDownloadLocation: boolean;
+  httpsOnly: boolean;
+  adBlocker: boolean;
+  cookieAutoReject: boolean;
+  clearDataOnExit: boolean;
+  compactMode: boolean;
+  suspendTimeout: number; // minutes, 0 = never
+}
+
+export const DEFAULT_SETTINGS: BushidoSettings = {
+  searchEngine: "google",
+  customSearchUrl: "",
+  onStartup: "restore",
+  showTopSites: true,
+  showClock: true,
+  showGreeting: true,
+  downloadLocation: "",
+  askDownloadLocation: false,
+  httpsOnly: true,
+  adBlocker: true,
+  cookieAutoReject: true,
+  clearDataOnExit: false,
+  compactMode: false,
+  suspendTimeout: 5,
+};

@@ -5,14 +5,19 @@ import Sidebar from "./components/Sidebar";
 import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
 import HistoryPanel from "./components/HistoryPanel";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult } from "./types";
+import NewTabPage from "./components/NewTabPage";
+import SettingsPage from "./components/SettingsPage";
+import CommandPalette from "./components/CommandPalette";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS } from "./types";
 
-const NEW_TAB_URL = "https://www.google.com";
+const NTP_URL = "bushido://newtab";
+const SETTINGS_URL = "bushido://settings";
+const NEW_TAB_URL = NTP_URL;
 const DEFAULT_WS_COLOR = "#6366f1";
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
 
 // generate short ids
-let tabCounter = 0;
+let tabCounter = Date.now();
 const genId = (prefix = "tab") => `${prefix}-${++tabCounter}`;
 
 let wsCounter = 0;
@@ -35,10 +40,20 @@ export default function App() {
   const [bookmarkData, setBookmarkData] = useState<BookmarkData>({ bookmarks: [], folders: [] });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [urlQuery, setUrlQuery] = useState("");
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [readerTabs, setReaderTabs] = useState<Set<string>>(new Set());
+  const [readerSettings, setReaderSettings] = useState({ fontSize: 18, font: "serif" as "serif" | "sans", theme: "dark" as "dark" | "light" | "sepia", lineWidth: 680 });
+  const [hasVideo, setHasVideo] = useState(false);
+  const [pipActive, setPipActive] = useState(false);
+  const [settings, setSettings] = useState<BushidoSettings>({ ...DEFAULT_SETTINGS });
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
+  const settingsLoaded = useRef(false);
+  const settingsRef = useRef(settings);
   const historyLoaded = useRef(false);
   const bookmarksLoaded = useRef(false);
+
+  settingsRef.current = settings;
 
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
@@ -61,7 +76,39 @@ export default function App() {
     if (initialized.current) return;
     initialized.current = true;
 
-    invoke<string>("load_session").then(json => {
+    // load settings first so create_tab can use them, then load session
+    Promise.all([
+      invoke<string>("load_settings"),
+      invoke<string>("load_session"),
+    ]).then(([settingsJson, json]) => {
+      let s = { ...DEFAULT_SETTINGS };
+      try {
+        const p = JSON.parse(settingsJson);
+        if (p && typeof p === "object") s = { ...s, ...p };
+      } catch {}
+      setSettings(s);
+      settingsLoaded.current = true;
+
+      const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject };
+
+      // helper: open a fresh NTP (no session restore)
+      const openFreshNtp = () => {
+        const wsId = genWsId();
+        const id = genId();
+        const ws: Workspace = { id: wsId, name: "Home", color: DEFAULT_WS_COLOR, activeTabId: id };
+        const tab: Tab = { id, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
+        setWorkspaces([ws]);
+        setTabs([tab]);
+        setActiveWorkspaceId(wsId);
+        setCompactMode(s.compactMode);
+      };
+
+      // if onStartup is "newtab", skip session restore
+      if (s.onStartup === "newtab") {
+        openFreshNtp();
+        return;
+      }
+
       let parsed: any = null;
       try { parsed = JSON.parse(json); } catch {}
 
@@ -76,13 +123,14 @@ export default function App() {
           return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId };
         });
 
-        const restoredTabs: Tab[] = session.tabs.map(s => {
+        const restoredTabs: Tab[] = session.tabs.map(st => {
           const id = genId();
-          return { id, url: s.url, title: s.title || "Tab", loading: true, pinned: s.pinned, workspaceId: s.workspaceId, parentId: s.parentId };
+          const isInternal = st.url.startsWith("bushido://");
+          const isSuspended = (st as any).suspended || false;
+          return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: !isInternal && !isSuspended, pinned: st.pinned, workspaceId: st.workspaceId, parentId: st.parentId, suspended: isSuspended, lastActiveAt: Date.now() };
         });
 
         // fix up activeTabId references (old ids → new ids)
-        // tabs were saved in order, so map by workspace + index
         const wsTabMap: Record<string, string[]> = {};
         session.tabs.forEach((_, i) => {
           const tab = restoredTabs[i];
@@ -90,11 +138,9 @@ export default function App() {
           wsTabMap[tab.workspaceId].push(tab.id);
         });
 
-        // For each workspace, set activeTabId to first tab if original doesn't match
         restoredWs.forEach(ws => {
           const wsTabs = wsTabMap[ws.id] || [];
           if (wsTabs.length > 0) {
-            // activeTabId saved was from the previous session with old ids, pick first tab
             ws.activeTabId = wsTabs[0];
           }
         });
@@ -110,12 +156,18 @@ export default function App() {
         const restoredTopOffset = 40;
         const firstActiveWs = restoredWs.find(w => w.id === session.activeWorkspaceId);
         restoredTabs.forEach(t => {
-          invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
-          clearLoading(t.id);
+          if (!t.url.startsWith("bushido://") && !t.suspended) {
+            invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, ...tabArgs });
+            clearLoading(t.id);
+          }
         });
-        // show the active tab of the active workspace
         if (firstActiveWs?.activeTabId) {
-          invoke("switch_tab", { id: firstActiveWs.activeTabId, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+          const activeRestoredTab = restoredTabs.find(t => t.id === firstActiveWs.activeTabId);
+          if (activeRestoredTab?.url?.startsWith("bushido://")) {
+            invoke("resize_webviews", { activeId: "__none__", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+          } else {
+            invoke("switch_tab", { id: firstActiveWs.activeTabId, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+          }
         }
       } else {
         // old flat array format or empty — migrate to workspace format
@@ -128,9 +180,9 @@ export default function App() {
         const ws: Workspace = { id: wsId, name: "Home", color: DEFAULT_WS_COLOR, activeTabId: "" };
 
         if (saved.length > 0) {
-          const restored: Tab[] = saved.map(s => {
+          const restored: Tab[] = saved.map(st => {
             const id = genId();
-            return { id, url: s.url, title: s.title || "Tab", loading: true, pinned: s.pinned, workspaceId: wsId };
+            return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: true, pinned: st.pinned, workspaceId: wsId };
           });
           ws.activeTabId = restored[0].id;
           setWorkspaces([ws]);
@@ -138,19 +190,12 @@ export default function App() {
           setActiveWorkspaceId(wsId);
 
           restored.forEach(t => {
-            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40 });
+            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40, ...tabArgs });
             clearLoading(t.id);
           });
           invoke("switch_tab", { id: restored[0].id, sidebarW: 300, topOffset: 40 });
         } else {
-          const id = genId();
-          const tab: Tab = { id, url: NEW_TAB_URL, title: "New Tab", loading: true, workspaceId: wsId };
-          ws.activeTabId = id;
-          setWorkspaces([ws]);
-          setTabs([tab]);
-          setActiveWorkspaceId(wsId);
-          invoke("create_tab", { id, url: NEW_TAB_URL, sidebarW: 300, topOffset: 40 });
-          clearLoading(id);
+          openFreshNtp();
         }
       }
     });
@@ -162,7 +207,7 @@ export default function App() {
     const t = setTimeout(() => {
       const session: SessionData = {
         workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId })),
-        tabs: tabs.map(tab => ({ url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId })),
+        tabs: tabs.map(tab => ({ url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
         activeWorkspaceId,
         compactMode,
       };
@@ -186,6 +231,8 @@ export default function App() {
     });
   }, []);
 
+  // settings are loaded in the init effect above (before session restore)
+
   // save history debounced
   useEffect(() => {
     if (!historyLoaded.current) return;
@@ -200,9 +247,16 @@ export default function App() {
     return () => clearTimeout(t);
   }, [bookmarkData]);
 
+  // save settings debounced
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+    const t = setTimeout(() => invoke("save_settings", { data: JSON.stringify(settings) }), 500);
+    return () => clearTimeout(t);
+  }, [settings]);
+
   // record history from navigation events
   const recordHistory = useCallback((url: string, title: string, favicon?: string) => {
-    if (!historyLoaded.current || url === NEW_TAB_URL || !url.startsWith("http")) return;
+    if (!historyLoaded.current || url.startsWith("bushido://") || !url.startsWith("http")) return;
     const now = Date.now();
     setHistoryEntries(prev => {
       const idx = prev.findIndex(h => h.url === url);
@@ -237,13 +291,13 @@ export default function App() {
         }
       }),
       listen<{ id: string; title: string }>("tab-title-changed", (e) => {
+        const clean = e.payload.title.replace(/<[^>]*>/g, "");
         setTabs(prev => {
           const tab = prev.find(t => t.id === e.payload.id);
           if (tab) {
-            // update history entry with the title
-            setHistoryEntries(hp => hp.map(h => h.url === tab.url ? { ...h, title: e.payload.title } : h));
+            setHistoryEntries(hp => hp.map(h => h.url === tab.url ? { ...h, title: clean } : h));
           }
-          return prev.map(t => t.id === e.payload.id ? { ...t, title: e.payload.title, loading: false } : t);
+          return prev.map(t => t.id === e.payload.id ? { ...t, title: clean, loading: false } : t);
         });
       }),
       listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
@@ -253,6 +307,9 @@ export default function App() {
         setTabs(prev => prev.map(t =>
           t.id === e.payload.id ? { ...t, blockedCount: e.payload.count } : t
         ));
+      }),
+      listen<{ id: string; hasVideo: boolean }>("tab-has-video", (e) => {
+        setHasVideo(e.payload.hasVideo);
       }),
     ];
 
@@ -275,6 +332,41 @@ export default function App() {
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
   }, [activeTab, sidebarW, topOffset]);
+
+  // sync compactMode setting ↔ state
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+    if (settings.compactMode !== compactMode) {
+      setCompactMode(settings.compactMode);
+    }
+  }, [settings.compactMode]);
+
+  // tab suspender — check every 60s, suspend tabs after configured timeout
+  useEffect(() => {
+    if (settings.suspendTimeout === 0) return; // disabled
+    const timeoutMs = settings.suspendTimeout * 60 * 1000;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setTabs(prev => {
+        let changed = false;
+        const next = prev.map(t => {
+          if (t.id === activeTab) return t;
+          if (t.pinned) return t;
+          if (t.suspended) return t;
+          if (t.url.startsWith("bushido://")) return t;
+          const lastActive = t.lastActiveAt || 0;
+          if (now - lastActive > timeoutMs) {
+            invoke("close_tab", { id: t.id });
+            changed = true;
+            return { ...t, suspended: true, loading: false };
+          }
+          return t;
+        });
+        return changed ? next : prev;
+      });
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [activeTab, settings.suspendTimeout]);
 
   // --- workspace operations ---
 
@@ -299,7 +391,8 @@ export default function App() {
     setWorkspaces(prev => [...prev, ws]);
     setTabs(prev => [...prev, tab]);
     setActiveWorkspaceId(wsId);
-    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW, topOffset });
+    const sr = settingsRef.current;
+    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
     clearLoading(tabId);
   }, [workspaces.length, clearLoading, sidebarW, topOffset]);
 
@@ -364,14 +457,23 @@ export default function App() {
 
   const addTab = useCallback((url = NEW_TAB_URL, parentId?: string) => {
     const id = genId();
-    const tab: Tab = { id, url, title: "New Tab", loading: true, workspaceId: activeWorkspaceId, parentId };
+    const isInternal = url.startsWith("bushido://");
+    const title = url === SETTINGS_URL ? "Settings" : "New Tab";
+    const tab: Tab = { id, url, title, loading: !isInternal, workspaceId: activeWorkspaceId, parentId, lastActiveAt: Date.now() };
     setTabs(prev => [...prev, tab]);
     setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id } : w));
-    invoke("create_tab", { id, url, sidebarW, topOffset });
-    clearLoading(id);
+    if (!isInternal) {
+      const sr = settingsRef.current;
+      invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
+      clearLoading(id);
+    } else {
+      // hide all webviews since internal pages are React-rendered
+      invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
+    }
   }, [activeWorkspaceId, clearLoading, sidebarW, topOffset]);
 
   const closeTab = useCallback((id: string) => {
+    // always tell Rust to close — it safely no-ops if webview doesn't exist
     invoke("close_tab", { id });
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
@@ -384,11 +486,10 @@ export default function App() {
       );
 
       if (wsTabs.length <= 1) {
-        // last tab in workspace — create replacement
+        // last tab in workspace — create NTP replacement (no webview)
         const newId = genId();
-        const newTab: Tab = { id: newId, url: NEW_TAB_URL, title: "New Tab", loading: true, workspaceId: wsId };
-        invoke("create_tab", { id: newId, url: NEW_TAB_URL, sidebarW, topOffset });
-        clearLoading(newId);
+        const newTab: Tab = { id: newId, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
+        invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
         setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId } : w));
         return [...next, newTab];
       }
@@ -409,12 +510,25 @@ export default function App() {
 
       return next;
     });
-  }, [activeWorkspaceId, clearLoading, sidebarW, topOffset]);
+  }, [activeWorkspaceId, sidebarW, topOffset]);
 
   const selectTab = useCallback((id: string) => {
+    const targetTab = tabs.find(t => t.id === id);
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, lastActiveAt: Date.now() } : t));
     setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id } : w));
-    invoke("switch_tab", { id, sidebarW, topOffset });
-  }, [activeWorkspaceId, sidebarW, topOffset]);
+    if (targetTab?.suspended) {
+      // unsuspend: recreate webview
+      const sr = settingsRef.current;
+      invoke("create_tab", { id, url: targetTab.url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
+      clearLoading(id);
+      setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, loading: true, lastActiveAt: Date.now() } : t));
+    } else if (targetTab?.url === NTP_URL || targetTab?.url === SETTINGS_URL) {
+      // internal page — hide all webviews
+      invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
+    } else {
+      invoke("switch_tab", { id, sidebarW, topOffset });
+    }
+  }, [activeWorkspaceId, tabs, sidebarW, topOffset, clearLoading]);
 
   const pinTab = useCallback((id: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
@@ -438,6 +552,17 @@ export default function App() {
     });
   }, [activeWorkspaceId]);
 
+  const getSearchUrl = useCallback((query: string) => {
+    const q = encodeURIComponent(query);
+    switch (settings.searchEngine) {
+      case "duckduckgo": return `https://duckduckgo.com/?q=${q}`;
+      case "brave": return `https://search.brave.com/search?q=${q}`;
+      case "bing": return `https://www.bing.com/search?q=${q}`;
+      case "custom": return settings.customSearchUrl ? settings.customSearchUrl.replace("%s", q) : `https://www.google.com/search?q=${q}`;
+      default: return `https://www.google.com/search?q=${q}`;
+    }
+  }, [settings.searchEngine, settings.customSearchUrl]);
+
   const navigate = useCallback((url: string) => {
     if (!activeTab) return;
     let finalUrl = url;
@@ -445,15 +570,30 @@ export default function App() {
       if (/\.\w{2,}/.test(url)) {
         finalUrl = "https://" + url;
       } else {
-        finalUrl = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+        finalUrl = getSearchUrl(url);
       }
     }
+    const currentTab = tabs.find(t => t.id === activeTab);
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
-    invoke("navigate_tab", { id: activeTab, url: finalUrl });
+    if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended) {
+      // first navigation from internal page / suspended tab — create webview lazily, then switch to it
+      const sr = settingsRef.current;
+      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
+        invoke("switch_tab", { id: activeTab, sidebarW, topOffset });
+      });
+      if (currentTab?.suspended) {
+        setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false } : t));
+      }
+    } else {
+      invoke("navigate_tab", { id: activeTab, url: finalUrl });
+    }
     clearLoading(activeTab, 3000);
-  }, [activeTab, clearLoading]);
+  }, [activeTab, tabs, clearLoading, sidebarW, topOffset]);
 
   const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
+  const showNtp = current?.url === NTP_URL;
+  const showSettings = current?.url === SETTINGS_URL;
+  const showInternalPage = showNtp || showSettings;
 
   const toggleWhitelist = useCallback(() => {
     if (!activeTab) return;
@@ -571,6 +711,68 @@ export default function App() {
 
   const toggleHistory = useCallback(() => setHistoryOpen(p => !p), []);
 
+  // --- reader mode ---
+  const toggleReader = useCallback(() => {
+    if (!activeTab) return;
+    const tab = tabs.find(t => t.id === activeTab);
+    if (!tab || tab.url.startsWith("bushido://") || tab.suspended) return;
+
+    invoke("toggle_reader", {
+      id: activeTab,
+      fontSize: readerSettings.fontSize,
+      font: readerSettings.font,
+      theme: readerSettings.theme,
+      lineWidth: readerSettings.lineWidth,
+    });
+
+    setReaderTabs(prev => {
+      const next = new Set(prev);
+      if (next.has(activeTab)) next.delete(activeTab);
+      else next.add(activeTab);
+      return next;
+    });
+  }, [activeTab, tabs, readerSettings]);
+
+  const updateReaderSettings = useCallback((update: Partial<typeof readerSettings>) => {
+    setReaderSettings(prev => ({ ...prev, ...update }));
+  }, []);
+
+  // --- picture in picture ---
+  const togglePip = useCallback(() => {
+    if (!activeTab) return;
+    invoke("toggle_pip", { id: activeTab });
+  }, [activeTab]);
+
+  // detect videos on current page
+  useEffect(() => {
+    if (!activeTab) return;
+    const tab = tabs.find(t => t.id === activeTab);
+    if (!tab || tab.url.startsWith("bushido://") || tab.suspended) {
+      setHasVideo(false);
+      setPipActive(false);
+      return;
+    }
+    const detectVideo = () => {
+      invoke("detect_video", { id: activeTab });
+    };
+    // poll every 3s for up to 30s — YouTube/video sites load lazily
+    const interval = setInterval(detectVideo, 3000);
+    const stop = setTimeout(() => clearInterval(interval), 30000);
+    return () => { clearInterval(interval); clearTimeout(stop); };
+  }, [activeTab, current?.url]);
+
+  const executeAction = useCallback((action: string) => {
+    switch (action) {
+      case "action-new-tab": addTab(); break;
+      case "action-close-tab": closeTab(activeTab); break;
+      case "action-toggle-compact": setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); break;
+      case "action-toggle-sidebar": setSidebarOpen(p => !p); break;
+      case "action-clear-history": clearHistory("all"); break;
+      case "action-history": setHistoryOpen(true); break;
+      case "action-bookmark": toggleBookmark(); break;
+    }
+  }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark]);
+
   // keyboard shortcuts (works when React UI has focus)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -578,9 +780,11 @@ export default function App() {
       if (ctrl && e.key === "t") { e.preventDefault(); addTab(); }
       if (ctrl && e.key === "w") { e.preventDefault(); closeTab(activeTab); }
       if (ctrl && e.key === "l") { e.preventDefault(); urlBarRef.current?.focus(); urlBarRef.current?.select(); }
-      if (ctrl && e.shiftKey && e.key === "B") { e.preventDefault(); setCompactMode(p => !p); }
+      if (ctrl && e.shiftKey && e.key === "B") { e.preventDefault(); setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); }
       if (ctrl && e.key === "b" && !e.shiftKey) { e.preventDefault(); setSidebarOpen(p => !p); }
       if (ctrl && e.key === "f") { e.preventDefault(); setFindOpen(true); }
+      if (ctrl && e.key === "k") { e.preventDefault(); setCmdOpen(p => !p); }
+      if (ctrl && e.shiftKey && e.key === "R") { e.preventDefault(); toggleReader(); }
       if (ctrl && e.key === "d" && !e.shiftKey) { e.preventDefault(); toggleBookmark(); }
       if (ctrl && e.key === "h" && !e.shiftKey) { e.preventDefault(); setHistoryOpen(p => !p); }
       // Ctrl+Tab cycles tabs within current workspace
@@ -603,14 +807,14 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [addTab, closeTab, activeTab, currentWsTabs, workspaces, selectTab, switchWorkspace, toggleBookmark]);
+  }, [addTab, closeTab, activeTab, currentWsTabs, workspaces, selectTab, switchWorkspace, toggleBookmark, toggleReader]);
 
   // global shortcut bridge: Rust eval() calls this directly on the main webview
   // also handles child webview shortcuts forwarded via title encoding → global-shortcut event
   useEffect(() => {
     (window as any).__bushidoGlobalShortcut = (action: string) => {
       switch (action) {
-        case "toggle-compact": setCompactMode(p => !p); break;
+        case "toggle-compact": setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); break;
         case "toggle-sidebar": setSidebarOpen(p => !p); break;
         case "bookmark": toggleBookmark(); break;
         case "history": setHistoryOpen(p => !p); break;
@@ -618,6 +822,8 @@ export default function App() {
         case "close-tab": closeTab(activeTab); break;
         case "focus-url": urlBarRef.current?.focus(); urlBarRef.current?.select(); break;
         case "find": setFindOpen(true); break;
+        case "command-palette": setCmdOpen(p => !p); break;
+        case "reader-mode": toggleReader(); break;
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
@@ -639,12 +845,45 @@ export default function App() {
   const goForward = useCallback(() => invoke("go_forward", { id: activeTab }), [activeTab]);
   const goReload = useCallback(() => invoke("reload_tab", { id: activeTab }), [activeTab]);
   const closeFindBar = useCallback(() => setFindOpen(false), []);
+
+  const onOpenSettings = useCallback(() => {
+    // if a settings tab already exists, switch to it
+    const existing = tabs.find(t => t.url === SETTINGS_URL);
+    if (existing) {
+      selectTab(existing.id);
+      return;
+    }
+    addTab(SETTINGS_URL);
+  }, [tabs, selectTab, addTab]);
+
+  const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
+    setSettings(prev => {
+      const next = { ...prev, ...patch };
+      // sync compactMode toggle from settings to app state
+      if ("compactMode" in patch && patch.compactMode !== compactMode) {
+        setCompactMode(patch.compactMode!);
+      }
+      return next;
+    });
+  }, [compactMode]);
   const minimizeWindow = useCallback(() => invoke("minimize_window"), []);
   const maximizeWindow = useCallback(() => invoke("maximize_window"), []);
   const closeWindow = useCallback(() => invoke("close_window"), []);
 
   return (
     <div className="browser">
+      {cmdOpen && (
+        <CommandPalette
+          tabs={tabs}
+          bookmarks={bookmarkData.bookmarks}
+          history={historyEntries}
+          sidebarW={sidebarW}
+          onSelectTab={(id) => { selectTab(id); setCmdOpen(false); }}
+          onNavigate={(url) => { navigate(url); setCmdOpen(false); }}
+          onAction={(action) => { executeAction(action); setCmdOpen(false); }}
+          onClose={() => setCmdOpen(false)}
+        />
+      )}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-title">{current?.title || "Bushido"}</div>
         <div className="titlebar-controls">
@@ -704,6 +943,14 @@ export default function App() {
           onInputChange={onUrlInputChange}
           isBookmarked={current ? bookmarkedUrls.has(current.url) : false}
           onToggleBookmark={toggleBookmark}
+          onToggleReader={toggleReader}
+          isReaderActive={readerTabs.has(activeTab)}
+          readerSettings={readerSettings}
+          onUpdateReaderSettings={updateReaderSettings}
+          hasVideo={hasVideo}
+          pipActive={pipActive}
+          onTogglePip={togglePip}
+          onOpenSettings={onOpenSettings}
         />
         {historyOpen && (
           <HistoryPanel
@@ -715,10 +962,25 @@ export default function App() {
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
         <div className="main">
-          {findOpen && activeTab && (
+          {findOpen && activeTab && !showInternalPage && (
             <FindBar tabId={activeTab} onClose={closeFindBar} />
           )}
-          <WebviewPanel />
+          {showNtp ? (
+            <NewTabPage
+              topSites={settings.showTopSites ? topSites : []}
+              onNavigate={navigate}
+              onSelectSite={(url) => navigate(url)}
+              showClock={settings.showClock}
+              showGreeting={settings.showGreeting}
+            />
+          ) : showSettings ? (
+            <SettingsPage
+              settings={settings}
+              onUpdate={updateSettings}
+            />
+          ) : (
+            <WebviewPanel />
+          )}
         </div>
       </div>
     </div>
