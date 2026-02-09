@@ -2,10 +2,10 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
-import Toolbar from "./components/Toolbar";
 import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
-import { Tab, Workspace, SessionData } from "./types";
+import HistoryPanel from "./components/HistoryPanel";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult } from "./types";
 
 const NEW_TAB_URL = "https://www.google.com";
 const DEFAULT_WS_COLOR = "#6366f1";
@@ -18,6 +18,12 @@ const genId = (prefix = "tab") => `${prefix}-${++tabCounter}`;
 let wsCounter = 0;
 const genWsId = () => `ws-${++wsCounter}`;
 
+function frecencyScore(visitCount: number, lastVisitMs: number): number {
+  const ageHours = (Date.now() - lastVisitMs) / 3_600_000;
+  const w = ageHours < 4 ? 100 : ageHours < 24 ? 70 : ageHours < 72 ? 50 : ageHours < 336 ? 30 : 10;
+  return visitCount * w;
+}
+
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -25,15 +31,21 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [compactMode, setCompactMode] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [bookmarkData, setBookmarkData] = useState<BookmarkData>({ bookmarks: [], folders: [] });
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [urlQuery, setUrlQuery] = useState("");
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
+  const historyLoaded = useRef(false);
+  const bookmarksLoaded = useRef(false);
 
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
   const activeTab = activeWs?.activeTabId || "";
   const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
-  const sidebarW = compactMode ? 3 : sidebarOpen ? 260 : 54;
-  const topOffset = compactMode ? 40 : 88;
+  const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
+  const topOffset = 40;
   const pinnedTabs = useMemo(() => currentWsTabs.filter(t => t.pinned), [currentWsTabs]);
   const regularTabs = useMemo(() => currentWsTabs.filter(t => !t.pinned), [currentWsTabs]);
 
@@ -94,8 +106,8 @@ export default function App() {
         setCompactMode(restoredCompact);
 
         // create webviews for all restored tabs
-        const restoredSidebarW = restoredCompact ? 3 : 260;
-        const restoredTopOffset = restoredCompact ? 40 : 88;
+        const restoredSidebarW = restoredCompact ? 3 : 300;
+        const restoredTopOffset = 40;
         const firstActiveWs = restoredWs.find(w => w.id === session.activeWorkspaceId);
         restoredTabs.forEach(t => {
           invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
@@ -126,10 +138,10 @@ export default function App() {
           setActiveWorkspaceId(wsId);
 
           restored.forEach(t => {
-            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 260, topOffset: 88 });
+            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40 });
             clearLoading(t.id);
           });
-          invoke("switch_tab", { id: restored[0].id, sidebarW: 260, topOffset: 88 });
+          invoke("switch_tab", { id: restored[0].id, sidebarW: 300, topOffset: 40 });
         } else {
           const id = genId();
           const tab: Tab = { id, url: NEW_TAB_URL, title: "New Tab", loading: true, workspaceId: wsId };
@@ -137,7 +149,7 @@ export default function App() {
           setWorkspaces([ws]);
           setTabs([tab]);
           setActiveWorkspaceId(wsId);
-          invoke("create_tab", { id, url: NEW_TAB_URL, sidebarW: 260, topOffset: 88 });
+          invoke("create_tab", { id, url: NEW_TAB_URL, sidebarW: 300, topOffset: 40 });
           clearLoading(id);
         }
       }
@@ -159,6 +171,52 @@ export default function App() {
     return () => clearTimeout(t);
   }, [tabs, workspaces, activeWorkspaceId, compactMode]);
 
+  // load history + bookmarks on init
+  useEffect(() => {
+    invoke<string>("load_history").then(json => {
+      try { const p = JSON.parse(json); if (Array.isArray(p)) setHistoryEntries(p); } catch {}
+      historyLoaded.current = true;
+    });
+  }, []);
+
+  useEffect(() => {
+    invoke<string>("load_bookmarks").then(json => {
+      try { const p = JSON.parse(json); if (p?.bookmarks) setBookmarkData(p); } catch {}
+      bookmarksLoaded.current = true;
+    });
+  }, []);
+
+  // save history debounced
+  useEffect(() => {
+    if (!historyLoaded.current) return;
+    const t = setTimeout(() => invoke("save_history", { data: JSON.stringify(historyEntries) }), 2000);
+    return () => clearTimeout(t);
+  }, [historyEntries]);
+
+  // save bookmarks debounced
+  useEffect(() => {
+    if (!bookmarksLoaded.current) return;
+    const t = setTimeout(() => invoke("save_bookmarks", { data: JSON.stringify(bookmarkData) }), 1000);
+    return () => clearTimeout(t);
+  }, [bookmarkData]);
+
+  // record history from navigation events
+  const recordHistory = useCallback((url: string, title: string, favicon?: string) => {
+    if (!historyLoaded.current || url === NEW_TAB_URL || !url.startsWith("http")) return;
+    const now = Date.now();
+    setHistoryEntries(prev => {
+      const idx = prev.findIndex(h => h.url === url);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], title: title || updated[idx].title, favicon: favicon || updated[idx].favicon, lastVisitAt: now, visitCount: updated[idx].visitCount + 1 };
+        return updated;
+      }
+      const next = [{ url, title, favicon, visitCount: 1, lastVisitAt: now }, ...prev];
+      if (next.length > 10000) next.length = 10000;
+      return next;
+    });
+  }, []);
+
   // listen for webview events from rust
   useEffect(() => {
     const promises = [
@@ -171,6 +229,7 @@ export default function App() {
           domain = host;
         } catch {}
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, url: e.payload.url, favicon } : t));
+        recordHistory(e.payload.url, "", favicon);
         if (domain) {
           invoke<boolean>("is_whitelisted", { domain }).then(wl => {
             setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, whitelisted: wl } : t));
@@ -178,7 +237,14 @@ export default function App() {
         }
       }),
       listen<{ id: string; title: string }>("tab-title-changed", (e) => {
-        setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, title: e.payload.title, loading: false } : t));
+        setTabs(prev => {
+          const tab = prev.find(t => t.id === e.payload.id);
+          if (tab) {
+            // update history entry with the title
+            setHistoryEntries(hp => hp.map(h => h.url === tab.url ? { ...h, title: e.payload.title } : h));
+          }
+          return prev.map(t => t.id === e.payload.id ? { ...t, title: e.payload.title, loading: false } : t);
+        });
       }),
       listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, loading: e.payload.loading } : t));
@@ -402,6 +468,109 @@ export default function App() {
     });
   }, [activeTab, tabs]);
 
+  // --- bookmark operations ---
+
+  const addBookmark = useCallback((url: string, title: string, favicon?: string, folderId = "") => {
+    const id = `bm-${Date.now()}`;
+    setBookmarkData(prev => ({
+      ...prev,
+      bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt: Date.now() }],
+    }));
+  }, []);
+
+  const removeBookmark = useCallback((id: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      bookmarks: prev.bookmarks.filter(b => b.id !== id),
+    }));
+  }, []);
+
+  const bookmarkedUrls = useMemo(() => new Set(bookmarkData.bookmarks.map(b => b.url)), [bookmarkData.bookmarks]);
+
+  const toggleBookmark = useCallback(() => {
+    if (!current) return;
+    const existing = bookmarkData.bookmarks.find(b => b.url === current.url);
+    if (existing) removeBookmark(existing.id);
+    else addBookmark(current.url, current.title, current.favicon);
+  }, [current, bookmarkData.bookmarks, addBookmark, removeBookmark]);
+
+  const clearHistory = useCallback((range: 'hour' | 'today' | 'all') => {
+    if (range === 'all') { setHistoryEntries([]); return; }
+    const cutoff = range === 'hour' ? Date.now() - 3600_000 : new Date().setHours(0, 0, 0, 0);
+    setHistoryEntries(prev => prev.filter(h => h.lastVisitAt < cutoff));
+  }, []);
+
+  const selectBookmark = useCallback((url: string) => {
+    if (!activeTab) return;
+    navigate(url);
+  }, [activeTab, navigate]);
+
+  // top sites — 8 most frecent, deduplicated by domain, with defaults
+  const topSites = useMemo((): FrecencyResult[] => {
+    const domainMap = new Map<string, FrecencyResult>();
+    for (const h of historyEntries) {
+      let domain = "";
+      try { domain = new URL(h.url).hostname; } catch { continue; }
+      const score = frecencyScore(h.visitCount, h.lastVisitAt);
+      const existing = domainMap.get(domain);
+      if (!existing || score > existing.score) {
+        domainMap.set(domain, { url: h.url, title: h.title || domain, favicon: h.favicon, score, type: 'history' });
+      }
+    }
+    const sites = Array.from(domainMap.values()).sort((a, b) => b.score - a.score).slice(0, 8);
+    // fill with defaults if history is sparse
+    if (sites.length < 8) {
+      const defaults: FrecencyResult[] = [
+        { url: "https://www.google.com", title: "Google", favicon: "https://www.google.com/s2/favicons?domain=google.com&sz=32", score: 0, type: "history" },
+        { url: "https://www.youtube.com", title: "YouTube", favicon: "https://www.google.com/s2/favicons?domain=youtube.com&sz=32", score: 0, type: "history" },
+        { url: "https://github.com", title: "GitHub", favicon: "https://www.google.com/s2/favicons?domain=github.com&sz=32", score: 0, type: "history" },
+        { url: "https://www.reddit.com", title: "Reddit", favicon: "https://www.google.com/s2/favicons?domain=reddit.com&sz=32", score: 0, type: "history" },
+        { url: "https://en.wikipedia.org", title: "Wikipedia", favicon: "https://www.google.com/s2/favicons?domain=wikipedia.org&sz=32", score: 0, type: "history" },
+        { url: "https://twitter.com", title: "X", favicon: "https://www.google.com/s2/favicons?domain=twitter.com&sz=32", score: 0, type: "history" },
+      ];
+      const existing = new Set(sites.map(s => { try { return new URL(s.url).hostname; } catch { return ""; } }));
+      for (const d of defaults) {
+        if (sites.length >= 8) break;
+        const host = new URL(d.url).hostname;
+        if (!existing.has(host)) { sites.push(d); existing.add(host); }
+      }
+    }
+    return sites;
+  }, [historyEntries]);
+
+  // frecency suggestions for URL bar
+  const suggestions = useMemo((): FrecencyResult[] => {
+    if (!urlQuery || urlQuery.length < 2) return [];
+    const q = urlQuery.toLowerCase();
+    const map = new Map<string, FrecencyResult>();
+
+    for (const h of historyEntries) {
+      if (h.url.toLowerCase().includes(q) || h.title.toLowerCase().includes(q)) {
+        map.set(h.url, { url: h.url, title: h.title, favicon: h.favicon, score: frecencyScore(h.visitCount, h.lastVisitAt), type: 'history' });
+      }
+    }
+    for (const b of bookmarkData.bookmarks) {
+      if (b.url.toLowerCase().includes(q) || b.title.toLowerCase().includes(q)) {
+        const s = frecencyScore(1, b.createdAt) + 200;
+        const existing = map.get(b.url);
+        if (!existing || s > existing.score) map.set(b.url, { url: b.url, title: b.title, favicon: b.favicon, score: s, type: 'bookmark' });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.score - a.score).slice(0, 8);
+  }, [urlQuery, historyEntries, bookmarkData.bookmarks]);
+
+  const onSuggestionSelect = useCallback((url: string) => {
+    navigate(url);
+    setUrlQuery("");
+  }, [navigate]);
+
+  const onUrlInputChange = useCallback((query: string) => {
+    setUrlQuery(query);
+  }, []);
+
+  const toggleHistory = useCallback(() => setHistoryOpen(p => !p), []);
+
   // keyboard shortcuts (works when React UI has focus)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -412,6 +581,8 @@ export default function App() {
       if (ctrl && e.shiftKey && e.key === "B") { e.preventDefault(); setCompactMode(p => !p); }
       if (ctrl && e.key === "b" && !e.shiftKey) { e.preventDefault(); setSidebarOpen(p => !p); }
       if (ctrl && e.key === "f") { e.preventDefault(); setFindOpen(true); }
+      if (ctrl && e.key === "d" && !e.shiftKey) { e.preventDefault(); toggleBookmark(); }
+      if (ctrl && e.key === "h" && !e.shiftKey) { e.preventDefault(); setHistoryOpen(p => !p); }
       // Ctrl+Tab cycles tabs within current workspace
       if (ctrl && e.key === "Tab") {
         e.preventDefault();
@@ -432,17 +603,33 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [addTab, closeTab, activeTab, currentWsTabs, workspaces, selectTab, switchWorkspace]);
+  }, [addTab, closeTab, activeTab, currentWsTabs, workspaces, selectTab, switchWorkspace, toggleBookmark]);
 
   // global shortcut bridge: Rust eval() calls this directly on the main webview
+  // also handles child webview shortcuts forwarded via title encoding → global-shortcut event
   useEffect(() => {
     (window as any).__bushidoGlobalShortcut = (action: string) => {
       switch (action) {
         case "toggle-compact": setCompactMode(p => !p); break;
         case "toggle-sidebar": setSidebarOpen(p => !p); break;
+        case "bookmark": toggleBookmark(); break;
+        case "history": setHistoryOpen(p => !p); break;
+        case "new-tab": addTab(); break;
+        case "close-tab": closeTab(activeTab); break;
+        case "focus-url": urlBarRef.current?.focus(); urlBarRef.current?.select(); break;
+        case "find": setFindOpen(true); break;
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
+  }, [toggleBookmark, addTab, closeTab, activeTab]);
+
+  // listen for child webview shortcut bridge events
+  useEffect(() => {
+    const p = listen<string>("global-shortcut", (e) => {
+      const fn = (window as any).__bushidoGlobalShortcut;
+      if (fn) fn(e.payload);
+    });
+    return () => { p.then(u => u()); };
   }, []);
 
   // stable callbacks for child components (prevents re-renders from new arrow refs)
@@ -496,22 +683,38 @@ export default function App() {
           onToggleCollapse={toggleCollapse}
           onAddChildTab={addChildTab}
           onMoveTabToWorkspace={moveTabToWorkspace}
+          bookmarks={bookmarkData.bookmarks}
+          bookmarkFolders={bookmarkData.folders}
+          onSelectBookmark={selectBookmark}
+          onRemoveBookmark={removeBookmark}
+          onToggleHistory={toggleHistory}
+          onBack={goBack}
+          onForward={goForward}
+          onReload={goReload}
+          url={current?.url || ""}
+          onNavigate={navigate}
+          loading={current?.loading || false}
+          inputRef={urlBarRef}
+          blockedCount={current?.blockedCount || 0}
+          whitelisted={current?.whitelisted || false}
+          onToggleWhitelist={toggleWhitelist}
+          suggestions={suggestions}
+          topSites={topSites}
+          onSuggestionSelect={onSuggestionSelect}
+          onInputChange={onUrlInputChange}
+          isBookmarked={current ? bookmarkedUrls.has(current.url) : false}
+          onToggleBookmark={toggleBookmark}
         />
+        {historyOpen && (
+          <HistoryPanel
+            history={historyEntries}
+            onSelect={(url: string) => { selectBookmark(url); setHistoryOpen(false); }}
+            onClose={toggleHistory}
+            onClear={clearHistory}
+          />
+        )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
         <div className="main">
-          <Toolbar
-            url={current?.url || ""}
-            onNavigate={navigate}
-            onBack={goBack}
-            onForward={goForward}
-            onReload={goReload}
-            loading={current?.loading || false}
-            inputRef={urlBarRef}
-            blockedCount={current?.blockedCount || 0}
-            whitelisted={current?.whitelisted || false}
-            onToggleWhitelist={toggleWhitelist}
-            compact={compactMode}
-          />
           {findOpen && activeTab && (
             <FindBar tabId={activeTab} onClose={closeFindBar} />
           )}

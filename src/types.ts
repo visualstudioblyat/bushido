@@ -25,3 +25,40 @@ export interface SessionData {
   activeWorkspaceId: string;
   compactMode?: boolean;
 }
+
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  favicon?: string;
+  visitCount: number;
+  lastVisitAt: number;
+}
+
+export interface Bookmark {
+  id: string;
+  url: string;
+  title: string;
+  favicon?: string;
+  folderId: string;
+  createdAt: number;
+}
+
+export interface BookmarkFolder {
+  id: string;
+  name: string;
+  parentId: string;
+  order: number;
+}
+
+export interface BookmarkData {
+  bookmarks: Bookmark[];
+  folders: BookmarkFolder[];
+}
+
+export interface FrecencyResult {
+  url: string;
+  title: string;
+  favicon?: string;
+  score: number;
+  type: 'history' | 'bookmark';
+}

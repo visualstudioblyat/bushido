@@ -2,6 +2,34 @@
 
 ---
 
+## v0.4.0
+
+**2026-02-09**
+
+### Changed
+
+- **Killed the toolbar** — everything lives in the sidebar now. Nav buttons, URL bar, shield, bookmarks. Zen-style vertical layout. Webview gets the full height, titlebar is just the page title + window controls.
+- **Sidebar is 300px** — was 260. URL bar is 38px tall, flat and transparent. Search icon instead of a lock. No inset shadows, no glow rings.
+- **Nav buttons are ghost-style** — no background or border, just icons. Back/forward sit together, reload pushed right. Matches everything else in the sidebar.
+- **Nuked every `transition: all`** — 26 of them. Each one now lists only the properties that actually change. Browser doesn't have to watch everything anymore.
+
+### Added
+
+- **Top sites grid** — click the URL bar and your 8 most-visited sites pop up in a 4×2 grid with favicons. Frecency-ranked. Falls back to defaults (Google, YouTube, GitHub, etc.) if you're fresh.
+- **Extensions panel** — little icon in the URL bar opens a Zen-style dropdown. Quick actions row (bookmark, screenshot, reader, share), extensions grid with the shield blocker, "+" button. "Manage" link fades in on hover.
+- **History** (`Ctrl+H`) — slide-over panel with search, date grouping, clear by range.
+- **Bookmarks** (`Ctrl+D`) — star in sidebar header, collapsible section, right-click to remove.
+- **Frecency suggestions** — type in the URL bar and get ranked results from history + bookmarks. Arrow keys to navigate.
+
+### Removed
+
+- `Toolbar.tsx` — absorbed into Sidebar
+- Tab search input — URL bar filters tabs when focused now
+- "TABS" / "pinned" section labels and count badges
+- `--toolbar-height` CSS variable
+
+---
+
 ## v0.3.1
 
 **2026-02-08**

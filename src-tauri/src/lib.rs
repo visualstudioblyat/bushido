@@ -389,6 +389,31 @@ async fn load_session(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
+fn history_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("history.json") }
+fn bookmarks_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("bookmarks.json") }
+
+#[tauri::command]
+async fn save_history(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    fs::write(history_path(&app), data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_history(app: tauri::AppHandle) -> Result<String, String> {
+    let p = history_path(&app);
+    if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok("[]".into()) }
+}
+
+#[tauri::command]
+async fn save_bookmarks(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    fs::write(bookmarks_path(&app), data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_bookmarks(app: tauri::AppHandle) -> Result<String, String> {
+    let p = bookmarks_path(&app);
+    if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok(r#"{"bookmarks":[],"folders":[]}"#.into()) }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let b = blocker::Blocker::new();
@@ -444,6 +469,10 @@ pub fn run() {
             close_window,
             save_session,
             load_session,
+            save_history,
+            load_history,
+            save_bookmarks,
+            load_bookmarks,
             toggle_whitelist,
             get_whitelist,
             is_whitelisted

@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from "react";
-import { Tab, Workspace } from "../types";
+import { useState, useCallback, useRef, useEffect, useMemo, memo, RefObject } from "react";
+import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult } from "../types";
 import logoSrc from "../assets/logo.png";
 
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
@@ -26,6 +26,27 @@ interface Props {
   onToggleCollapse: (id: string) => void;
   onAddChildTab: (parentId: string) => void;
   onMoveTabToWorkspace: (tabId: string, targetWsId: string) => void;
+  bookmarks: Bookmark[];
+  bookmarkFolders: BookmarkFolder[];
+  onSelectBookmark: (url: string) => void;
+  onRemoveBookmark: (id: string) => void;
+  onToggleHistory: () => void;
+  onBack: () => void;
+  onForward: () => void;
+  onReload: () => void;
+  url: string;
+  onNavigate: (url: string) => void;
+  loading: boolean;
+  inputRef: RefObject<HTMLInputElement>;
+  blockedCount: number;
+  whitelisted: boolean;
+  onToggleWhitelist: () => void;
+  suggestions: FrecencyResult[];
+  topSites: FrecencyResult[];
+  onSuggestionSelect: (url: string) => void;
+  onInputChange: (query: string) => void;
+  isBookmarked: boolean;
+  onToggleBookmark: () => void;
 }
 
 interface CtxMenu {
@@ -105,6 +126,12 @@ export default memo(function Sidebar({
   workspaces, activeWorkspaceId,
   onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onRenameWorkspace, onRecolorWorkspace,
   onToggleCollapse, onAddChildTab, onMoveTabToWorkspace,
+  bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark, onToggleHistory,
+  onBack, onForward, onReload,
+  url, onNavigate, loading, inputRef,
+  blockedCount, whitelisted, onToggleWhitelist,
+  suggestions, topSites, onSuggestionSelect, onInputChange,
+  isBookmarked, onToggleBookmark,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -116,20 +143,89 @@ export default memo(function Sidebar({
   const dragCounter = useRef(0);
   const [peeking, setPeeking] = useState(false);
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [search, setSearch] = useState("");
+  // tab search is driven by the URL bar input when focused
   const [wsDropTarget, setWsDropTarget] = useState<string | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const [bookmarksExpanded, setBookmarksExpanded] = useState(true);
+  const [bmCtx, setBmCtx] = useState<{ x: number; y: number; id: string } | null>(null);
+  const bmCtxMenuRef = useRef<HTMLDivElement>(null);
+  const bmCtxPos = useClampedMenu(bmCtxMenuRef, bmCtx);
 
-  // memoize tree building + filtering (avoids recomputing on every render)
+  // url bar state (absorbed from Toolbar)
+  const [urlInput, setUrlInput] = useState(url);
+  const [urlFocused, setUrlFocused] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(-1);
+  const [extPanelOpen, setExtPanelOpen] = useState(false);
+  const extPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!urlFocused) setUrlInput(url);
+  }, [url, urlFocused]);
+
+  // close extensions panel on click outside
+  useEffect(() => {
+    if (!extPanelOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (extPanelRef.current && !extPanelRef.current.contains(e.target as Node)) {
+        setExtPanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [extPanelOpen]);
+
+  useEffect(() => {
+    setSelectedIdx(-1);
+  }, [suggestions]);
+
+  const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setUrlInput(e.target.value);
+    onInputChange(e.target.value);
+  }, [onInputChange]);
+
+  const handleUrlSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedIdx >= 0 && selectedIdx < suggestions.length) {
+      onSuggestionSelect(suggestions[selectedIdx].url);
+      inputRef.current?.blur();
+      return;
+    }
+    if (urlInput.trim()) {
+      onNavigate(urlInput.trim());
+      inputRef.current?.blur();
+    }
+  }, [urlInput, onNavigate, inputRef, selectedIdx, suggestions, onSuggestionSelect]);
+
+  const handleUrlKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!urlFocused || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIdx(p => Math.min(p + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIdx(p => Math.max(p - 1, -1));
+    }
+  }, [urlFocused, suggestions.length]);
+
+  const displayUrl = useMemo(() => {
+    if (urlFocused) return urlInput;
+    try {
+      const u = new URL(urlInput);
+      return u.hostname + (u.pathname !== "/" ? u.pathname : "");
+    } catch { return urlInput; }
+  }, [urlFocused, urlInput]);
+
+  // memoize tree building + filtering — URL bar input filters tabs when focused
+  const tabFilter = urlFocused ? urlInput : "";
   const { filteredPinned, flatTabs } = useMemo(() => {
-    const q = search.toLowerCase();
-    const fp = search ? pinnedTabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : pinnedTabs;
-    const ft = search ? tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : tabs;
+    const q = tabFilter.toLowerCase();
+    const fp = tabFilter ? pinnedTabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : pinnedTabs;
+    const ft = tabFilter ? tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) : tabs;
     const tree = buildTree(ft);
     const flat = flattenTree(tree);
     return { filteredPinned: fp, flatTabs: flat };
-  }, [tabs, pinnedTabs, search]);
+  }, [tabs, pinnedTabs, tabFilter]);
 
   // tab list virtualization — only render visible tabs + 2 overscan
   const TAB_HEIGHT = 36;
@@ -281,20 +377,228 @@ export default memo(function Sidebar({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        <div className="sidebar-header">
-          <div className="logo">
+        {!open && !compact && (
+          <div className="sidebar-collapsed-logo">
             <img src={logoSrc} alt="Bushido" width={22} height={22} />
-            {(open || compact) && <span>BUSHIDO</span>}
+            <button className="sidebar-toggle" onClick={onToggle}>›</button>
           </div>
-          {!compact && (
-            <button className="sidebar-toggle" onClick={onToggle}>
-              {open ? "‹" : "›"}
-            </button>
-          )}
-        </div>
-
+        )}
         {(open || compact) && (
           <>
+            {/* top row: logo left, star + shield right */}
+            <div className="sidebar-header-row">
+              <img src={logoSrc} alt="Bushido" width={20} height={20} className="sidebar-nav-logo" />
+              <div className="nav-right">
+                <div
+                  className={`bookmark-btn ${isBookmarked ? "bookmarked" : ""}`}
+                  onClick={onToggleBookmark}
+                  title={isBookmarked ? "Remove bookmark (Ctrl+D)" : "Bookmark this page (Ctrl+D)"}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 2L9.8 5.6L14 6.2L11 9.1L11.7 13.2L8 11.3L4.3 13.2L5 9.1L2 6.2L6.2 5.6L8 2Z"
+                          stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"
+                          fill={isBookmarked ? "var(--accent)" : "none"} />
+                  </svg>
+                </div>
+                <div
+                  className={`shield-badge ${whitelisted ? "shield-off" : ""}`}
+                  title={whitelisted ? "shields down (click to enable)" : `${blockedCount} tracker${blockedCount !== 1 ? 's' : ''} blocked (click to disable for this site)`}
+                  onClick={onToggleWhitelist}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 1L2 4V7.5C2 11.1 4.5 14.4 8 15.2C11.5 14.4 14 11.1 14 7.5V4L8 1Z"
+                          stroke={whitelisted ? "var(--text-dim)" : blockedCount > 0 ? "var(--success)" : "var(--text-dim)"}
+                          strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
+                    {whitelisted ? (
+                      <path d="M5 5.5L11 10.5M11 5.5L5 10.5" stroke="var(--text-dim)" strokeWidth="1.2" strokeLinecap="round"/>
+                    ) : blockedCount > 0 ? (
+                      <path d="M5.5 8L7 9.5L10.5 6" stroke="var(--success)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                    ) : null}
+                  </svg>
+                  {!whitelisted && blockedCount > 0 && (
+                    <span className="shield-count">{blockedCount > 99 ? '99+' : blockedCount}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* nav buttons — ghost style, reload pushed right */}
+            <div className="sidebar-nav-row">
+              <button className="nav-btn" onClick={onBack} title="Back (Alt+←)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <button className="nav-btn" onClick={onForward} title="Forward (Alt+→)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 3L11 8L6 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <button className="nav-btn" onClick={onReload} title="Reload (Ctrl+R)">
+                {loading ? (
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                    <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                ) : (
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                    <path d="M13 8A5 5 0 1 1 8 3M13 3V8H8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
+              </button>
+            </div>
+
+            {/* url bar with search icon */}
+            <form className="sidebar-url-form" onSubmit={handleUrlSubmit}>
+              <div className={`sidebar-url-bar ${urlFocused ? "focused" : ""}`}>
+                <svg className="url-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M9.5 9.5L13 13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                </svg>
+                <input
+                  ref={inputRef}
+                  className="url-input"
+                  value={urlFocused ? urlInput : displayUrl}
+                  onChange={handleUrlChange}
+                  onFocus={() => { setUrlFocused(true); setUrlInput(""); onInputChange(""); }}
+                  onBlur={() => { setUrlFocused(false); onInputChange(""); }}
+                  onKeyDown={handleUrlKeyDown}
+                  placeholder="search or enter url"
+                  spellCheck={false}
+                />
+                {!urlFocused && (
+                  <button
+                    className={`ext-trigger ${extPanelOpen ? "open" : ""}`}
+                    onClick={(e) => { e.preventDefault(); setExtPanelOpen(p => !p); }}
+                    title="Extensions & quick actions"
+                    type="button"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M10.75 9.5V13M5.25 11.25H8.25M10.75 11.25H12.75M7.25 5V8.5M5.25 6.75H7.25M9.75 6.75H12.75M5.25 3H13.75C14.858 3 15.75 3.892 15.75 5V13.5C15.75 14.608 14.858 15.5 13.75 15.5H5.25C4.142 15.5 3.25 14.608 3.25 13.5V5C3.25 3.892 4.142 3 5.25 3Z"/>
+                    </svg>
+                  </button>
+                )}
+              </div>
+              {/* Extensions panel */}
+              {extPanelOpen && (
+                <div className="ext-panel" ref={extPanelRef}>
+                  {/* Quick actions header */}
+                  <div className="ext-header">
+                    <button className="ext-action-btn" onClick={onToggleBookmark} title="Bookmark">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M4 2H12V14L8 11L4 14V2Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill={isBookmarked ? "currentColor" : "none"}/>
+                      </svg>
+                    </button>
+                    <button className="ext-action-btn" title="Screenshot">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="1.5" y="3.5" width="13" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                        <circle cx="8" cy="8.5" r="2.5" stroke="currentColor" strokeWidth="1.3"/>
+                        <path d="M5.5 3.5V2.5H10.5V3.5" stroke="currentColor" strokeWidth="1.3"/>
+                      </svg>
+                    </button>
+                    <button className="ext-action-btn" title="Reader mode">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M2 3H6C7.1 3 8 3.9 8 5V14C8 13 7 12 6 12H2V3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+                        <path d="M14 3H10C8.9 3 8 3.9 8 5V14C8 13 9 12 10 12H14V3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                    <button className="ext-action-btn" title="Share">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 2V10M8 2L5 5M8 2L11 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M3 9V13H13V9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Extensions section */}
+                  <div className="ext-section">
+                    <div className="ext-section-header">
+                      <span className="ext-section-label">Extensions</span>
+                      <span className="ext-section-manage">Manage</span>
+                    </div>
+                    <div className="ext-grid">
+                      {/* Shield/blocker as a built-in "extension" */}
+                      <button
+                        className={`ext-tile ${!whitelisted && blockedCount > 0 ? "active" : ""}`}
+                        onClick={onToggleWhitelist}
+                        title={whitelisted ? "Shields down" : `${blockedCount} blocked`}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path d="M8 1L2 4V7.5C2 11.1 4.5 14.4 8 15.2C11.5 14.4 14 11.1 14 7.5V4L8 1Z"
+                                stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+                          {!whitelisted && blockedCount > 0 && (
+                            <path d="M5.5 8L7 9.5L10.5 6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                          )}
+                        </svg>
+                      </button>
+                      {/* + button */}
+                      <button className="ext-tile ext-add" title="Find extensions">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M7 2V12M2 7H12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="ext-footer">
+                    <div className="ext-security">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <rect x="3" y="6" width="8" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                        <path d="M5 6V4.5a2 2 0 1 1 4 0V6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                      <span>{(() => { try { return new URL(url).hostname; } catch { return "secure"; } })()}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {loading && <div className="url-progress" />}
+              {/* Top sites grid — shows on focus with no typed query */}
+              {urlFocused && suggestions.length === 0 && topSites.length > 0 && (
+                <div className="url-topsites">
+                  {topSites.map(s => {
+                    let domain = "";
+                    try { domain = new URL(s.url).hostname.replace("www.", ""); } catch { domain = s.title; }
+                    return (
+                      <div
+                        key={s.url}
+                        className="topsite-tile"
+                        onMouseDown={(e) => { e.preventDefault(); onSuggestionSelect(s.url); }}
+                      >
+                        <div className="topsite-icon">
+                          {s.favicon
+                            ? <img src={s.favicon} alt="" width={28} height={28} />
+                            : <span className="topsite-placeholder">{domain.charAt(0).toUpperCase()}</span>
+                          }
+                        </div>
+                        <span className="topsite-label">{s.title || domain}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* Typed suggestions list */}
+              {urlFocused && suggestions.length > 0 && (
+                <div className="url-suggestions">
+                  {suggestions.map((s, i) => (
+                    <div
+                      key={s.url}
+                      className={`suggestion-item ${i === selectedIdx ? "selected" : ""}`}
+                      onMouseDown={(e) => { e.preventDefault(); onSuggestionSelect(s.url); }}
+                    >
+                      <div className="suggestion-favicon">
+                        {s.favicon ? <img src={s.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                      </div>
+                      <div className="suggestion-text">
+                        <span className="suggestion-title">{s.title || s.url}</span>
+                        <span className="suggestion-url">{s.url}</span>
+                      </div>
+                      <span className="suggestion-type">{s.type === 'bookmark' ? '★' : '◷'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </form>
+
             {/* workspace switcher */}
             <div className="workspace-switcher">
               {workspaces.map((ws, i) => (
@@ -344,37 +648,41 @@ export default memo(function Sidebar({
               </button>
             </div>
 
-            <div className="tab-search">
-              <svg className="tab-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M9.5 9.5L13 13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              </svg>
-              <input
-                className="tab-search-input"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="search tabs..."
-                spellCheck={false}
-              />
-              {search && (
-                <button className="tab-search-clear" onClick={() => setSearch("")}>×</button>
-              )}
-            </div>
-
             {filteredPinned.length > 0 && (
               <div className="pinned-section">
-                <div className="section-label">pinned</div>
                 <div className="pinned-grid">
                   {filteredPinned.map(t => renderTab(t, true))}
                 </div>
               </div>
             )}
 
-            <div className="tab-section">
-              <div className="section-label">
-                <span>tabs</span>
-                <span className="tab-count">{flatTabs.length}</span>
+            {bookmarks.length > 0 && (
+              <div className="bookmark-section">
+                <div className="section-label section-label-clickable" onClick={() => setBookmarksExpanded(p => !p)}>
+                  <span>bookmarks</span>
+                  <span className="tab-count">{bookmarks.length}</span>
+                </div>
+                {bookmarksExpanded && (
+                  <div className="bookmark-list">
+                    {bookmarks.map(b => (
+                      <div
+                        key={b.id}
+                        className="bookmark-item"
+                        onClick={() => onSelectBookmark(b.url)}
+                        onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                      >
+                        <div className="tab-favicon">
+                          {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                        </div>
+                        <span className="tab-title">{b.title || b.url}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
+            )}
+
+            <div className="tab-section">
               <div className="tab-list" ref={listRef} onScroll={handleScroll}>
                 <div style={{ height: topPad }} />
                 {visibleTabs.map((node, i) => renderTab(node.tab, false, startIdx + i, node.depth, node.children.length))}
@@ -382,10 +690,18 @@ export default memo(function Sidebar({
               </div>
             </div>
 
-            <button className="new-tab-btn" onClick={onNew}>
-              <span className="new-tab-icon">+</span>
-              <span>new tab</span>
-            </button>
+            <div className="sidebar-bottom-btns">
+              <button className="new-tab-btn" onClick={onNew}>
+                <span className="new-tab-icon">+</span>
+                <span>new tab</span>
+              </button>
+              <button className="history-btn" onClick={onToggleHistory} title="History (Ctrl+H)">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M8 5V8.5L10.5 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
           </>
         )}
       </div>
@@ -411,6 +727,17 @@ export default memo(function Sidebar({
               closeCtx();
             }}>
               close other tabs
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* bookmark context menu */}
+      {bmCtx && (
+        <div className="ctx-overlay" onClick={() => setBmCtx(null)}>
+          <div ref={bmCtxMenuRef} className="ctx-menu" style={{ top: bmCtxPos.top, left: bmCtxPos.left }}>
+            <button className="ctx-item ctx-danger" onClick={() => { onRemoveBookmark(bmCtx.id); setBmCtx(null); }}>
+              remove bookmark
             </button>
           </div>
         </div>

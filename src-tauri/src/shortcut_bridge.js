@@ -10,6 +10,8 @@
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyL') action = 'focus-url';
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyF') action = 'find';
     else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyB') action = 'toggle-sidebar';
+    else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyD') action = 'bookmark';
+    else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyH') action = 'history';
     if (action) {
       e.preventDefault();
       e.stopImmediatePropagation();
