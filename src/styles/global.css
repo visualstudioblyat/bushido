@@ -357,6 +357,24 @@ html, body, #root {
   box-shadow: 0 0 8px var(--accent-glow);
 }
 
+.tab-item.split-active {
+  background: rgba(99, 102, 241, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.04);
+}
+
+.tab-item.split-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  opacity: 0.5;
+}
+
 .tab-info {
   display: flex;
   align-items: center;

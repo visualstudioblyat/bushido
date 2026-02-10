@@ -61,6 +61,7 @@ export default function App() {
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
   const activeTab = activeWs?.activeTabId || "";
+  const splitTab = activeWs?.splitTabId || "";
   const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
   const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
   const topOffset = 40;
@@ -123,7 +124,7 @@ export default function App() {
           // ensure ws counter stays ahead
           const num = parseInt(w.id.replace("ws-", ""), 10);
           if (num >= wsCounter) wsCounter = num;
-          return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId };
+          return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, splitTabId: w.splitTabId };
         });
 
         const restoredTabs: Tab[] = session.tabs.map(st => {
@@ -167,9 +168,9 @@ export default function App() {
         if (firstActiveWs?.activeTabId) {
           const activeRestoredTab = restoredTabs.find(t => t.id === firstActiveWs.activeTabId);
           if (activeRestoredTab?.url?.startsWith("bushido://")) {
-            invoke("resize_webviews", { activeId: "__none__", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+            invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           } else {
-            invoke("switch_tab", { id: firstActiveWs.activeTabId, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+            invoke("switch_tab", { id: firstActiveWs.activeTabId, splitId: firstActiveWs.splitTabId || "", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           }
         }
       } else {
@@ -196,7 +197,7 @@ export default function App() {
             invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40, ...tabArgs });
             clearLoading(t.id);
           });
-          invoke("switch_tab", { id: restored[0].id, sidebarW: 300, topOffset: 40 });
+          invoke("switch_tab", { id: restored[0].id, splitId: "", sidebarW: 300, topOffset: 40 });
         } else {
           openFreshNtp();
         }
@@ -209,7 +210,7 @@ export default function App() {
     if (!initialized.current || tabs.length === 0) return;
     const t = setTimeout(() => {
       const session: SessionData = {
-        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId })),
+        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, splitTabId: w.splitTabId })),
         tabs: tabs.map(tab => ({ url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
         activeWorkspaceId,
         compactMode,
@@ -353,17 +354,17 @@ export default function App() {
   useEffect(() => {
     if (!activeTab) return;
     const t = setTimeout(() => {
-      invoke("resize_webviews", { activeId: activeTab, sidebarW, topOffset });
+      invoke("resize_webviews", { activeId: activeTab, splitId: splitTab, sidebarW, topOffset });
     }, 320);
     return () => clearTimeout(t);
-  }, [sidebarW, topOffset]);
+  }, [sidebarW, topOffset, splitTab]);
 
   useEffect(() => {
     if (!activeTab) return;
-    const handler = () => invoke("resize_webviews", { activeId: activeTab, sidebarW, topOffset });
+    const handler = () => invoke("resize_webviews", { activeId: activeTab, splitId: splitTab, sidebarW, topOffset });
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
-  }, [activeTab, sidebarW, topOffset]);
+  }, [activeTab, splitTab, sidebarW, topOffset]);
 
   // sync compactMode setting ↔ state
   useEffect(() => {
@@ -382,7 +383,7 @@ export default function App() {
       setTabs(prev => {
         let changed = false;
         const next = prev.map(t => {
-          if (t.id === activeTab) return t;
+          if (t.id === activeTab || t.id === splitTab) return t;
           if (t.pinned) return t;
           if (t.suspended) return t;
           if (t.url.startsWith("bushido://")) return t;
@@ -398,7 +399,7 @@ export default function App() {
       });
     }, 60_000);
     return () => clearInterval(interval);
-  }, [activeTab, settings.suspendTimeout]);
+  }, [activeTab, splitTab, settings.suspendTimeout]);
 
   // --- workspace operations ---
 
@@ -407,7 +408,7 @@ export default function App() {
     setWorkspaces(prev => {
       const ws = prev.find(w => w.id === wsId);
       if (ws?.activeTabId) {
-        invoke("switch_tab", { id: ws.activeTabId, sidebarW, topOffset });
+        invoke("switch_tab", { id: ws.activeTabId, splitId: ws.splitTabId || "", sidebarW, topOffset });
       }
       return prev;
     });
@@ -443,7 +444,7 @@ export default function App() {
         const newActive = next[0];
         setActiveWorkspaceId(newActive.id);
         if (newActive.activeTabId) {
-          invoke("switch_tab", { id: newActive.activeTabId, sidebarW, topOffset });
+          invoke("switch_tab", { id: newActive.activeTabId, splitId: newActive.splitTabId || "", sidebarW, topOffset });
         }
       }
       return next;
@@ -471,7 +472,7 @@ export default function App() {
           const remaining = next.filter(t => t.workspaceId === sourceWsId);
           const newActiveId = remaining.length > 0 ? remaining[0].id : "";
           if (sourceWsId === activeWorkspaceId && newActiveId) {
-            invoke("switch_tab", { id: newActiveId, sidebarW, topOffset });
+            invoke("switch_tab", { id: newActiveId, splitId: "", sidebarW, topOffset });
           }
           return { ...w, activeTabId: newActiveId };
         }
@@ -493,14 +494,14 @@ export default function App() {
     const title = url === SETTINGS_URL ? "Settings" : "New Tab";
     const tab: Tab = { id, url, title, loading: !isInternal, workspaceId: activeWorkspaceId, parentId, lastActiveAt: Date.now() };
     setTabs(prev => [...prev, tab]);
-    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id } : w));
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: undefined } : w));
     if (!isInternal) {
       const sr = settingsRef.current;
       invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
       clearLoading(id);
     } else {
       // hide all webviews since internal pages are React-rendered
-      invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
+      invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
     }
   }, [activeWorkspaceId, clearLoading, sidebarW, topOffset]);
 
@@ -521,22 +522,42 @@ export default function App() {
         // last tab in workspace — create NTP replacement (no webview)
         const newId = genId();
         const newTab: Tab = { id: newId, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
-        invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
-        setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId } : w));
+        invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
+        setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId, splitTabId: undefined } : w));
         return [...next, newTab];
       }
 
-      // if closed tab was active in its workspace, switch to adjacent
       setWorkspaces(ws => ws.map(w => {
-        if (w.id === wsId && w.activeTabId === id) {
+        if (w.id !== wsId) return w;
+
+        // closed the split tab → exit split
+        if (w.splitTabId === id) {
+          if (wsId === activeWorkspaceId) {
+            invoke("switch_tab", { id: w.activeTabId, splitId: "", sidebarW, topOffset });
+          }
+          return { ...w, splitTabId: undefined };
+        }
+
+        // closed the active tab while split → promote split to active, exit split
+        if (w.activeTabId === id && w.splitTabId) {
+          const promoted = w.splitTabId;
+          if (wsId === activeWorkspaceId) {
+            invoke("switch_tab", { id: promoted, splitId: "", sidebarW, topOffset });
+          }
+          return { ...w, activeTabId: promoted, splitTabId: undefined };
+        }
+
+        // closed the active tab (no split) → switch to adjacent
+        if (w.activeTabId === id) {
           const wsTabsInNext = next.filter(t => t.workspaceId === wsId);
           const oldIdx = wsTabs.findIndex(t => t.id === id);
           const newActive = wsTabsInNext[Math.min(oldIdx, wsTabsInNext.length - 1)];
           if (newActive && wsId === activeWorkspaceId) {
-            invoke("switch_tab", { id: newActive.id, sidebarW, topOffset });
+            invoke("switch_tab", { id: newActive.id, splitId: "", sidebarW, topOffset });
           }
           return { ...w, activeTabId: newActive?.id || "" };
         }
+
         return w;
       }));
 
@@ -546,21 +567,36 @@ export default function App() {
 
   const selectTab = useCallback((id: string) => {
     const targetTab = tabs.find(t => t.id === id);
+    const ws = workspaces.find(w => w.id === activeWorkspaceId);
+    const isInternal = targetTab?.url === NTP_URL || targetTab?.url === SETTINGS_URL;
+
     setTabs(prev => prev.map(t => t.id === id ? { ...t, lastActiveAt: Date.now() } : t));
-    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id } : w));
+
+    // figure out split state
+    let newSplit = ws?.splitTabId;
+    if (isInternal) {
+      // internal pages exit split
+      newSplit = undefined;
+    } else if (ws?.splitTabId === id) {
+      // clicked the split tab → swap: split becomes active, old active becomes split
+      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: w.activeTabId } : w));
+      invoke("switch_tab", { id, splitId: ws.activeTabId, sidebarW, topOffset });
+      return;
+    }
+
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: newSplit } : w));
+
     if (targetTab?.suspended) {
-      // unsuspend: recreate webview
       const sr = settingsRef.current;
       invoke("create_tab", { id, url: targetTab.url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, loading: true, lastActiveAt: Date.now() } : t));
-    } else if (targetTab?.url === NTP_URL || targetTab?.url === SETTINGS_URL) {
-      // internal page — hide all webviews
-      invoke("resize_webviews", { activeId: "__none__", sidebarW, topOffset });
+    } else if (isInternal) {
+      invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
     } else {
-      invoke("switch_tab", { id, sidebarW, topOffset });
+      invoke("switch_tab", { id, splitId: newSplit || "", sidebarW, topOffset });
     }
-  }, [activeWorkspaceId, tabs, sidebarW, topOffset, clearLoading]);
+  }, [activeWorkspaceId, tabs, workspaces, sidebarW, topOffset, clearLoading]);
 
   const pinTab = useCallback((id: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
@@ -611,7 +647,7 @@ export default function App() {
       // first navigation from internal page / suspended tab — create webview lazily, then switch to it
       const sr = settingsRef.current;
       invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
-        invoke("switch_tab", { id: activeTab, sidebarW, topOffset });
+        invoke("switch_tab", { id: activeTab, splitId: splitTab, sidebarW, topOffset });
       });
       if (currentTab?.suspended) {
         setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false } : t));
@@ -620,7 +656,37 @@ export default function App() {
       invoke("navigate_tab", { id: activeTab, url: finalUrl });
     }
     clearLoading(activeTab, 3000);
-  }, [activeTab, tabs, clearLoading, sidebarW, topOffset]);
+  }, [activeTab, tabs, splitTab, clearLoading, sidebarW, topOffset]);
+
+  // split view — toggle or split with a specific tab
+  const toggleSplit = useCallback((targetId?: string) => {
+    const ws = workspaces.find(w => w.id === activeWorkspaceId);
+    if (!ws) return;
+
+    // already split → exit
+    if (ws.splitTabId) {
+      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, splitTabId: undefined } : w));
+      invoke("switch_tab", { id: ws.activeTabId, splitId: "", sidebarW, topOffset });
+      return;
+    }
+
+    // find a tab to split with
+    const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("bushido://") && !t.suspended);
+    let splitWith = targetId;
+    if (!splitWith) {
+      // pick the most recently active external tab that isn't the current one
+      const candidates = wsTabs.filter(t => t.id !== ws.activeTabId).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
+      splitWith = candidates[0]?.id;
+    }
+    if (!splitWith || splitWith === ws.activeTabId) return;
+
+    // can't split if active tab is internal
+    const activeT = tabs.find(t => t.id === ws.activeTabId);
+    if (activeT?.url.startsWith("bushido://")) return;
+
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, splitTabId: splitWith } : w));
+    invoke("switch_tab", { id: ws.activeTabId, splitId: splitWith, sidebarW, topOffset });
+  }, [workspaces, activeWorkspaceId, tabs, sidebarW, topOffset]);
 
   const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
   const showNtp = current?.url === NTP_URL;
@@ -867,10 +933,11 @@ export default function App() {
         case "find": setFindOpen(true); break;
         case "command-palette": setCmdOpen(p => !p); break;
         case "reader-mode": toggleReader(); break;
+        case "split-view": toggleSplit(); break;
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
-  }, [toggleBookmark, addTab, closeTab, activeTab]);
+  }, [toggleBookmark, addTab, closeTab, activeTab, toggleSplit]);
 
   // listen for child webview shortcut bridge events
   useEffect(() => {
@@ -1005,6 +1072,8 @@ export default function App() {
           onOpenSettings={onOpenSettings}
           activeDownloadCount={activeDownloadCount}
           onToggleDownloads={toggleDownloads}
+          splitTab={splitTab}
+          onSplitWith={toggleSplit}
         />
         {historyOpen && (
           <HistoryPanel

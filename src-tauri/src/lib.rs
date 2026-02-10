@@ -361,7 +361,15 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn switch_tab(app: tauri::AppHandle, id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+async fn switch_tab(app: tauri::AppHandle, id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    let window = app.get_window("main").ok_or("no main window")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let content_w = (size.width as f64 / scale) - sidebar_w;
+    let content_h = (size.height as f64 / scale) - top_offset;
+    let has_split = !split_id.is_empty();
+    let half_w = content_w / 2.0;
+
     let state = app.state::<WebviewState>();
     let tabs = state.tabs.lock().unwrap().clone();
 
@@ -369,13 +377,16 @@ async fn switch_tab(app: tauri::AppHandle, id: String, sidebar_w: f64, top_offse
         if let Some(wv) = app.get_webview(tab_id) {
             if tab_id == &id {
                 let _ = wv.set_focus();
-                let window = app.get_window("main").ok_or("no main window")?;
-                let size = window.inner_size().map_err(|e| e.to_string())?;
-                let scale = window.scale_factor().map_err(|e| e.to_string())?;
-                let content_w = (size.width as f64 / scale) - sidebar_w;
-                let content_h = (size.height as f64 / scale) - top_offset;
-                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
+                if has_split {
+                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
+                    let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
+                } else {
+                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
+                    let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
+                }
+            } else if has_split && tab_id == &split_id {
+                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + half_w, top_offset));
+                let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
             } else {
                 let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
             }
@@ -510,12 +521,14 @@ async fn toggle_pip(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn resize_webviews(app: tauri::AppHandle, active_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+async fn resize_webviews(app: tauri::AppHandle, active_id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
     let window = app.get_window("main").ok_or("no main window")?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let content_w = (size.width as f64 / scale) - sidebar_w;
     let content_h = (size.height as f64 / scale) - top_offset;
+    let has_split = !split_id.is_empty();
+    let half_w = content_w / 2.0;
 
     let state = app.state::<WebviewState>();
     let tabs = state.tabs.lock().unwrap().clone();
@@ -523,8 +536,16 @@ async fn resize_webviews(app: tauri::AppHandle, active_id: String, sidebar_w: f6
     for (tab_id, _) in &tabs {
         if let Some(wv) = app.get_webview(tab_id) {
             if tab_id == &active_id {
-                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
+                if has_split {
+                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
+                    let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
+                } else {
+                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
+                    let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
+                }
+            } else if has_split && tab_id == &split_id {
+                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + half_w, top_offset));
+                let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
             } else {
                 let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
             }
@@ -743,6 +764,7 @@ pub fn run() {
                 "ctrl+f",
                 "ctrl+d",
                 "ctrl+h",
+                "ctrl+\\",
             ]).unwrap()
             .with_handler(|app, shortcut, event| {
                 use tauri_plugin_global_shortcut::ShortcutState;
@@ -757,6 +779,7 @@ pub fn run() {
                     else if s.contains('f') { "find" }
                     else if s.contains('d') { "bookmark" }
                     else if s.contains('h') { "history" }
+                    else if s.contains('\\') { "split-view" }
                     else { return; };
                 if let Some(win) = app.get_webview("main") {
                     let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);

@@ -2,6 +2,21 @@
 
 ---
 
+## v0.6.1
+
+**2026-02-10**
+
+### Added
+
+- **Split View** (`Ctrl+\`) — two tabs side-by-side, 50/50. Right-click any tab → "split with this tab", or press the shortcut and it picks the most recently used tab. Click the split tab in the sidebar to swap panes. Navigate to an internal page or press `Ctrl+\` again to exit. Each workspace has its own split state, and it persists across restarts.
+
+### Changed
+
+- **Tab suspender skips split tab** — the tab showing in the right pane won't get suspended while it's visible.
+- **Opening a new tab exits split** — keeps it simple, you're starting a new task.
+
+---
+
 ## v0.6.0
 
 **2026-02-10**

@@ -19,10 +19,11 @@ export interface Workspace {
   name: string;
   color: string;
   activeTabId: string;
+  splitTabId?: string;
 }
 
 export interface SessionData {
-  workspaces: { id: string; name: string; color: string; activeTabId: string }[];
+  workspaces: { id: string; name: string; color: string; activeTabId: string; splitTabId?: string }[];
   tabs: { url: string; title: string; pinned?: boolean; workspaceId: string; parentId?: string }[];
   activeWorkspaceId: string;
   compactMode?: boolean;

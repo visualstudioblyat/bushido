@@ -79,8 +79,8 @@ Bushido is open source under the [MPL 2.0](LICENSE) license. Contributions welco
 - [x] ~~Command Palette, Reader Mode, PiP, Tab Suspender~~ — shipped in v0.5.0
 - [x] ~~Download Manager with parallel chunks~~ — shipped in v0.5.2
 - [x] ~~adblock-rust engine (EasyList + EasyPrivacy)~~ — shipped in v0.6.0
+- [x] ~~Split View~~ — shipped in v0.6.1
 - [ ] Web Panels — persistent sidebar webviews (ChatGPT, Slack, etc.)
-- [ ] Split View — side-by-side tabs
 - [ ] Boosts — per-site CSS/JS injection
 - [ ] Fingerprint protection
 - [ ] Custom themes

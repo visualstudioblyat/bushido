@@ -64,6 +64,8 @@ interface Props {
   onOpenSettings: () => void;
   activeDownloadCount: number;
   onToggleDownloads: () => void;
+  splitTab: string;
+  onSplitWith: (targetId?: string) => void;
 }
 
 interface CtxMenu {
@@ -153,6 +155,7 @@ export default memo(function Sidebar({
   hasVideo, pipActive, onTogglePip,
   onOpenSettings,
   activeDownloadCount, onToggleDownloads,
+  splitTab, onSplitWith,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -321,7 +324,7 @@ export default memo(function Sidebar({
   const renderTab = (tab: Tab, isPinned: boolean, idx?: number, depth = 0, childCount = 0) => (
     <div
       key={tab.id}
-      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
+      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${tab.id === splitTab ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
@@ -779,6 +782,11 @@ export default memo(function Sidebar({
             {!ctx.pinned && (
               <button className="ctx-item" onClick={() => { onAddChildTab(ctx.tabId); closeCtx(); }}>
                 open child tab
+              </button>
+            )}
+            {ctx.tabId !== activeTab && (
+              <button className="ctx-item" onClick={() => { onSplitWith(ctx.tabId); closeCtx(); }}>
+                split with this tab
               </button>
             )}
             <div className="ctx-divider" />
