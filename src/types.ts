@@ -82,6 +82,23 @@ export interface BushidoSettings {
   suspendTimeout: number; // minutes, 0 = never
 }
 
+export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
+export interface DownloadItem {
+  id: string;
+  url: string;
+  filePath: string;
+  fileName: string;
+  mimeType: string;
+  totalBytes: number | null;
+  receivedBytes: number;
+  state: DownloadState;
+  speed: number;
+  error: string | null;
+  createdAt: number;
+  supportsRange: boolean;
+  segments: number; // 0 = single-stream, >1 = parallel connections
+}
+
 export const DEFAULT_SETTINGS: BushidoSettings = {
   searchEngine: "google",
   customSearchUrl: "",

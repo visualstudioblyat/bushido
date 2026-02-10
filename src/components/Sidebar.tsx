@@ -62,6 +62,8 @@ interface Props {
   pipActive: boolean;
   onTogglePip: () => void;
   onOpenSettings: () => void;
+  activeDownloadCount: number;
+  onToggleDownloads: () => void;
 }
 
 interface CtxMenu {
@@ -150,6 +152,7 @@ export default memo(function Sidebar({
   onToggleReader, isReaderActive, readerSettings, onUpdateReaderSettings,
   hasVideo, pipActive, onTogglePip,
   onOpenSettings,
+  activeDownloadCount, onToggleDownloads,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -748,6 +751,15 @@ export default memo(function Sidebar({
                   <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3"/>
                   <path d="M8 5V8.5L10.5 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
+              </button>
+              <button className="download-btn" onClick={onToggleDownloads} title="Downloads">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 2V10M8 10L5 7M8 10L11 7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M3 12H13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                </svg>
+                {activeDownloadCount > 0 && (
+                  <span className="download-badge">{activeDownloadCount}</span>
+                )}
               </button>
             </div>
           </>

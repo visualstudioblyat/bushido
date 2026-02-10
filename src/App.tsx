@@ -5,10 +5,11 @@ import Sidebar from "./components/Sidebar";
 import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
 import HistoryPanel from "./components/HistoryPanel";
+import DownloadPanel from "./components/DownloadPanel";
 import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS } from "./types";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem } from "./types";
 
 const NTP_URL = "bushido://newtab";
 const SETTINGS_URL = "bushido://settings";
@@ -46,6 +47,8 @@ export default function App() {
   const [hasVideo, setHasVideo] = useState(false);
   const [pipActive, setPipActive] = useState(false);
   const [settings, setSettings] = useState<BushidoSettings>({ ...DEFAULT_SETTINGS });
+  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
   const settingsLoaded = useRef(false);
@@ -311,7 +314,36 @@ export default function App() {
       listen<{ id: string; hasVideo: boolean }>("tab-has-video", (e) => {
         setHasVideo(e.payload.hasVideo);
       }),
+      // download events
+      listen<{ url: string; suggestedFilename: string; cookies?: string }>("download-intercepted", (e) => {
+        const dir = settingsRef.current.downloadLocation || "";
+        invoke("start_download", { url: e.payload.url, filename: e.payload.suggestedFilename, downloadDir: dir, cookies: e.payload.cookies || null });
+        setDownloadsOpen(true);
+      }),
+      listen<DownloadItem>("download-started", (e) => {
+        setDownloads(prev => {
+          if (prev.find(d => d.id === e.payload.id)) return prev;
+          return [e.payload, ...prev];
+        });
+      }),
+      listen<DownloadItem>("download-progress", (e) => {
+        setDownloads(prev => prev.map(d => d.id === e.payload.id ? e.payload : d));
+      }),
+      listen<DownloadItem>("download-complete", (e) => {
+        setDownloads(prev => prev.map(d => d.id === e.payload.id ? e.payload : d));
+      }),
+      listen<DownloadItem>("download-failed", (e) => {
+        setDownloads(prev => prev.map(d => d.id === e.payload.id ? e.payload : d));
+      }),
+      listen<{ id: string }>("download-cancelled", (e) => {
+        setDownloads(prev => prev.filter(d => d.id !== e.payload.id));
+      }),
     ];
+
+    // load existing downloads on init
+    invoke<DownloadItem[]>("get_downloads").then(items => {
+      if (items.length > 0) setDownloads(items);
+    }).catch(() => {});
 
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
@@ -761,17 +793,28 @@ export default function App() {
     return () => { clearInterval(interval); clearTimeout(stop); };
   }, [activeTab, current?.url]);
 
+  const onOpenSettings = useCallback(() => {
+    const existing = tabs.find(t => t.url === SETTINGS_URL);
+    if (existing) {
+      selectTab(existing.id);
+      return;
+    }
+    addTab(SETTINGS_URL);
+  }, [tabs, selectTab, addTab]);
+
   const executeAction = useCallback((action: string) => {
     switch (action) {
       case "action-new-tab": addTab(); break;
       case "action-close-tab": closeTab(activeTab); break;
       case "action-toggle-compact": setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); break;
       case "action-toggle-sidebar": setSidebarOpen(p => !p); break;
+      case "action-settings": onOpenSettings(); break;
+      case "action-reader-mode": toggleReader(); break;
       case "action-clear-history": clearHistory("all"); break;
       case "action-history": setHistoryOpen(true); break;
       case "action-bookmark": toggleBookmark(); break;
     }
-  }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark]);
+  }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark, onOpenSettings, toggleReader]);
 
   // keyboard shortcuts (works when React UI has focus)
   useEffect(() => {
@@ -846,15 +889,24 @@ export default function App() {
   const goReload = useCallback(() => invoke("reload_tab", { id: activeTab }), [activeTab]);
   const closeFindBar = useCallback(() => setFindOpen(false), []);
 
-  const onOpenSettings = useCallback(() => {
-    // if a settings tab already exists, switch to it
-    const existing = tabs.find(t => t.url === SETTINGS_URL);
-    if (existing) {
-      selectTab(existing.id);
-      return;
-    }
-    addTab(SETTINGS_URL);
-  }, [tabs, selectTab, addTab]);
+  // download callbacks
+  const pauseDownload = useCallback((id: string) => invoke("pause_download", { id }), []);
+  const resumeDownload = useCallback((id: string) => invoke("resume_download", { id }), []);
+  const cancelDownload = useCallback((id: string) => invoke("cancel_download", { id }), []);
+  const openDownload = useCallback((id: string) => invoke("open_download", { id }), []);
+  const openDownloadFolder = useCallback((id: string) => invoke("open_download_folder", { id }), []);
+  const retryDownload = useCallback((id: string) => {
+    const dl = downloads.find(d => d.id === id);
+    if (!dl) return;
+    cancelDownload(id);
+    const dir = settingsRef.current.downloadLocation || "";
+    invoke("start_download", { url: dl.url, filename: dl.fileName, downloadDir: dir, cookies: null });
+  }, [downloads, cancelDownload]);
+  const clearCompletedDownloads = useCallback(() => {
+    setDownloads(prev => prev.filter(d => d.state !== "completed"));
+  }, []);
+  const toggleDownloads = useCallback(() => setDownloadsOpen(p => !p), []);
+  const activeDownloadCount = useMemo(() => downloads.filter(d => d.state === "downloading").length, [downloads]);
 
   const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
     setSettings(prev => {
@@ -951,6 +1003,8 @@ export default function App() {
           pipActive={pipActive}
           onTogglePip={togglePip}
           onOpenSettings={onOpenSettings}
+          activeDownloadCount={activeDownloadCount}
+          onToggleDownloads={toggleDownloads}
         />
         {historyOpen && (
           <HistoryPanel
@@ -958,6 +1012,19 @@ export default function App() {
             onSelect={(url: string) => { selectBookmark(url); setHistoryOpen(false); }}
             onClose={toggleHistory}
             onClear={clearHistory}
+          />
+        )}
+        {downloadsOpen && (
+          <DownloadPanel
+            downloads={downloads}
+            onPause={pauseDownload}
+            onResume={resumeDownload}
+            onCancel={cancelDownload}
+            onOpen={openDownload}
+            onOpenFolder={openDownloadFolder}
+            onClearCompleted={clearCompletedDownloads}
+            onClose={toggleDownloads}
+            onRetry={retryDownload}
           />
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />

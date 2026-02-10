@@ -23,8 +23,10 @@ interface Props {
 const ACTIONS: CmdResult[] = [
   { id: "action-new-tab", type: "action", title: "New Tab", subtitle: "Ctrl+T" },
   { id: "action-close-tab", type: "action", title: "Close Tab", subtitle: "Ctrl+W" },
+  { id: "action-settings", type: "action", title: "Settings", subtitle: "" },
   { id: "action-toggle-compact", type: "action", title: "Toggle Compact Mode", subtitle: "Ctrl+Shift+B" },
   { id: "action-toggle-sidebar", type: "action", title: "Toggle Sidebar", subtitle: "Ctrl+B" },
+  { id: "action-reader-mode", type: "action", title: "Reader Mode", subtitle: "Ctrl+Shift+R" },
   { id: "action-history", type: "action", title: "Open History", subtitle: "Ctrl+H" },
   { id: "action-bookmark", type: "action", title: "Bookmark Page", subtitle: "Ctrl+D" },
   { id: "action-clear-history", type: "action", title: "Clear All History", subtitle: "" },
@@ -130,7 +132,12 @@ export default memo(function CommandPalette({
       setSelectedIdx(p => Math.max(p - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (results[selectedIdx]) executeResult(results[selectedIdx]);
+      if (results[selectedIdx]) {
+        executeResult(results[selectedIdx]);
+      } else if (query.trim()) {
+        onNavigate(query.trim());
+        onClose();
+      }
     } else if (e.key === "Escape") {
       onClose();
     }

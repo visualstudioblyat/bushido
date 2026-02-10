@@ -1,4 +1,5 @@
 mod blocker;
+mod downloads;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
@@ -177,7 +178,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
         builder = builder.initialization_script(&cookie_script);
     }
 
-    window.add_child(
+    let webview = window.add_child(
         builder,
         tauri::LogicalPosition::new(sidebar_w, top_offset),
         tauri::LogicalSize::new(content_w, content_h),
@@ -185,6 +186,116 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
     let state = app.state::<WebviewState>();
     state.tabs.lock().unwrap().insert(tab_id_track, true);
+
+    // intercept downloads via WebView2 COM API
+    #[cfg(windows)]
+    {
+        let app_dl = app.clone();
+        let _ = webview.with_webview(move |wv| {
+            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+            use windows::core::Interface;
+
+            unsafe {
+                let controller = wv.controller();
+                let core = controller.CoreWebView2().unwrap();
+                let core4: ICoreWebView2_4 = core.cast().unwrap();
+
+                // try to get cookie manager for authenticated downloads
+                let cookie_mgr: Option<ICoreWebView2CookieManager> = core.cast::<ICoreWebView2_2>()
+                    .ok()
+                    .and_then(|c2| c2.CookieManager().ok());
+
+                let app_inner = app_dl.clone();
+                let mut token: i64 = 0;
+
+                let handler = webview2_com::DownloadStartingEventHandler::create(Box::new(
+                    move |_sender, args| {
+                        if let Some(args) = args {
+                            // suppress default UI + cancel browser download
+                            args.SetHandled(true)?;
+                            args.SetCancel(true)?;
+
+                            // extract url via out-pointer
+                            let download_op = args.DownloadOperation()?;
+                            let mut uri_pwstr = windows::core::PWSTR::null();
+                            download_op.Uri(&mut uri_pwstr)?;
+                            let url = if !uri_pwstr.is_null() {
+                                uri_pwstr.to_string().unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            // extract content-disposition via out-pointer
+                            let mut disp_pwstr = windows::core::PWSTR::null();
+                            let disposition = if download_op.ContentDisposition(&mut disp_pwstr).is_ok() && !disp_pwstr.is_null() {
+                                disp_pwstr.to_string().unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+
+                            let filename = downloads::parse_filename(&url, &disposition);
+
+                            // extract cookies for authenticated downloads
+                            if let Some(ref mgr) = cookie_mgr {
+                                let url_clone = url.clone();
+                                let filename_clone = filename.clone();
+                                let app_cookie = app_inner.clone();
+                                let url_wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+                                let url_pcwstr = windows::core::PCWSTR::from_raw(url_wide.as_ptr());
+
+                                let cookie_handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(
+                                    move |hr, cookie_list| {
+                                        let mut cookies_str = String::new();
+                                        if hr.is_ok() {
+                                            if let Some(ref list) = cookie_list {
+                                                let mut count = 0u32;
+                                                if list.Count(&mut count).is_ok() {
+                                                    for i in 0..count {
+                                                        if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                                            let mut name_pw = windows::core::PWSTR::null();
+                                                            let mut val_pw = windows::core::PWSTR::null();
+                                                            if cookie.Name(&mut name_pw).is_ok() && cookie.Value(&mut val_pw).is_ok() {
+                                                                let name = if !name_pw.is_null() { name_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                let val = if !val_pw.is_null() { val_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                if !name.is_empty() {
+                                                                    if !cookies_str.is_empty() { cookies_str.push_str("; "); }
+                                                                    cookies_str.push_str(&name);
+                                                                    cookies_str.push('=');
+                                                                    cookies_str.push_str(&val);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        let cookies_opt = if cookies_str.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(cookies_str) };
+                                        let _ = app_cookie.emit_to("main", "download-intercepted", serde_json::json!({
+                                            "url": url_clone,
+                                            "suggestedFilename": filename_clone,
+                                            "cookies": cookies_opt
+                                        }));
+                                        Ok(())
+                                    },
+                                ));
+                                let _ = mgr.GetCookies(url_pcwstr, &cookie_handler);
+                            } else {
+                                // no cookie manager — emit without cookies
+                                let _ = app_inner.emit_to("main", "download-intercepted", serde_json::json!({
+                                    "url": url,
+                                    "suggestedFilename": filename
+                                }));
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+
+                let _ = core4.add_DownloadStarting(&handler, &mut token);
+            }
+        });
+    }
 
     Ok(())
 }
@@ -491,6 +602,61 @@ async fn load_bookmarks(app: tauri::AppHandle) -> Result<String, String> {
     if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok(r#"{"bookmarks":[],"folders":[]}"#.into()) }
 }
 
+#[tauri::command]
+async fn start_download(app: tauri::AppHandle, url: String, filename: String, download_dir: String, cookies: Option<String>) -> Result<String, String> {
+    let dir = if download_dir.is_empty() {
+        dirs::download_dir().unwrap_or_else(|| PathBuf::from(".")).to_string_lossy().to_string()
+    } else {
+        download_dir
+    };
+    downloads::start(app, url, filename, dir, cookies).await
+}
+
+#[tauri::command]
+async fn pause_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    downloads::pause(&app, &id)
+}
+
+#[tauri::command]
+async fn resume_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    downloads::resume(app, id).await
+}
+
+#[tauri::command]
+async fn cancel_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    downloads::cancel(&app, &id)
+}
+
+#[tauri::command]
+async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let downloads = dm.downloads.lock().unwrap();
+    Ok(downloads.values().cloned().collect())
+}
+
+#[tauri::command]
+async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let path = {
+        let downloads = dm.downloads.lock().unwrap();
+        let item = downloads.get(&id).ok_or("not found")?;
+        item.file_path.clone()
+    };
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let path = {
+        let downloads = dm.downloads.lock().unwrap();
+        let item = downloads.get(&id).ok_or("not found")?;
+        item.file_path.clone()
+    };
+    let parent = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
+    tauri_plugin_opener::open_path(&parent, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let b = blocker::Blocker::new();
@@ -505,6 +671,7 @@ pub fn run() {
         .manage(WebviewState {
             tabs: Mutex::new(HashMap::new()),
         })
+        .manage(downloads::DownloadManager::new())
         .manage(BlockerState {
             content_script,
             cookie_script,
@@ -548,6 +715,17 @@ pub fn run() {
             app.manage(WhitelistState {
                 sites: Mutex::new(sites),
             });
+
+            // restore pending downloads from manifests
+            let pending = downloads::load_pending(&app.handle());
+            if !pending.is_empty() {
+                let dm = app.state::<downloads::DownloadManager>();
+                let mut downloads = dm.downloads.lock().unwrap();
+                for item in pending {
+                    downloads.insert(item.id.clone(), item);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -576,7 +754,14 @@ pub fn run() {
             load_bookmarks,
             toggle_whitelist,
             get_whitelist,
-            is_whitelisted
+            is_whitelisted,
+            start_download,
+            pause_download,
+            resume_download,
+            cancel_download,
+            get_downloads,
+            open_download,
+            open_download_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running bushido");
