@@ -46,6 +46,7 @@ Google killed ad blockers with Manifest V3. Bushido doesn't care — blocking is
 
 | Layer | Tech |
 |-------|------|
+| Binary Size: ~6MB (utilizing system native webview).
 | Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | Frontend | React + TypeScript |
 | Rendering | System WebView (WebView2 / WebKit) |
