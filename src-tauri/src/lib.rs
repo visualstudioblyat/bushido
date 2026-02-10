@@ -3,20 +3,22 @@ mod downloads;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use adblock::engine::Engine;
+use adblock::request::Request;
 
 struct WebviewState {
     tabs: Mutex<HashMap<String, bool>>,
 }
 
 struct BlockerState {
-    content_script: String,
+    engine: Arc<Engine>,
+    cosmetic_script: String,
     cookie_script: String,
     shortcut_script: String,
-    blocked_domains: HashSet<String>,
 }
 
 struct WhitelistState {
@@ -49,10 +51,10 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     );
 
     let bs = app.state::<BlockerState>();
-    let content_script = bs.content_script.clone();
+    let engine = bs.engine.clone();
+    let cosmetic_script = bs.cosmetic_script.clone();
     let cookie_script = bs.cookie_script.clone();
     let shortcut_script = bs.shortcut_script.clone();
-    let blocked_domains = bs.blocked_domains.clone();
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
@@ -72,7 +74,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let app_title = app.clone();
     let app_title2 = app.clone();
     let app_load = app.clone();
-    let inject_content = content_script.clone();
+    let engine_for_nav = engine.clone();
+    let inject_cosmetic = cosmetic_script.clone();
     let inject_cookie = cookie_script.clone();
     let inject_shortcut = shortcut_script.clone();
     let whitelisted_for_nav = site_whitelisted;
@@ -92,19 +95,12 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 return false;
             }
 
-            // skip ad blocking for whitelisted sites or when ad blocker is off
+            // adblock-rust engine check for document-level navigations
             if nav_ad_blocker && !whitelisted_for_nav {
-                if let Some(host) = url.host_str() {
-                    let h = host.to_lowercase();
-                    let mut d = h.as_str();
-                    loop {
-                        if blocked_domains.contains(d) {
-                            return false;
-                        }
-                        match d.find('.') {
-                            Some(idx) => d = &d[idx + 1..],
-                            None => break,
-                        }
+                if let Ok(req) = Request::new(&url_str, &url_str, "document") {
+                    let result = engine_for_nav.check_network_request(&req);
+                    if result.matched {
+                        return false;
                     }
                 }
             }
@@ -116,16 +112,6 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             true
         })
         .on_document_title_changed(move |_wv, title| {
-            // intercept blocked count reports from injected js
-            if title.starts_with("__BUSHIDO_BLOCKED__:") {
-                if let Ok(count) = title[20..].parse::<u32>() {
-                    let _ = app_title2.emit_to("main", "tab-blocked-count", serde_json::json!({
-                        "id": tab_id_title2,
-                        "count": count
-                    }));
-                }
-                return;
-            }
             // intercept video detection from child webview
             if title.starts_with("__BUSHIDO_VIDEO__:") {
                 let has_video = &title[18..] == "1";
@@ -159,7 +145,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = wv.eval(&inject_shortcut);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
-                    let _ = wv.eval(&inject_content);
+                    let _ = wv.eval(&inject_cosmetic);
                 }
                 if load_cookie_reject && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cookie);
@@ -170,9 +156,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     // shortcut bridge always injected
     builder = builder.initialization_script(&shortcut_script);
 
-    // only inject blocker scripts if enabled and not whitelisted
+    // only inject cosmetic + privacy scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
-        builder = builder.initialization_script(&content_script);
+        builder = builder.initialization_script(&cosmetic_script);
     }
     if cookie_auto_reject && !site_whitelisted {
         builder = builder.initialization_script(&cookie_script);
@@ -187,10 +173,16 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let state = app.state::<WebviewState>();
     state.tabs.lock().unwrap().insert(tab_id_track, true);
 
-    // intercept downloads via WebView2 COM API
+    // intercept downloads + ad blocking via WebView2 COM API
     #[cfg(windows)]
     {
         let app_dl = app.clone();
+        let engine_for_block = engine.clone();
+        let app_for_block = app.clone();
+        let tab_id_block = id.clone();
+        let block_enabled = ad_blocker && !site_whitelisted;
+        let source_url = final_url.clone();
+
         let _ = webview.with_webview(move |wv| {
             use webview2_com::Microsoft::Web::WebView2::Win32::*;
             use windows::core::Interface;
@@ -293,6 +285,64 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 ));
 
                 let _ = core4.add_DownloadStarting(&handler, &mut token);
+
+                // adblock: intercept all sub-resource requests at network level
+                if block_enabled {
+                    let filter: Vec<u16> = "*\0".encode_utf16().collect();
+                    let _ = core.AddWebResourceRequestedFilter(
+                        windows::core::PCWSTR::from_raw(filter.as_ptr()),
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    );
+
+                    let engine_block = engine_for_block.clone();
+                    let app_block = app_for_block.clone();
+                    let tab_block = tab_id_block.clone();
+                    let source = source_url.clone();
+                    let blocked_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+                    let block_handler = webview2_com::WebResourceRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            if let Some(args) = args {
+                                let request = args.Request()?;
+                                let mut uri = windows::core::PWSTR::null();
+                                request.Uri(&mut uri)?;
+                                let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return Ok(()); };
+
+                                let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+                                let _ = args.ResourceContext(&mut ctx);
+                                let rtype = blocker::resource_type_str(ctx.0 as u32);
+
+                                let matched = Request::new(&url, &source, rtype)
+                                    .map(|req| engine_block.check_network_request(&req).matched)
+                                    .unwrap_or(false);
+                                if matched {
+                                    // block by setting empty 403 response
+                                    let env = args.GetDeferral(); // just need to set response
+                                    drop(env);
+                                    // simplest block: set response to empty with status 403
+                                    // WebView2 doesn't have a simple "block" — we use put_Response with empty body
+                                    // but we need the environment. get it from the core ref.
+                                    // actually the simplest approach: we can't easily get env here,
+                                    // so we use the Request to set the URI to about:blank
+                                    let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
+                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+
+                                    let count = blocked_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                    if count <= 3 || count % 5 == 0 {
+                                        let _ = app_block.emit_to("main", "tab-blocked-count", serde_json::json!({
+                                            "id": tab_block,
+                                            "count": count
+                                        }));
+                                    }
+                                }
+                            }
+                            Ok(())
+                        },
+                    ));
+
+                    let mut block_token: i64 = 0;
+                    let _ = core.add_WebResourceRequested(&block_handler, &mut block_token);
+                }
             }
         });
     }
@@ -659,12 +709,16 @@ async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), S
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let b = blocker::Blocker::new();
-    let content_template = include_str!("content_blocker.js");
-    let content_script = content_template.replace("{{BLOCKED_DOMAINS_SET}}", &b.to_js_set());
+    // init adblock-rust engine (cached binary or cold compile)
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("com.bushido.browser");
+    let _ = std::fs::create_dir_all(&data_dir);
+    let engine = blocker::init_engine(&data_dir);
+
+    let cosmetic_script = include_str!("content_blocker.js").to_string();
     let cookie_script = include_str!("cookie_blocker.js").to_string();
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
-    let blocked_domains = b.domains_clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -673,10 +727,10 @@ pub fn run() {
         })
         .manage(downloads::DownloadManager::new())
         .manage(BlockerState {
-            content_script,
+            engine,
+            cosmetic_script,
             cookie_script,
             shortcut_script,
-            blocked_domains,
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new()
             .with_shortcuts([
