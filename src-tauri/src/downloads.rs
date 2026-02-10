@@ -205,7 +205,12 @@ pub fn parse_filename(url: &str, disposition: &str) -> String {
 
 pub async fn start(app: AppHandle, url: String, file_name: String, download_dir: String, cookies: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let final_name = dedup_filename(&download_dir, &file_name);
+    // strip path traversal — keep only the basename
+    let safe_name = Path::new(&file_name).file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let final_name = dedup_filename(&download_dir, &safe_name);
     let file_path = Path::new(&download_dir).join(&final_name).to_string_lossy().to_string();
 
     let item = DlItem {

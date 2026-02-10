@@ -12,6 +12,30 @@ export interface Tab {
   collapsed?: boolean;
   suspended?: boolean;
   lastActiveAt?: number;
+  mediaState?: "playing" | "paused";
+  mediaTitle?: string;
+}
+
+// split view layout tree
+export type SplitDir = "row" | "col";
+
+export interface PaneLeaf { type: "leaf"; tabId: string }
+export interface PaneChild { pane: PaneLeaf | PaneSplit; ratio: number }
+export interface PaneSplit { type: "split"; dir: SplitDir; children: PaneChild[] }
+
+export interface PaneRect { tabId: string; x: number; y: number; w: number; h: number }
+
+export interface DividerInfo {
+  dir: SplitDir;
+  x: number; y: number; w: number; h: number;
+  path: number[];
+  childIdx: number;
+}
+
+export interface DropZone {
+  anchorTabId: string;
+  side: "left" | "right" | "top" | "bottom";
+  previewRect: { x: number; y: number; w: number; h: number };
 }
 
 export interface Workspace {
@@ -19,12 +43,12 @@ export interface Workspace {
   name: string;
   color: string;
   activeTabId: string;
-  splitTabId?: string;
+  paneLayout?: PaneSplit;
 }
 
 export interface SessionData {
-  workspaces: { id: string; name: string; color: string; activeTabId: string; splitTabId?: string }[];
-  tabs: { url: string; title: string; pinned?: boolean; workspaceId: string; parentId?: string }[];
+  workspaces: { id: string; name: string; color: string; activeTabId: string; paneLayout?: PaneSplit }[];
+  tabs: { id: string; url: string; title: string; pinned?: boolean; workspaceId: string; parentId?: string; suspended?: boolean }[];
   activeWorkspaceId: string;
   compactMode?: boolean;
 }

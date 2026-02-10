@@ -2,6 +2,35 @@
 
 ---
 
+## v0.7.0
+
+**2026-02-10**
+
+Every browser tab you open is a separate process talking to the main UI. Until now, those tabs communicated back to Bushido's core by flickering `document.title` — a hack that worked but leaked IPC traffic to every script on the page, raced with real title updates, and capped message size at ~1024 characters. v0.7.0 rips all of that out and replaces it with WebView2's native `postMessage` channel. Zero title flicker, zero race conditions, zero spoofing surface. The title bar is just a title bar again.
+
+Also: split view got a full rewrite. The old version was two panes. The new one is a recursive tree — split horizontally or vertically, up to 4 panes, drag dividers to resize. And there's a media player bar in the sidebar now.
+
+### Added
+
+- **Split View v2** (`Ctrl+\`) — tree-based pane layout. Split any pane horizontally or vertically, up to 4 panes. Drag dividers to resize (min 15% per pane). Session restore preserves your layout. `syncLayout()` replaces all legacy `switch_tab`/`resize_webviews` calls with a single flat-rect layout pass.
+- **Media Controls** — sidebar mini player bar. Detects audio/video playing in any tab, shows title + play/pause + mute buttons. Click the bar to switch to that tab. Persists across tab switches. Polling-based detection (1.5s) because YouTube's video element doesn't fire standard events in WebView2 initialization scripts.
+
+### Security
+
+- **postMessage IPC migration** — all child-to-Rust communication (`shortcut_bridge.js`, `media_listener.js`, `detect_video`) migrated from `document.title` encoding to `window.chrome.webview.postMessage`. Registered a `WebMessageReceivedEventHandler` in the WebView2 COM layer alongside the existing download handler. Messages use a `__bushido` JSON namespace with server-side whitelist validation. Eliminates title flicker, race conditions, length limits, and spoofing vectors (Security.txt §6.1).
+- **Title sanitization** — `on_document_title_changed` now strips `<` and `>` from all tab titles before emitting to React. Prevents stored XSS via malicious `<title>` tags (§5.1).
+- **find_in_page hardening** — added `\n`/`\r` escaping to search queries. Prevents string context breakout in the `window.find()` eval (§3.1).
+- **Guard variable hardening** — all 4 injection scripts (`shortcut_bridge.js`, `media_listener.js`, `content_blocker.js`, `cookie_blocker.js`) now use `Object.defineProperty(configurable: false)`. Malicious pages can no longer delete or override the guard to re-inject listeners (§3.2).
+- **Download path traversal fix** — `Path::file_name()` extracts only the basename before deduplication. Filenames containing `../` can no longer write outside the download directory (§5.2).
+- **Media title sanitization** — React-side tag stripping on `tab-media-state` event payload, matching the pattern used for tab titles.
+
+### Changed
+
+- **`on_document_title_changed` is clean** — no more `__BUSHIDO_MEDIA__`, `__BUSHIDO_VIDEO__`, or `__BUSHIDO_SHORTCUT__` prefix interception. Title handler is a straight pass-through with sanitization.
+- **Dead code removed** — `app_title2`, `tab_id_title2` clones, sequence counters, URL encoding/decoding for title IPC — all gone.
+
+---
+
 ## v0.6.1
 
 **2026-02-10**

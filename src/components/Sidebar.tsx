@@ -64,8 +64,11 @@ interface Props {
   onOpenSettings: () => void;
   activeDownloadCount: number;
   onToggleDownloads: () => void;
-  splitTab: string;
+  paneTabIds: string[];
   onSplitWith: (targetId?: string) => void;
+  playingTab?: Tab;
+  onMediaPlayPause: () => void;
+  onMediaMute: () => void;
 }
 
 interface CtxMenu {
@@ -155,7 +158,8 @@ export default memo(function Sidebar({
   hasVideo, pipActive, onTogglePip,
   onOpenSettings,
   activeDownloadCount, onToggleDownloads,
-  splitTab, onSplitWith,
+  paneTabIds, onSplitWith,
+  playingTab, onMediaPlayPause, onMediaMute,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -169,7 +173,7 @@ export default memo(function Sidebar({
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // tab search is driven by the URL bar input when focused
   const [wsDropTarget, setWsDropTarget] = useState<string | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [startIdx, setStartIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const [bookmarksExpanded, setBookmarksExpanded] = useState(true);
   const [bmCtx, setBmCtx] = useState<{ x: number; y: number; id: string } | null>(null);
@@ -251,17 +255,17 @@ export default memo(function Sidebar({
     return { filteredPinned: fp, flatTabs: flat };
   }, [tabs, pinnedTabs, tabFilter]);
 
-  // tab list virtualization — only render visible tabs + 2 overscan
+  // tab list virtualization — only re-render when visible window shifts
   const TAB_HEIGHT = 36;
   const visibleCount = Math.ceil((listRef.current?.clientHeight || 400) / TAB_HEIGHT) + 4;
-  const startIdx = Math.floor(scrollTop / TAB_HEIGHT);
   const endIdx = Math.min(startIdx + visibleCount, flatTabs.length);
   const visibleTabs = flatTabs.slice(startIdx, endIdx);
   const topPad = startIdx * TAB_HEIGHT;
   const bottomPad = Math.max(0, (flatTabs.length - endIdx) * TAB_HEIGHT);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
+    const idx = Math.floor(e.currentTarget.scrollTop / TAB_HEIGHT);
+    setStartIdx(prev => prev !== idx ? idx : prev);
   }, []);
 
   const handleMouseEnter = useCallback(() => {
@@ -324,7 +328,7 @@ export default memo(function Sidebar({
   const renderTab = (tab: Tab, isPinned: boolean, idx?: number, depth = 0, childCount = 0) => (
     <div
       key={tab.id}
-      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${tab.id === splitTab ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
+      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${paneTabIds.includes(tab.id) ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
@@ -743,6 +747,43 @@ export default memo(function Sidebar({
                 <div style={{ height: bottomPad }} />
               </div>
             </div>
+
+            {playingTab && (
+              <div className="media-bar" onClick={() => onSelect(playingTab.id)}>
+                <div className="media-bar-info">
+                  <div className="media-bar-favicon">
+                    {playingTab.favicon
+                      ? <img src={playingTab.favicon} alt="" width={14} height={14} />
+                      : <span className="tab-favicon-placeholder" />
+                    }
+                  </div>
+                  <div className="media-bar-text">
+                    <span className="media-bar-title">{playingTab.mediaTitle || playingTab.title}</span>
+                    <span className={`media-bar-state ${playingTab.mediaState}`}>{playingTab.mediaState}</span>
+                  </div>
+                </div>
+                <div className="media-bar-controls">
+                  <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaPlayPause(); }} title={playingTab.mediaState === "playing" ? "Pause" : "Play"}>
+                    {playingTab.mediaState === "playing" ? (
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <rect x="3" y="2" width="3" height="10" rx="0.5" fill="currentColor"/>
+                        <rect x="8" y="2" width="3" height="10" rx="0.5" fill="currentColor"/>
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M4 2L12 7L4 12V2Z" fill="currentColor"/>
+                      </svg>
+                    )}
+                  </button>
+                  <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaMute(); }} title="Mute/Unmute">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <path d="M2 5H4L7 2V12L4 9H2V5Z" fill="currentColor"/>
+                      <path d="M9.5 4.5C10.3 5.3 10.8 6.6 10.8 7S10.3 8.7 9.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="sidebar-bottom-btns">
               <button className="new-tab-btn" onClick={() => onNew()}>

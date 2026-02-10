@@ -19,6 +19,7 @@ struct BlockerState {
     cosmetic_script: String,
     cookie_script: String,
     shortcut_script: String,
+    media_script: String,
 }
 
 struct WhitelistState {
@@ -55,6 +56,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let cosmetic_script = bs.cosmetic_script.clone();
     let cookie_script = bs.cookie_script.clone();
     let shortcut_script = bs.shortcut_script.clone();
+    let media_script = bs.media_script.clone();
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
@@ -67,17 +69,16 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
     let tab_id_nav = id.clone();
     let tab_id_title = id.clone();
-    let tab_id_title2 = id.clone();
     let tab_id_load = id.clone();
     let tab_id_track = id.clone();
     let app_nav = app.clone();
     let app_title = app.clone();
-    let app_title2 = app.clone();
     let app_load = app.clone();
     let engine_for_nav = engine.clone();
     let inject_cosmetic = cosmetic_script.clone();
     let inject_cookie = cookie_script.clone();
     let inject_shortcut = shortcut_script.clone();
+    let inject_media = media_script.clone();
     let whitelisted_for_nav = site_whitelisted;
     let whitelisted_for_load = site_whitelisted;
     let nav_https_only = https_only;
@@ -112,25 +113,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             true
         })
         .on_document_title_changed(move |_wv, title| {
-            // intercept video detection from child webview
-            if title.starts_with("__BUSHIDO_VIDEO__:") {
-                let has_video = &title[18..] == "1";
-                let _ = app_title2.emit_to("main", "tab-has-video", serde_json::json!({
-                    "id": tab_id_title2,
-                    "hasVideo": has_video
-                }));
-                return;
-            }
-            // intercept keyboard shortcuts from child webview
-            if title.starts_with("__BUSHIDO_SHORTCUT__:") {
-                let rest = &title[21..];
-                let action = rest.split(':').next().unwrap_or(rest);
-                let _ = app_title2.emit_to("main", "global-shortcut", action);
-                return;
-            }
+            // strip html tags to prevent stored xss via malicious <title>
+            let clean = title.replace(|c: char| c == '<' || c == '>', "");
             let _ = app_title.emit_to("main", "tab-title-changed", serde_json::json!({
                 "id": tab_id_title,
-                "title": title
+                "title": clean
             }));
         })
         .on_page_load(move |wv, payload| {
@@ -141,8 +128,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             }));
             // re-inject on every page load
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                // shortcut bridge always injected
+                // shortcut bridge + media listener always injected
                 let _ = wv.eval(&inject_shortcut);
+                let _ = wv.eval(&inject_media);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
@@ -153,8 +141,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             }
         });
 
-    // shortcut bridge always injected
+    // shortcut bridge + media listener always injected
     builder = builder.initialization_script(&shortcut_script);
+    builder = builder.initialization_script(&media_script);
 
     // only inject cosmetic + privacy scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
@@ -343,6 +332,61 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     let mut block_token: i64 = 0;
                     let _ = core.add_WebResourceRequested(&block_handler, &mut block_token);
                 }
+
+                // postMessage IPC handler — replaces title encoding
+                let app_msg = app_for_block.clone();
+                let tab_id_msg = tab_id_block.clone();
+
+                let msg_handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(
+                    move |_sender, args| {
+                        if let Some(args) = args {
+                            let mut msg_pwstr = windows::core::PWSTR::null();
+                            args.WebMessageAsJson(&mut msg_pwstr)?;
+                            let json_str = if !msg_pwstr.is_null() {
+                                msg_pwstr.to_string().unwrap_or_default()
+                            } else {
+                                return Ok(());
+                            };
+                            // WebMessageAsJson returns a JSON-escaped string
+                            let raw: String = serde_json::from_str(&json_str).unwrap_or_default();
+                            let msg: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+
+                            match msg.get("__bushido").and_then(|v| v.as_str()) {
+                                Some("shortcut") => {
+                                    let valid = ["toggle-compact","new-tab","close-tab","focus-url",
+                                                 "find","toggle-sidebar","bookmark","history",
+                                                 "command-palette","reader-mode"];
+                                    if let Some(action) = msg.get("action").and_then(|v| v.as_str()) {
+                                        if valid.contains(&action) {
+                                            let _ = app_msg.emit_to("main", "global-shortcut", action);
+                                        }
+                                    }
+                                }
+                                Some("media") => {
+                                    if let Some(state) = msg.get("state").and_then(|v| v.as_str()) {
+                                        if !matches!(state, "playing" | "paused" | "ended") { return Ok(()); }
+                                        let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                        let clean = title.replace(|c: char| c == '<' || c == '>', "");
+                                        let _ = app_msg.emit_to("main", "tab-media-state", serde_json::json!({
+                                            "id": tab_id_msg, "state": state, "title": clean
+                                        }));
+                                    }
+                                }
+                                Some("video") => {
+                                    let has = msg.get("hasVideo").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let _ = app_msg.emit_to("main", "tab-has-video", serde_json::json!({
+                                        "id": tab_id_msg, "hasVideo": has
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+
+                let mut msg_token: i64 = 0;
+                let _ = core.add_WebMessageReceived(&msg_handler, &mut msg_token);
             }
         });
     }
@@ -360,6 +404,39 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+// position N webviews from a flat rect array
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaneRectArg {
+    tab_id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[tauri::command]
+async fn layout_webviews(app: tauri::AppHandle, panes: Vec<PaneRectArg>, focused_tab_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    let state = app.state::<WebviewState>();
+    let tabs = state.tabs.lock().unwrap().clone();
+
+    for (tab_id, _) in &tabs {
+        if let Some(wv) = app.get_webview(tab_id) {
+            if let Some(pane) = panes.iter().find(|p| p.tab_id == *tab_id) {
+                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + pane.x, top_offset + pane.y));
+                let _ = wv.set_size(tauri::LogicalSize::new(pane.w, pane.h));
+                if *tab_id == focused_tab_id {
+                    let _ = wv.set_focus();
+                }
+            } else {
+                let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
+            }
+        }
+    }
+    Ok(())
+}
+
+// legacy wrapper — kept for incremental migration
 #[tauri::command]
 async fn switch_tab(app: tauri::AppHandle, id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
     let window = app.get_window("main").ok_or("no main window")?;
@@ -367,32 +444,15 @@ async fn switch_tab(app: tauri::AppHandle, id: String, split_id: String, sidebar
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let content_w = (size.width as f64 / scale) - sidebar_w;
     let content_h = (size.height as f64 / scale) - top_offset;
-    let has_split = !split_id.is_empty();
-    let half_w = content_w / 2.0;
 
-    let state = app.state::<WebviewState>();
-    let tabs = state.tabs.lock().unwrap().clone();
-
-    for (tab_id, _) in &tabs {
-        if let Some(wv) = app.get_webview(tab_id) {
-            if tab_id == &id {
-                let _ = wv.set_focus();
-                if has_split {
-                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                    let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
-                } else {
-                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                    let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
-                }
-            } else if has_split && tab_id == &split_id {
-                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + half_w, top_offset));
-                let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
-            } else {
-                let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
-            }
-        }
+    let mut panes = vec![PaneRectArg { tab_id: id.clone(), x: 0.0, y: 0.0, w: content_w, h: content_h }];
+    if !split_id.is_empty() {
+        let half_w = content_w / 2.0;
+        panes[0].w = half_w;
+        panes.push(PaneRectArg { tab_id: split_id, x: half_w, y: 0.0, w: half_w, h: content_h });
     }
-    Ok(())
+
+    layout_webviews(app, panes, id, sidebar_w, top_offset).await
 }
 
 #[tauri::command]
@@ -467,7 +527,7 @@ async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward:
             let dir = if forward { "false" } else { "true" };
             let js = format!(
                 "window.find('{}', false, {}, true, false, false, false)",
-                query.replace('\\', "\\\\").replace('\'', "\\'"),
+                query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r"),
                 dir
             );
             wv.eval(&js).map_err(|e| e.to_string())?;
@@ -479,7 +539,7 @@ async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward:
 #[tauri::command]
 async fn detect_video(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        let js = r#"(function(){var videos=document.querySelectorAll('video');var has=false;videos.forEach(function(v){if(v.readyState>=2||v.src||v.querySelector('source'))has=true});var saved=document.title;document.title='__BUSHIDO_VIDEO__:'+(has?'1':'0');setTimeout(function(){document.title=saved},50)})()"#;
+        let js = r#"(function(){var videos=document.querySelectorAll('video');var has=false;videos.forEach(function(v){if(v.readyState>=2||v.src||v.querySelector('source'))has=true});if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify({__bushido:'video',hasVideo:has}))}})()"#;
         wv.eval(js).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -521,37 +581,27 @@ async fn toggle_pip(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn resize_webviews(app: tauri::AppHandle, active_id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
-    let window = app.get_window("main").ok_or("no main window")?;
-    let size = window.inner_size().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let content_w = (size.width as f64 / scale) - sidebar_w;
-    let content_h = (size.height as f64 / scale) - top_offset;
-    let has_split = !split_id.is_empty();
-    let half_w = content_w / 2.0;
-
-    let state = app.state::<WebviewState>();
-    let tabs = state.tabs.lock().unwrap().clone();
-
-    for (tab_id, _) in &tabs {
-        if let Some(wv) = app.get_webview(tab_id) {
-            if tab_id == &active_id {
-                if has_split {
-                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                    let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
-                } else {
-                    let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w, top_offset));
-                    let _ = wv.set_size(tauri::LogicalSize::new(content_w, content_h));
-                }
-            } else if has_split && tab_id == &split_id {
-                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + half_w, top_offset));
-                let _ = wv.set_size(tauri::LogicalSize::new(half_w, content_h));
-            } else {
-                let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
-            }
-        }
+async fn media_play_pause(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval(r#"(function(){var v=document.querySelector('video,audio');if(v){v.paused?v.play():v.pause()}})()"#)
+          .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn media_mute(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval(r#"(function(){var v=document.querySelector('video,audio');if(v){v.muted=!v.muted}})()"#)
+          .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// legacy wrapper
+#[tauri::command]
+async fn resize_webviews(app: tauri::AppHandle, active_id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    switch_tab(app, active_id, split_id, sidebar_w, top_offset).await
 }
 
 fn data_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -740,6 +790,7 @@ pub fn run() {
     let cosmetic_script = include_str!("content_blocker.js").to_string();
     let cookie_script = include_str!("cookie_blocker.js").to_string();
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
+    let media_script = include_str!("media_listener.js").to_string();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -752,6 +803,7 @@ pub fn run() {
             cosmetic_script,
             cookie_script,
             shortcut_script,
+            media_script,
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new()
             .with_shortcuts([
@@ -808,6 +860,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_tab,
             close_tab,
+            layout_webviews,
             switch_tab,
             navigate_tab,
             go_back,
@@ -816,6 +869,8 @@ pub fn run() {
             detect_video,
             toggle_reader,
             toggle_pip,
+            media_play_pause,
+            media_mute,
             resize_webviews,
             find_in_page,
             minimize_window,

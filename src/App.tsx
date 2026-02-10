@@ -9,7 +9,9 @@ import DownloadPanel from "./components/DownloadPanel";
 import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem } from "./types";
+import SplitOverlay from "./components/SplitOverlay";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo } from "./types";
+import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf } from "./splitLayout";
 
 const NTP_URL = "bushido://newtab";
 const SETTINGS_URL = "bushido://settings";
@@ -61,12 +63,18 @@ export default function App() {
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
   const activeTab = activeWs?.activeTabId || "";
-  const splitTab = activeWs?.splitTabId || "";
+  const paneLayout = activeWs?.paneLayout;
+  const paneTabIds = useMemo(() => paneLayout ? allLeafIds(paneLayout) : [], [paneLayout]);
   const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
   const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
   const topOffset = 40;
   const pinnedTabs = useMemo(() => currentWsTabs.filter(t => t.pinned), [currentWsTabs]);
   const regularTabs = useMemo(() => currentWsTabs.filter(t => !t.pinned), [currentWsTabs]);
+
+  // media mini player — find any tab with media state (prefer playing over paused)
+  const playingTab = useMemo(() =>
+    tabs.find(t => t.mediaState === "playing") || tabs.find(t => t.mediaState === "paused"),
+  [tabs]);
 
   // clear loading after a delay since webview2 child events are unreliable
   const clearLoading = useCallback((tabId: string, ms = 2000) => {
@@ -74,6 +82,26 @@ export default function App() {
       setTabs(prev => prev.map(t => t.id === tabId ? { ...t, loading: false } : t));
     }, ms);
   }, []);
+
+  // single function to position all pane webviews — replaces all switch_tab/resize_webviews calls
+  const syncLayout = useCallback((ws?: Workspace, allTabs?: Tab[]) => {
+    const w = ws || activeWs;
+    if (!w) return;
+    const cw = window.innerWidth - sidebarW;
+    const ch = window.innerHeight - topOffset;
+    const rect = { x: 0, y: 0, w: cw, h: ch };
+
+    let panes: PaneRect[];
+    if (w.paneLayout) {
+      panes = computeRects(w.paneLayout, rect);
+    } else {
+      const t = (allTabs || tabs).find(t => t.id === w.activeTabId);
+      if (!t || t.url.startsWith("bushido://")) panes = [];
+      else panes = [{ tabId: w.activeTabId, ...rect }];
+    }
+
+    invoke("layout_webviews", { panes, focusedTabId: w.activeTabId, sidebarW, topOffset });
+  }, [activeWs, tabs, sidebarW, topOffset]);
 
   // restore session or create first tab
   useEffect(() => {
@@ -121,31 +149,39 @@ export default function App() {
         // new workspace format
         const session = parsed as SessionData;
         const restoredWs: Workspace[] = session.workspaces.map(w => {
-          // ensure ws counter stays ahead
           const num = parseInt(w.id.replace("ws-", ""), 10);
           if (num >= wsCounter) wsCounter = num;
-          return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, splitTabId: w.splitTabId };
+          return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, paneLayout: w.paneLayout };
         });
 
+        // build ID remap: old stored ID → new ID (or reuse if stored)
+        const idMap: Record<string, string> = {};
         const restoredTabs: Tab[] = session.tabs.map(st => {
-          const id = genId();
+          // reuse stored ID if available, otherwise generate new
+          const id = (st as any).id || genId();
+          // keep tabCounter ahead
+          const num = parseInt(id.replace("tab-", ""), 10);
+          if (!isNaN(num) && num >= tabCounter) tabCounter = num;
+          idMap[(st as any).id || ""] = id;
           const isInternal = st.url.startsWith("bushido://");
-          const isSuspended = (st as any).suspended || false;
+          const isSuspended = st.suspended || false;
           return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: !isInternal && !isSuspended, pinned: st.pinned, workspaceId: st.workspaceId, parentId: st.parentId, suspended: isSuspended, lastActiveAt: Date.now() };
         });
 
-        // fix up activeTabId references (old ids → new ids)
-        const wsTabMap: Record<string, string[]> = {};
-        session.tabs.forEach((_, i) => {
-          const tab = restoredTabs[i];
-          if (!wsTabMap[tab.workspaceId]) wsTabMap[tab.workspaceId] = [];
-          wsTabMap[tab.workspaceId].push(tab.id);
-        });
-
+        // remap workspace references
+        const tabIdSet = new Set(restoredTabs.map(t => t.id));
         restoredWs.forEach(ws => {
-          const wsTabs = wsTabMap[ws.id] || [];
-          if (wsTabs.length > 0) {
-            ws.activeTabId = wsTabs[0];
+          // fix activeTabId
+          if (!tabIdSet.has(ws.activeTabId)) {
+            const wsTabs = restoredTabs.filter(t => t.workspaceId === ws.id);
+            ws.activeTabId = wsTabs[0]?.id || "";
+          }
+          // paneLayout references are valid if tab IDs were stored — validate leaves
+          if (ws.paneLayout) {
+            const leafIds = allLeafIds(ws.paneLayout);
+            if (!leafIds.every(id => tabIdSet.has(id))) {
+              ws.paneLayout = undefined; // stale layout, drop it
+            }
           }
         });
 
@@ -168,9 +204,16 @@ export default function App() {
         if (firstActiveWs?.activeTabId) {
           const activeRestoredTab = restoredTabs.find(t => t.id === firstActiveWs.activeTabId);
           if (activeRestoredTab?.url?.startsWith("bushido://")) {
-            invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+            invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           } else {
-            invoke("switch_tab", { id: firstActiveWs.activeTabId, splitId: firstActiveWs.splitTabId || "", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
+            // compute pane rects from restored layout
+            const cw = window.innerWidth - restoredSidebarW;
+            const ch = window.innerHeight - restoredTopOffset;
+            const rect = { x: 0, y: 0, w: cw, h: ch };
+            const panes = firstActiveWs.paneLayout
+              ? computeRects(firstActiveWs.paneLayout, rect)
+              : [{ tabId: firstActiveWs.activeTabId, x: 0, y: 0, w: cw, h: ch }];
+            invoke("layout_webviews", { panes, focusedTabId: firstActiveWs.activeTabId, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           }
         }
       } else {
@@ -197,7 +240,7 @@ export default function App() {
             invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40, ...tabArgs });
             clearLoading(t.id);
           });
-          invoke("switch_tab", { id: restored[0].id, splitId: "", sidebarW: 300, topOffset: 40 });
+          invoke("layout_webviews", { panes: [{ tabId: restored[0].id, x: 0, y: 0, w: window.innerWidth - 300, h: window.innerHeight - 40 }], focusedTabId: restored[0].id, sidebarW: 300, topOffset: 40 });
         } else {
           openFreshNtp();
         }
@@ -210,8 +253,8 @@ export default function App() {
     if (!initialized.current || tabs.length === 0) return;
     const t = setTimeout(() => {
       const session: SessionData = {
-        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, splitTabId: w.splitTabId })),
-        tabs: tabs.map(tab => ({ url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
+        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, paneLayout: w.paneLayout })),
+        tabs: tabs.map(tab => ({ id: tab.id, url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
         activeWorkspaceId,
         compactMode,
       };
@@ -315,6 +358,13 @@ export default function App() {
       listen<{ id: string; hasVideo: boolean }>("tab-has-video", (e) => {
         setHasVideo(e.payload.hasVideo);
       }),
+      listen<{ id: string; state: string; title: string }>("tab-media-state", (e) => {
+        setTabs(prev => prev.map(t =>
+          t.id === e.payload.id
+            ? { ...t, mediaState: e.payload.state === "ended" ? undefined : e.payload.state as "playing" | "paused", mediaTitle: e.payload.title.replace(/<[^>]*>/g, "") }
+            : t
+        ));
+      }),
       // download events
       listen<{ url: string; suggestedFilename: string; cookies?: string }>("download-intercepted", (e) => {
         const dir = settingsRef.current.downloadLocation || "";
@@ -353,18 +403,16 @@ export default function App() {
   // delay so CSS transition (300ms) completes before native resize (blocks compositor)
   useEffect(() => {
     if (!activeTab) return;
-    const t = setTimeout(() => {
-      invoke("resize_webviews", { activeId: activeTab, splitId: splitTab, sidebarW, topOffset });
-    }, 320);
+    const t = setTimeout(() => syncLayout(), 320);
     return () => clearTimeout(t);
-  }, [sidebarW, topOffset, splitTab]);
+  }, [sidebarW, topOffset, paneLayout]);
 
   useEffect(() => {
     if (!activeTab) return;
-    const handler = () => invoke("resize_webviews", { activeId: activeTab, splitId: splitTab, sidebarW, topOffset });
+    const handler = () => syncLayout();
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
-  }, [activeTab, splitTab, sidebarW, topOffset]);
+  }, [activeTab, paneLayout, syncLayout]);
 
   // sync compactMode setting ↔ state
   useEffect(() => {
@@ -383,7 +431,7 @@ export default function App() {
       setTabs(prev => {
         let changed = false;
         const next = prev.map(t => {
-          if (t.id === activeTab || t.id === splitTab) return t;
+          if (t.id === activeTab || paneTabIds.includes(t.id)) return t;
           if (t.pinned) return t;
           if (t.suspended) return t;
           if (t.url.startsWith("bushido://")) return t;
@@ -399,7 +447,7 @@ export default function App() {
       });
     }, 60_000);
     return () => clearInterval(interval);
-  }, [activeTab, splitTab, settings.suspendTimeout]);
+  }, [activeTab, paneTabIds, settings.suspendTimeout]);
 
   // --- workspace operations ---
 
@@ -407,12 +455,10 @@ export default function App() {
     setActiveWorkspaceId(wsId);
     setWorkspaces(prev => {
       const ws = prev.find(w => w.id === wsId);
-      if (ws?.activeTabId) {
-        invoke("switch_tab", { id: ws.activeTabId, splitId: ws.splitTabId || "", sidebarW, topOffset });
-      }
+      if (ws?.activeTabId) syncLayout(ws);
       return prev;
     });
-  }, [sidebarW, topOffset]);
+  }, [syncLayout]);
 
   const addWorkspace = useCallback(() => {
     const wsId = genWsId();
@@ -443,13 +489,11 @@ export default function App() {
       if (activeWorkspaceId === wsId && next.length > 0) {
         const newActive = next[0];
         setActiveWorkspaceId(newActive.id);
-        if (newActive.activeTabId) {
-          invoke("switch_tab", { id: newActive.activeTabId, splitId: newActive.splitTabId || "", sidebarW, topOffset });
-        }
+        if (newActive.activeTabId) syncLayout(newActive);
       }
       return next;
     });
-  }, [workspaces.length, tabs, activeWorkspaceId, sidebarW, topOffset]);
+  }, [workspaces.length, tabs, activeWorkspaceId, syncLayout]);
 
   const renameWorkspace = useCallback((wsId: string, name: string) => {
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, name } : w));
@@ -471,10 +515,14 @@ export default function App() {
         if (w.id === sourceWsId && w.activeTabId === tabId) {
           const remaining = next.filter(t => t.workspaceId === sourceWsId);
           const newActiveId = remaining.length > 0 ? remaining[0].id : "";
-          if (sourceWsId === activeWorkspaceId && newActiveId) {
-            invoke("switch_tab", { id: newActiveId, splitId: "", sidebarW, topOffset });
+          // remove from pane layout if present
+          let newLayout = w.paneLayout;
+          if (newLayout && hasLeaf(newLayout, tabId)) {
+            newLayout = removePane(newLayout, tabId) || undefined;
           }
-          return { ...w, activeTabId: newActiveId };
+          const updated = { ...w, activeTabId: newActiveId, paneLayout: newLayout };
+          if (sourceWsId === activeWorkspaceId && newActiveId) syncLayout(updated, next);
+          return updated;
         }
         if (w.id === targetWsId) {
           return { ...w, activeTabId: tabId };
@@ -484,7 +532,7 @@ export default function App() {
 
       return next;
     });
-  }, [activeWorkspaceId, sidebarW, topOffset]);
+  }, [activeWorkspaceId, syncLayout]);
 
   // --- tab operations (workspace-aware) ---
 
@@ -494,57 +542,53 @@ export default function App() {
     const title = url === SETTINGS_URL ? "Settings" : "New Tab";
     const tab: Tab = { id, url, title, loading: !isInternal, workspaceId: activeWorkspaceId, parentId, lastActiveAt: Date.now() };
     setTabs(prev => [...prev, tab]);
-    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: undefined } : w));
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, paneLayout: undefined } : w));
     if (!isInternal) {
       const sr = settingsRef.current;
-      invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
+      const cw = window.innerWidth - sidebarW;
+      const ch = window.innerHeight - topOffset;
+      invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
+        invoke("layout_webviews", { panes: [{ tabId: id, x: 0, y: 0, w: cw, h: ch }], focusedTabId: id, sidebarW, topOffset });
+      });
       clearLoading(id);
     } else {
       // hide all webviews since internal pages are React-rendered
-      invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
+      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
     }
   }, [activeWorkspaceId, clearLoading, sidebarW, topOffset]);
 
   const closeTab = useCallback((id: string) => {
-    // always tell Rust to close — it safely no-ops if webview doesn't exist
     invoke("close_tab", { id });
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
       if (!tab) return prev;
       const wsId = tab.workspaceId;
       const wsTabs = prev.filter(t => t.workspaceId === wsId);
-      // promote children to parent's parent
       const next = prev.filter(t => t.id !== id).map(t =>
         t.parentId === id ? { ...t, parentId: tab.parentId } : t
       );
 
       if (wsTabs.length <= 1) {
-        // last tab in workspace — create NTP replacement (no webview)
         const newId = genId();
         const newTab: Tab = { id: newId, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
-        invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
-        setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId, splitTabId: undefined } : w));
+        invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+        setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId, paneLayout: undefined } : w));
         return [...next, newTab];
       }
 
       setWorkspaces(ws => ws.map(w => {
         if (w.id !== wsId) return w;
 
-        // closed the split tab → exit split
-        if (w.splitTabId === id) {
-          if (wsId === activeWorkspaceId) {
-            invoke("switch_tab", { id: w.activeTabId, splitId: "", sidebarW, topOffset });
-          }
-          return { ...w, splitTabId: undefined };
-        }
-
-        // closed the active tab while split → promote split to active, exit split
-        if (w.activeTabId === id && w.splitTabId) {
-          const promoted = w.splitTabId;
-          if (wsId === activeWorkspaceId) {
-            invoke("switch_tab", { id: promoted, splitId: "", sidebarW, topOffset });
-          }
-          return { ...w, activeTabId: promoted, splitTabId: undefined };
+        // tab was in a pane layout
+        if (w.paneLayout && hasLeaf(w.paneLayout, id)) {
+          const newLayout = removePane(w.paneLayout, id);
+          // removePane returns null if ≤1 leaf remains → exit split
+          const newActive = w.activeTabId === id
+            ? (newLayout ? allLeafIds(newLayout).find(lid => lid !== id) || "" : allLeafIds(w.paneLayout).find(lid => lid !== id) || "")
+            : w.activeTabId;
+          const updated = { ...w, activeTabId: newActive, paneLayout: newLayout || undefined };
+          if (wsId === activeWorkspaceId) syncLayout(updated, next);
+          return updated;
         }
 
         // closed the active tab (no split) → switch to adjacent
@@ -552,10 +596,9 @@ export default function App() {
           const wsTabsInNext = next.filter(t => t.workspaceId === wsId);
           const oldIdx = wsTabs.findIndex(t => t.id === id);
           const newActive = wsTabsInNext[Math.min(oldIdx, wsTabsInNext.length - 1)];
-          if (newActive && wsId === activeWorkspaceId) {
-            invoke("switch_tab", { id: newActive.id, splitId: "", sidebarW, topOffset });
-          }
-          return { ...w, activeTabId: newActive?.id || "" };
+          const updated = { ...w, activeTabId: newActive?.id || "" };
+          if (wsId === activeWorkspaceId) syncLayout(updated, next);
+          return updated;
         }
 
         return w;
@@ -563,7 +606,7 @@ export default function App() {
 
       return next;
     });
-  }, [activeWorkspaceId, sidebarW, topOffset]);
+  }, [activeWorkspaceId, sidebarW, topOffset, syncLayout]);
 
   const selectTab = useCallback((id: string) => {
     const targetTab = tabs.find(t => t.id === id);
@@ -572,31 +615,32 @@ export default function App() {
 
     setTabs(prev => prev.map(t => t.id === id ? { ...t, lastActiveAt: Date.now() } : t));
 
-    // figure out split state
-    let newSplit = ws?.splitTabId;
-    if (isInternal) {
-      // internal pages exit split
-      newSplit = undefined;
-    } else if (ws?.splitTabId === id) {
-      // clicked the split tab → swap: split becomes active, old active becomes split
-      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: w.activeTabId } : w));
-      invoke("switch_tab", { id, splitId: ws.activeTabId, sidebarW, topOffset });
+    // if tab is already in a pane, just change focus (no layout change)
+    if (ws?.paneLayout && hasLeaf(ws.paneLayout, id) && !isInternal) {
+      const updated = { ...ws, activeTabId: id };
+      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
+      syncLayout(updated);
       return;
     }
 
-    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, splitTabId: newSplit } : w));
+    // internal pages exit split
+    const newLayout = isInternal ? undefined : ws?.paneLayout;
+    const updated = { ...ws!, activeTabId: id, paneLayout: newLayout };
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
 
     if (targetTab?.suspended) {
       const sr = settingsRef.current;
-      invoke("create_tab", { id, url: targetTab.url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
+      invoke("create_tab", { id, url: targetTab.url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
+        syncLayout(updated);
+      });
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, loading: true, lastActiveAt: Date.now() } : t));
     } else if (isInternal) {
-      invoke("resize_webviews", { activeId: "__none__", splitId: "", sidebarW, topOffset });
+      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
     } else {
-      invoke("switch_tab", { id, splitId: newSplit || "", sidebarW, topOffset });
+      syncLayout(updated);
     }
-  }, [activeWorkspaceId, tabs, workspaces, sidebarW, topOffset, clearLoading]);
+  }, [activeWorkspaceId, tabs, workspaces, sidebarW, topOffset, clearLoading, syncLayout]);
 
   const pinTab = useCallback((id: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
@@ -644,10 +688,12 @@ export default function App() {
     const currentTab = tabs.find(t => t.id === activeTab);
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
     if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended) {
-      // first navigation from internal page / suspended tab — create webview lazily, then switch to it
       const sr = settingsRef.current;
       invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
-        invoke("switch_tab", { id: activeTab, splitId: splitTab, sidebarW, topOffset });
+        // directly position — syncLayout would read stale tab URL from state
+        const cw = window.innerWidth - sidebarW;
+        const ch = window.innerHeight - topOffset;
+        invoke("layout_webviews", { panes: [{ tabId: activeTab, x: 0, y: 0, w: cw, h: ch }], focusedTabId: activeTab, sidebarW, topOffset });
       });
       if (currentTab?.suspended) {
         setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false } : t));
@@ -656,17 +702,18 @@ export default function App() {
       invoke("navigate_tab", { id: activeTab, url: finalUrl });
     }
     clearLoading(activeTab, 3000);
-  }, [activeTab, tabs, splitTab, clearLoading, sidebarW, topOffset]);
+  }, [activeTab, tabs, clearLoading, sidebarW, topOffset, syncLayout]);
 
-  // split view — toggle or split with a specific tab
-  const toggleSplit = useCallback((targetId?: string) => {
+  // split view — toggle or split with a specific tab, optional side
+  const toggleSplit = useCallback((targetId?: string, side: "left" | "right" | "top" | "bottom" = "right") => {
     const ws = workspaces.find(w => w.id === activeWorkspaceId);
     if (!ws) return;
 
     // already split → exit
-    if (ws.splitTabId) {
-      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, splitTabId: undefined } : w));
-      invoke("switch_tab", { id: ws.activeTabId, splitId: "", sidebarW, topOffset });
+    if (ws.paneLayout) {
+      const updated = { ...ws, paneLayout: undefined };
+      setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
+      syncLayout(updated);
       return;
     }
 
@@ -674,7 +721,6 @@ export default function App() {
     const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("bushido://") && !t.suspended);
     let splitWith = targetId;
     if (!splitWith) {
-      // pick the most recently active external tab that isn't the current one
       const candidates = wsTabs.filter(t => t.id !== ws.activeTabId).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
       splitWith = candidates[0]?.id;
     }
@@ -684,9 +730,78 @@ export default function App() {
     const activeT = tabs.find(t => t.id === ws.activeTabId);
     if (activeT?.url.startsWith("bushido://")) return;
 
-    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, splitTabId: splitWith } : w));
-    invoke("switch_tab", { id: ws.activeTabId, splitId: splitWith, sidebarW, topOffset });
-  }, [workspaces, activeWorkspaceId, tabs, sidebarW, topOffset]);
+    const newLayout = insertPane(null, ws.activeTabId, splitWith, side);
+    if (!newLayout) return;
+    const updated = { ...ws, paneLayout: newLayout };
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
+    syncLayout(updated);
+  }, [workspaces, activeWorkspaceId, tabs, syncLayout]);
+
+  // --- divider drag ---
+  const [draggingDiv, setDraggingDiv] = useState<number | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+
+  // compute dividers from current layout
+  const dividers = useMemo((): DividerInfo[] => {
+    if (!paneLayout) return [];
+    const cw = window.innerWidth - sidebarW;
+    const ch = window.innerHeight - topOffset;
+    return computeDividers(paneLayout, { x: 0, y: 0, w: cw, h: ch });
+  }, [paneLayout, sidebarW, topOffset]);
+
+  const onDividerDown = useCallback((idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    setDraggingDiv(idx);
+    const div = dividers[idx];
+    if (!div) return;
+    let lastPos = div.dir === "row" ? e.clientX : e.clientY;
+    const dimension = div.dir === "row" ? window.innerWidth - sidebarW : window.innerHeight - topOffset;
+    let rafId = 0;
+    let pendingDelta = 0;
+    let currentLayout = workspaces.find(w => w.id === activeWorkspaceId)?.paneLayout;
+    if (!currentLayout) return;
+
+    // hide webviews so mousemove fires over the whole area (native webviews steal pointer)
+    invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+
+    const tick = () => {
+      rafId = 0;
+      if (!currentLayout || pendingDelta === 0) return;
+      currentLayout = updateRatio(currentLayout, div.path, div.childIdx, pendingDelta);
+      pendingDelta = 0;
+    };
+
+    const onMove = (me: MouseEvent) => {
+      const currentPos = div.dir === "row" ? me.clientX : me.clientY;
+      pendingDelta += (currentPos - lastPos) / dimension;
+      lastPos = currentPos;
+      if (!rafId) rafId = requestAnimationFrame(tick);
+    };
+
+    const onUp = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      setDraggingDiv(null);
+      if (currentLayout) {
+        const finalLayout = currentLayout;
+        setWorkspaces(prev => prev.map(w =>
+          w.id === activeWorkspaceId ? { ...w, paneLayout: finalLayout } : w
+        ));
+        // show webviews at final positions
+        const cw = window.innerWidth - sidebarW;
+        const ch = window.innerHeight - topOffset;
+        const panes = computeRects(finalLayout, { x: 0, y: 0, w: cw, h: ch });
+        const focusId = workspaces.find(w => w.id === activeWorkspaceId)?.activeTabId || "";
+        invoke("layout_webviews", { panes, focusedTabId: focusId, sidebarW, topOffset });
+      }
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [dividers, workspaces, activeWorkspaceId, sidebarW, topOffset]);
+
+  // drag-to-split not feasible — WebView2 child windows are native OS windows that
+  // intercept all mouse/drag events. Use context menu "split with this tab" or Ctrl+\ instead.
 
   const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
   const showNtp = current?.url === NTP_URL;
@@ -975,6 +1090,14 @@ export default function App() {
   const toggleDownloads = useCallback(() => setDownloadsOpen(p => !p), []);
   const activeDownloadCount = useMemo(() => downloads.filter(d => d.state === "downloading").length, [downloads]);
 
+  // media controls
+  const mediaPlayPause = useCallback(() => {
+    if (playingTab) invoke("media_play_pause", { id: playingTab.id });
+  }, [playingTab]);
+  const mediaMute = useCallback(() => {
+    if (playingTab) invoke("media_mute", { id: playingTab.id });
+  }, [playingTab]);
+
   const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
@@ -1072,8 +1195,11 @@ export default function App() {
           onOpenSettings={onOpenSettings}
           activeDownloadCount={activeDownloadCount}
           onToggleDownloads={toggleDownloads}
-          splitTab={splitTab}
+          paneTabIds={paneTabIds}
           onSplitWith={toggleSplit}
+          playingTab={playingTab}
+          onMediaPlayPause={mediaPlayPause}
+          onMediaMute={mediaMute}
         />
         {historyOpen && (
           <HistoryPanel
@@ -1097,7 +1223,7 @@ export default function App() {
           />
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
-        <div className="main">
+        <div className="main" ref={mainRef}>
           {findOpen && activeTab && !showInternalPage && (
             <FindBar tabId={activeTab} onClose={closeFindBar} />
           )}
@@ -1116,6 +1242,13 @@ export default function App() {
             />
           ) : (
             <WebviewPanel />
+          )}
+          {dividers.length > 0 && (
+            <SplitOverlay
+              dividers={dividers}
+              draggingDiv={draggingDiv}
+              onDividerDown={onDividerDown}
+            />
           )}
         </div>
       </div>

@@ -1,7 +1,6 @@
 (function() {
   if (window.__bushidoShortcuts) return;
-  window.__bushidoShortcuts = true;
-  var seq = 0;
+  Object.defineProperty(window, '__bushidoShortcuts', { value: true, writable: false, configurable: false });
   function handler(e) {
     var action = null;
     if (e.ctrlKey && e.shiftKey && (e.code === 'KeyB')) action = 'toggle-compact';
@@ -17,10 +16,9 @@
     if (action) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      var savedTitle = document.title;
-      seq++;
-      document.title = '__BUSHIDO_SHORTCUT__:' + action + ':' + seq;
-      setTimeout(function() { document.title = savedTitle; }, 50);
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage(JSON.stringify({ __bushido: 'shortcut', action: action }));
+      }
     }
   }
   window.addEventListener('keydown', handler, true);

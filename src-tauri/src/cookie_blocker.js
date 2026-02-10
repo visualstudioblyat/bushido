@@ -1,7 +1,7 @@
 (function() {
     'use strict';
     if (window.__bushidoCookieBlocker) return;
-    window.__bushidoCookieBlocker = true;
+    Object.defineProperty(window, '__bushidoCookieBlocker', { value: true, writable: false, configurable: false });
 
     const REJECT_SELECTORS = [
         // specific frameworks

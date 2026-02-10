@@ -1,7 +1,7 @@
 (function() {
     'use strict';
     if (window.__bushidoPrivacy) return;
-    window.__bushidoPrivacy = true;
+    Object.defineProperty(window, '__bushidoPrivacy', { value: true, writable: false, configurable: false });
 
     // 1. css cosmetic hiding (easylist + fanboy + site-specific rules)
     try {
