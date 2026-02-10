@@ -2,6 +2,41 @@
 
 ---
 
+## v0.5.2
+
+**2026-02-10**
+
+Chrome has parallel downloading behind a flag (`chrome://flags/#enable-parallel-downloading`), but it's off by default and most people don't know it exists. Even when enabled, it's a simplified implementation — no crash recovery, no manifest persistence, no cookie-aware resumption. Close Chrome mid-download and your progress is gone. IDM ($25) solves all of this but it's a separate app with a browser extension. Bushido does it natively.
+
+### Added
+
+- **Parallel chunked downloads** — large files (>1MB) split into up to 6 simultaneous segments. Each one grabs its own byte range and writes to the file at the exact offset using `seek_write`. Saturates your bandwidth the way IDM does, except it's built into the browser. No extensions, no separate app, no $25 license fee.
+- **Dynamic segment splitting** — when a fast segment finishes early, the orchestrator finds the segment with the most bytes remaining and splits it at the midpoint. New worker picks up the second half. IDM does this too. Zero idle connections means zero wasted bandwidth.
+- **Cookie extraction for authenticated downloads** — bushido grabs all cookies for that URL via `ICoreWebView2_2::CookieManager` and passes them to reqwest. Downloading from Google Drive, Dropbox, or anything behind a login actually works. Third-party download managers like IDM and FDM solve this with browser extensions, but that's another thing to install and keep updated. Bushido doesn't need an extension — it is the browser, so cookies are right there.
+- **Segment count badge** — download panel shows "6x" (or however many active connections) next to the speed while a chunked download is running. You can see it working.
+- **Retry failed downloads** — failed downloads get a retry button right in the panel. Click it and it restarts from scratch.
+
+### Changed
+
+- **Download manifests are v2** — manifests now store per-segment progress and cookies. `#[serde(default)]` on the new fields so v1 manifests still load fine. Pause a chunked download, close the browser, reopen — each segment resumes from where it left off. Most browsers lose your progress if you close mid-download.
+- **Small files stay single-stream** — if the server doesn't support Range headers, or the file is under 1MB, it falls back to a single connection. No unnecessary overhead for small stuff.
+
+---
+
+## v0.5.1
+
+**2026-02-10**
+
+Every major browser ships a download manager, but they're all basically the same — a progress bar, a single connection, and a prayer that your connection holds. Close the browser mid-download? Start over. Bushido's download engine is built from scratch in Rust with pause/resume that actually persists to disk, crash recovery via manifest files, and a UI that stays out of your way.
+
+### Added
+
+- **Download Manager** — bushido intercepts every download via WebView2's `DownloadStarting` COM event. Suppresses the default browser UI, routes it through our own Rust engine. Pause, resume, cancel, open file, open folder. Progress bar, speed readout, ETA. Manifest files (`.part.json`) persist progress to disk so downloads survive crashes — Edge and Chrome don't do this, if the browser closes mid-download you start over. Range header support means paused downloads pick up where they left off, not from byte zero. Filename deduplication handles the `report.pdf` → `report (1).pdf` thing automatically.
+- **Download panel** — slide-over panel in the sidebar. Shows all active, paused, completed, and failed downloads. Badge on the download button shows active count. No separate page, no popup that disappears when you click away.
+- **Download location setting** — pick your download folder in settings. Optional "ask every time" toggle.
+
+---
+
 ## v0.5.0
 
 **2026-02-09**
@@ -13,8 +48,9 @@
 - **Reader Mode** (`Ctrl+Shift+R`) — strips pages down to just the text and images. Pick your font, theme (dark/light/sepia), line width. Click again to exit.
 - **Picture-in-Picture** — bushido watches for videos on the page. When it finds one, PiP button shows up in the sidebar. One click, video pops out. Shadow DOM so sites can't block the button.
 - **Tab Suspender** — tabs you haven't touched in 5 minutes get put to sleep. Webview destroyed, zzz badge on the tab. Click it and it comes back. Pinned tabs never sleep.
-- **Settings** (`bushido://settings`) — gear icon in sidebar. Search engine, privacy toggles, appearance, shortcuts reference, about. Saved to disk, loads before anything else on startup.
+- **Settings** (`bushido://settings`) — gear icon in sidebar. Search engine, startup behavior, privacy toggles, download location, appearance, shortcuts reference, about. Saved to disk, loads before anything else on startup.
 - **Search engine selector** — swap between Google, DuckDuckGo, Brave, Bing, or drop in your own URL. Works in the URL bar and the NTP search.
+- **Clear data on exit** — toggle in privacy settings. When enabled, clears browsing data when you close the browser.
 
 ### Changed
 
