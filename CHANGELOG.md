@@ -2,6 +2,42 @@
 
 ---
 
+## v0.8.1
+
+**2026-02-10**
+
+v0.8.0 added web panels, but the WebView2 hardening settings (DevTools, autofill, password save, status bar) were all-or-nothing — hardcoded on or off for every tab. Power users want DevTools. Privacy users want autofill disabled. v0.8.1 puts all 7 hardening options into the Settings page where you can toggle each one individually. All default to OFF so nothing breaks out of the box.
+
+### Added
+
+- **Security Settings section** — 7 toggleable WebView2 hardening options in Settings → Security. Each one is OFF by default (power-user friendly). Paranoid users can flip them on:
+  - **Disable DevTools** — `SetAreDevToolsEnabled(false)` on the WebView2 COM layer. Prevents F12 / Inspect Element in tabs.
+  - **Disable status bar** — `SetIsStatusBarEnabled(false)`. Hides the URL preview on link hover.
+  - **Disable autofill** — `SetIsGeneralAutofillEnabled(false)` via `ICoreWebView2Settings4`. Prevents form auto-completion.
+  - **Disable password autosave** — `SetIsPasswordAutosaveEnabled(false)`. Browser won't offer to save passwords.
+  - **Block service workers** — JS injection that rejects `navigator.serviceWorker.register()`. Prevents SW-based tracker bypass (breaks PWAs).
+  - **Block font enumeration** — JS injection that stubs `document.fonts.check()`. Prevents sites from detecting installed fonts.
+  - **Spoof CPU core count** — JS injection that reports `navigator.hardwareConcurrency` as 4. Reduces fingerprint surface.
+- **Reload banner** — when any security toggle changes, a banner appears: "Reload all tabs to apply changes" with a Reload button. Clicking it destroys and recreates every webview with the new settings. Settings are per-webview (applied at creation time), so existing tabs need a reload to pick up changes.
+- **Crash recovery** — `ProcessFailed` COM handler detects renderer crashes, emits `tab-crashed` to React. Crashed tabs show a red "!" badge in the sidebar. Click to destroy and recreate the webview with the same URL.
+- **Error boundary** — `react-error-boundary` wraps the entire app. Render errors show fallback UI with "Try again" instead of a white screen.
+- **Global rejection handler** — `window.onunhandledrejection` catches fire-and-forget `invoke()` failures. Logs to console instead of silently breaking.
+
+### Security
+
+- **Host objects disabled** — `SetAreHostObjectsAllowed(false)` on every child webview. Prevents pages from accessing projected Rust methods.
+- **Always-on header stripping** — `WebResourceRequested` runs for ALL tabs (even with ad blocker off). Strips `Sec-CH-UA-*` (10 variants), `Sec-Fetch-*` (4), `X-Client-Data`, `X-Requested-With`. Referer normalized to origin only.
+- **BROWSER_ARGS** — `--disable-quic --site-per-process --origin-agent-cluster=true --disable-dns-prefetch --disable-background-networking --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies --disable-features=UserAgentClientHint`.
+- **Process priority** — Rust process boosted to `ABOVE_NORMAL_PRIORITY_CLASS` for UI responsiveness during heavy filtering.
+- **Max 50 tabs** — enforced at the top of `create_tab`. Prevents resource exhaustion.
+
+### Changed
+
+- **Settings sections reorganized** — "Privacy" and "Security" are now separate sections. Privacy covers HTTPS-only, ad blocker, cookie rejection, clear-on-exit. Security covers the 7 WebView2 hardening toggles.
+- **`WebResourceRequested` restructured** — moved outside the `if block_enabled` gate. Header stripping runs unconditionally; adblock check is conditional inside. Disabling ad blocker no longer disables privacy header stripping.
+
+---
+
 ## v0.8.0
 
 **2026-02-10**

@@ -12,29 +12,81 @@ For the full technical breakdown of every mitigation, see the [Security Architec
 
 ### What's Hardened
 
-- **CSP enforced** on the main UI webview (blocks inline scripts, restricts connections)
-- **postMessage IPC** — child-to-Rust communication via `window.chrome.webview.postMessage` with namespace validation and action whitelisting. No `document.title` encoding.
-- **No arbitrary eval** — all child webview interactions use named Rust commands (`detect_video`, `toggle_reader`, `toggle_pip`). Zero `eval()` calls with user-controlled strings.
-- **Title sanitization** — `<` and `>` stripped from all tab titles in Rust before reaching React. Prevents stored XSS via malicious `<title>` tags.
-- **URL scheme blocklist** — `javascript:`, `data:`, `file:`, `vbscript:`, `blob:` blocked in `create_tab`, `navigate_tab`, and `on_navigation`. Defense-in-depth with React-side validation.
-- **Guard variable hardening** — all injection scripts use `Object.defineProperty(configurable: false)` so malicious pages can't delete or override them.
-- **Network-level ad blocking** — WebView2 COM `WebResourceRequestedEventHandler` intercepts requests before connections are established. Page JavaScript cannot bypass it.
-- **Download path traversal fix** — `Path::file_name()` extracts basename only. Filenames with `../` can't escape the download directory.
+**IPC Security**
+- **postMessage origin validation** — child-to-Rust messages validated via `Source()` URI check. Only `https://` and `http://` origins accepted. Rejects `about:blank`, `data:`, `chrome-extension://` origins.
+- **postMessage namespace validation** — only 3 namespaces (`shortcut`, `media`, `video`) with whitelisted action strings. Everything else silently dropped.
+- **CSP enforced** on the main UI webview (blocks inline scripts, restricts connections).
+- **No arbitrary eval** — zero `eval()` calls with user-controlled strings. Named Rust commands only.
+
+**WebView2 Hardening (Always-On)**
+- **Host objects disabled** — `SetAreHostObjectsAllowed(false)`. Prevents pages from accessing projected Rust methods.
+
+**WebView2 Hardening (User-Configurable)**
+
+These settings are toggleable in Settings → Security. All default to OFF (power-user friendly):
+
+- **Disable DevTools** — `SetAreDevToolsEnabled(false)`.
+- **Disable status bar** — `SetIsStatusBarEnabled(false)`.
+- **Disable password autosave** — `SetIsPasswordAutosaveEnabled(false)` via `ICoreWebView2Settings4`.
+- **Disable autofill** — `SetIsGeneralAutofillEnabled(false)`.
+- **Block service workers** — JS injection rejects `navigator.serviceWorker.register()`.
+- **Block font enumeration** — JS injection stubs `document.fonts.check()`.
+- **Spoof CPU core count** — JS injection reports `navigator.hardwareConcurrency` as 4.
+
+**Process Isolation**
+- **Site-per-process** — `--site-per-process` flag ensures every site runs in its own renderer process.
+- **Origin-keyed processes** — `--origin-agent-cluster=true` isolates different origins within the same site.
+- **QUIC disabled** — `--disable-quic` forces TCP for all connections, ensuring `WebResourceRequested` can inspect all traffic.
+- **DNS prefetch disabled** — `--disable-dns-prefetch` prevents DNS query leaks.
+- **Background networking disabled** — `--disable-background-networking` prevents speculative connections.
+- **CHIPS enabled** — `--enable-features=ThirdPartyStoragePartitioning,PartitionedCookies` partitions third-party cookies by top-level site.
+- **Client Hints disabled** — `--disable-features=UserAgentClientHint`.
+- **Process priority boost** — Rust process runs at `ABOVE_NORMAL_PRIORITY_CLASS` for UI responsiveness during heavy filtering.
+- **Max 50 tabs** enforced server-side.
+
+**Network Security**
+- **Always-on header stripping** — `WebResourceRequested` runs for ALL tabs (even with adblock off), stripping: `Sec-CH-UA-*` (10 variants), `Sec-Fetch-*` (4), `X-Client-Data`, `X-Requested-With`.
+- **Referer normalization** — path stripped at COM level, only origin sent.
+- **Ad blocking at COM level** — adblock-rust with ~140k EasyList + EasyPrivacy rules. Unbypassable from JS.
 - **HTTPS-only mode** — HTTP connections upgraded or refused.
-- **Shell plugin replaced** — `tauri-plugin-shell` replaced with `tauri-plugin-opener` (mitigates CVE-2025-31477).
-- **Mutex poisoning recovery** — all `.lock().unwrap()` replaced with `.unwrap_or_else(|e| e.into_inner())` to prevent cascading panics.
-- **Webview lifecycle safety** — `close_tab` removes from state before destroying the webview, preventing use-after-close races.
-- **COM error recovery** — unsafe WebView2 COM operations use `match` with early return instead of `.unwrap()` panics.
+- **Cookie banner auto-rejection** — 8+ consent frameworks detected and dismissed.
+
+**Fingerprinting Resistance**
+
+Always-on via `content_blocker.js`:
+
+- `navigator.plugins`, `mimeTypes`, `getBattery` — blocked
+- `navigator.language` → en-US, `platform` → Win32
+- `screen.availWidth/Height/colorDepth/pixelDepth` — normalized
+- Canvas — 1-bit noise on `toDataURL`/`toBlob`
+- WebGL — vendor/renderer spoofed to generic Intel UHD
+- AudioContext — ±0.01 noise on `getFloatFrequencyData`
+- `navigator.connection` — blocked
+- WebRTC STUN/TURN — blocked
+
+**Input Sanitization**
+- **Title sanitization** — `<` and `>` stripped from all tab titles in Rust.
+- **URL scheme blocklist** — `javascript:`, `data:`, `file:`, `vbscript:`, `blob:` blocked in 3 places.
+- **Guard variable hardening** — `Object.defineProperty(configurable: false)` on all injection scripts.
+- **Download path traversal fix** — `Path::file_name()` extracts basename only.
+
+**Crash Recovery**
+- **ProcessFailed handler** — detects renderer crashes, emits `tab-crashed` event to React.
+- **Crash UI** — crashed tabs show red "!" indicator, click to recreate webview.
+- **Error boundary** — `react-error-boundary` catches render errors with fallback UI.
+- **Global rejection handler** — `unhandledrejection` catches fire-and-forget invoke failures.
+- **COM error recovery** — `match` with early return instead of `.unwrap()`.
+- **Mutex poisoning recovery** — all `.lock().unwrap()` replaced with `.unwrap_or_else(|e| e.into_inner())`.
 
 ### Known Limitations
 
-- **Shared cookie jar** — all tabs share a single WebView2 User Data Folder. No per-site cookie isolation yet.
-- **No isolated worlds on Windows** — WebView2 doesn't support script isolation. Injected scripts share the page's JavaScript namespace.
-- **No Tauri isolation pattern** — not yet enabled. Would add a sandboxed iframe between untrusted content and the IPC bridge.
-- **Fingerprinting resistance is basic** — `navigator.plugins`, `navigator.mimeTypes`, and `navigator.getBattery` are blocked. Canvas, WebGL, and AudioContext fingerprinting are not yet mitigated.
+- **Shared cookie jar** — all tabs share a single WebView2 User Data Folder. Third-party cookies are partitioned via CHIPS, but first-party cookies are shared. Per-site UDF isolation requires significant architectural changes.
+- **No isolated worlds on Windows** — WebView2 doesn't support Chrome's script isolation. Injected scripts share the page's JS namespace. Mitigated by running all blocking at COM level.
+- **WebRTC data channels** — STUN/TURN servers are blocked via content script, but data channels may bypass network-level interception.
+- **TLS/JA4 fingerprint** — Rust `reqwest` calls (filter list updates) have a non-browser TLS fingerprint. Minimal impact since these are internal-only requests.
 
 ## Dependencies
 
-- **WebView2** — Evergreen distribution, auto-updated by Windows. Engine-level patches (Spectre, sandbox escapes) come from Microsoft.
+- **WebView2** — Evergreen distribution, auto-updated by Windows. Engine-level patches come from Microsoft.
 - **adblock-rust** — EasyList + EasyPrivacy filter rules. Updated with each Bushido release.
-- **Tauri v2** — latest stable. Tauri security advisories are tracked.
+- **Tauri v2** — latest stable.

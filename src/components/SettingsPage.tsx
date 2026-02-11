@@ -1,9 +1,10 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
 import { BushidoSettings } from "../types";
 
 interface Props {
   settings: BushidoSettings;
   onUpdate: (patch: Partial<BushidoSettings>) => void;
+  onReloadAllTabs: () => void;
 }
 
 const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[] = [
@@ -68,9 +69,17 @@ function Select({ value, options, onChange }: { value: string | number; options:
   );
 }
 
-export default memo(function SettingsPage({ settings, onUpdate }: Props) {
+const SECURITY_KEYS: (keyof BushidoSettings)[] = [
+  "disableDevTools", "disableStatusBar", "disableAutofill", "disablePasswordSave",
+  "blockServiceWorkers", "blockFontEnumeration", "spoofHardwareConcurrency",
+];
+
+export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs }: Props) {
+  const [securityDirty, setSecurityDirty] = useState(false);
+
   const set = useCallback(<K extends keyof BushidoSettings>(key: K, value: BushidoSettings[K]) => {
     onUpdate({ [key]: value });
+    if (SECURITY_KEYS.includes(key)) setSecurityDirty(true);
   }, [onUpdate]);
 
   return (
@@ -155,9 +164,9 @@ export default memo(function SettingsPage({ settings, onUpdate }: Props) {
           </div>
         </section>
 
-        {/* Privacy & Security */}
+        {/* Privacy */}
         <section className="settings-section">
-          <h2 className="settings-section-title">Privacy & Security</h2>
+          <h2 className="settings-section-title">Privacy</h2>
           <div className="settings-row">
             <div className="settings-label">
               <span>HTTPS-only mode</span>
@@ -185,6 +194,66 @@ export default memo(function SettingsPage({ settings, onUpdate }: Props) {
               <span className="settings-hint">Clear history and cookies when closing the browser</span>
             </div>
             <Toggle checked={settings.clearDataOnExit} onChange={v => set("clearDataOnExit", v)} />
+          </div>
+        </section>
+
+        {/* Security */}
+        <section className="settings-section">
+          <h2 className="settings-section-title">Security</h2>
+          {securityDirty && (
+            <div className="settings-reload-banner">
+              <span>Reload all tabs to apply changes</span>
+              <button className="settings-reload-btn" onClick={() => { onReloadAllTabs(); setSecurityDirty(false); }}>Reload</button>
+            </div>
+          )}
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Disable DevTools</span>
+              <span className="settings-hint">Prevents F12 / Inspect Element in tabs</span>
+            </div>
+            <Toggle checked={settings.disableDevTools} onChange={v => set("disableDevTools", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Disable status bar</span>
+              <span className="settings-hint">Hides URL preview on link hover</span>
+            </div>
+            <Toggle checked={settings.disableStatusBar} onChange={v => set("disableStatusBar", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Disable autofill</span>
+              <span className="settings-hint">Prevents form auto-completion</span>
+            </div>
+            <Toggle checked={settings.disableAutofill} onChange={v => set("disableAutofill", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Disable password autosave</span>
+              <span className="settings-hint">Browser won't offer to save passwords</span>
+            </div>
+            <Toggle checked={settings.disablePasswordSave} onChange={v => set("disablePasswordSave", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Block service workers</span>
+              <span className="settings-hint">Prevents sites from registering service workers (breaks PWAs)</span>
+            </div>
+            <Toggle checked={settings.blockServiceWorkers} onChange={v => set("blockServiceWorkers", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Block font enumeration</span>
+              <span className="settings-hint">Prevents sites from detecting installed fonts</span>
+            </div>
+            <Toggle checked={settings.blockFontEnumeration} onChange={v => set("blockFontEnumeration", v)} />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Spoof CPU core count</span>
+              <span className="settings-hint">Reports 4 cores instead of real count</span>
+            </div>
+            <Toggle checked={settings.spoofHardwareConcurrency} onChange={v => set("spoofHardwareConcurrency", v)} />
           </div>
         </section>
 
@@ -229,7 +298,7 @@ export default memo(function SettingsPage({ settings, onUpdate }: Props) {
           <h2 className="settings-section-title">About</h2>
           <div className="settings-about">
             <div className="settings-about-name">Bushido Browser</div>
-            <div className="settings-about-version">v0.5.0</div>
+            <div className="settings-about-version">v0.8.1</div>
             <div className="settings-about-desc">A minimal, privacy-focused browser built with Tauri.</div>
           </div>
         </section>

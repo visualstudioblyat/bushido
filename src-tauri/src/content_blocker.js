@@ -180,4 +180,122 @@
             navigator.getBattery = undefined;
         }
     } catch(e) {}
+
+    // 7. normalize hardware concurrency
+    try {
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 4; }, configurable: false });
+    } catch(e) {}
+
+    // 8. normalize language
+    try {
+        Object.defineProperty(navigator, 'language', { get: function() { return 'en-US'; }, configurable: false });
+        Object.defineProperty(navigator, 'languages', { get: function() { return ['en-US','en']; }, configurable: false });
+    } catch(e) {}
+
+    // 9. normalize platform
+    try {
+        Object.defineProperty(navigator, 'platform', { get: function() { return 'Win32'; }, configurable: false });
+    } catch(e) {}
+
+    // 10. normalize screen fingerprint
+    try {
+        var sw = window.screen.width, sh = window.screen.height;
+        Object.defineProperty(screen, 'availWidth', { get: function() { return sw; }, configurable: false });
+        Object.defineProperty(screen, 'availHeight', { get: function() { return sh; }, configurable: false });
+        Object.defineProperty(screen, 'availLeft', { get: function() { return 0; }, configurable: false });
+        Object.defineProperty(screen, 'availTop', { get: function() { return 0; }, configurable: false });
+        Object.defineProperty(screen, 'colorDepth', { get: function() { return 24; }, configurable: false });
+        Object.defineProperty(screen, 'pixelDepth', { get: function() { return 24; }, configurable: false });
+    } catch(e) {}
+
+    // 11. canvas fingerprint noise
+    try {
+        var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        var origToBlob = HTMLCanvasElement.prototype.toBlob;
+        var origGetCtx = HTMLCanvasElement.prototype.getContext;
+        var addNoise = function(canvas) {
+            try {
+                var ctx = origGetCtx.call(canvas, '2d');
+                if (!ctx) return;
+                var w = canvas.width, h = canvas.height;
+                if (w === 0 || h === 0) return;
+                var img = ctx.getImageData(0, 0, w, h);
+                var d = img.data;
+                for (var i = 0; i < d.length; i += 4) { d[i] = d[i] ^ 1; }
+                ctx.putImageData(img, 0, 0);
+            } catch(e) {}
+        };
+        HTMLCanvasElement.prototype.toDataURL = function() {
+            addNoise(this);
+            return origToDataURL.apply(this, arguments);
+        };
+        HTMLCanvasElement.prototype.toBlob = function() {
+            addNoise(this);
+            return origToBlob.apply(this, arguments);
+        };
+    } catch(e) {}
+
+    // 12. webgl vendor/renderer spoofing
+    try {
+        var spoofedVendor = 'Google Inc. (Intel)';
+        var spoofedRenderer = 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+        var origGetParam = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(p) {
+            if (p === 37445) return spoofedVendor;
+            if (p === 37446) return spoofedRenderer;
+            return origGetParam.call(this, p);
+        };
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            var origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(p) {
+                if (p === 37445) return spoofedVendor;
+                if (p === 37446) return spoofedRenderer;
+                return origGetParam2.call(this, p);
+            };
+        }
+    } catch(e) {}
+
+    // 13. audioctx fingerprint noise
+    try {
+        var origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
+        AnalyserNode.prototype.getFloatFrequencyData = function(arr) {
+            origGetFloat.call(this, arr);
+            for (var i = 0; i < arr.length; i++) { arr[i] += (Math.random() - 0.5) * 0.01; }
+        };
+    } catch(e) {}
+
+    // 14. block network information api
+    try {
+        Object.defineProperty(navigator, 'connection', { get: function() { return undefined; }, configurable: false });
+        Object.defineProperty(navigator, 'mozConnection', { get: function() { return undefined; }, configurable: false });
+        Object.defineProperty(navigator, 'webkitConnection', { get: function() { return undefined; }, configurable: false });
+    } catch(e) {}
+
+    // 15. block font enumeration
+    try {
+        if (document.fonts) {
+            Object.defineProperty(document, 'fonts', {
+                get: function() {
+                    return { forEach: function(){}, size: 0, ready: Promise.resolve(),
+                             check: function(){ return false; }, has: function(){ return false; } };
+                }, configurable: false
+            });
+        }
+    } catch(e) {}
+
+    // 16. block service worker registration (prevents sw-based tracker bypass)
+    try {
+        if (navigator.serviceWorker) {
+            Object.defineProperty(navigator, 'serviceWorker', {
+                get: function() {
+                    return {
+                        register: function() { return Promise.reject(new DOMException('blocked','SecurityError')); },
+                        getRegistration: function() { return Promise.resolve(undefined); },
+                        getRegistrations: function() { return Promise.resolve([]); },
+                        ready: new Promise(function(){})
+                    };
+                }, configurable: false
+            });
+        }
+    } catch(e) {}
 })();

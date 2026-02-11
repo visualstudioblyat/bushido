@@ -21,6 +21,7 @@ export interface Tab {
   lastActiveAt?: number;
   mediaState?: "playing" | "paused";
   mediaTitle?: string;
+  crashed?: boolean;
 }
 
 // split view layout tree
@@ -113,6 +114,13 @@ export interface BushidoSettings {
   clearDataOnExit: boolean;
   compactMode: boolean;
   suspendTimeout: number; // minutes, 0 = never
+  disableDevTools: boolean;
+  disableStatusBar: boolean;
+  disableAutofill: boolean;
+  disablePasswordSave: boolean;
+  blockServiceWorkers: boolean;
+  blockFontEnumeration: boolean;
+  spoofHardwareConcurrency: boolean;
 }
 
 export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
@@ -147,4 +155,11 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   clearDataOnExit: false,
   compactMode: false,
   suspendTimeout: 5,
+  disableDevTools: false,
+  disableStatusBar: false,
+  disableAutofill: false,
+  disablePasswordSave: false,
+  blockServiceWorkers: false,
+  blockFontEnumeration: false,
+  spoofHardwareConcurrency: false,
 };

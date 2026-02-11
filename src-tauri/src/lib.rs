@@ -38,7 +38,22 @@ fn is_blocked_scheme(url: &str) -> bool {
 }
 
 #[tauri::command]
-async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool) -> Result<(), String> {
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>) -> Result<(), String> {
+    let disable_dev_tools = disable_dev_tools.unwrap_or(false);
+    let disable_status_bar = disable_status_bar.unwrap_or(false);
+    let disable_autofill = disable_autofill.unwrap_or(false);
+    let disable_password_save = disable_password_save.unwrap_or(false);
+    let block_service_workers = block_service_workers.unwrap_or(false);
+    let block_font_enum = block_font_enum.unwrap_or(false);
+    let spoof_hw_concurrency = spoof_hw_concurrency.unwrap_or(false);
+
+    // cap at 50 tabs to prevent resource exhaustion
+    {
+        let ws = app.state::<WebviewState>();
+        let tabs = ws.tabs.lock().unwrap_or_else(|e| e.into_inner());
+        if tabs.len() >= 50 { return Err("Max 50 tabs".into()); }
+    }
+
     let window = app.get_window("main").ok_or("no main window")?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
@@ -95,6 +110,21 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_cookie = cookie_script.clone();
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
+
+    // build security hardening JS (only enabled features)
+    let mut sec_parts: Vec<&str> = Vec::new();
+    if block_service_workers {
+        sec_parts.push("try{Object.defineProperty(navigator,'serviceWorker',{get:function(){return{register:function(){return Promise.reject(new DOMException('Service workers are disabled','SecurityError'))},ready:Promise.reject(new DOMException('Service workers are disabled','SecurityError')),controller:null,getRegistrations:function(){return Promise.resolve([])}}}});}catch(e){}");
+    }
+    if block_font_enum {
+        sec_parts.push("try{if(document.fonts&&document.fonts.check){document.fonts.check=function(){return false};document.fonts.forEach=function(){};}}catch(e){}");
+    }
+    if spoof_hw_concurrency {
+        sec_parts.push("try{Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return 4},configurable:false});}catch(e){}");
+    }
+    let security_js = if sec_parts.is_empty() { String::new() } else { format!("(function(){{{}}})();", sec_parts.join("")) };
+    let inject_security = security_js.clone();
+
     let whitelisted_for_nav = site_whitelisted;
     let whitelisted_for_load = site_whitelisted;
     let nav_https_only = https_only;
@@ -165,6 +195,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 if load_cookie_reject && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cookie);
                 }
+                if !inject_security.is_empty() {
+                    let _ = wv.eval(&inject_security);
+                }
             }
         });
 
@@ -178,6 +211,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     }
     if cookie_auto_reject && !site_whitelisted {
         builder = builder.initialization_script(&cookie_script);
+    }
+    if !security_js.is_empty() {
+        builder = builder.initialization_script(&security_js);
     }
 
     let webview = window.add_child(
@@ -213,6 +249,20 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     Ok(c) => c,
                     Err(_) => return,
                 };
+
+                // always-on COM hardening
+                if let Ok(settings) = core.Settings() {
+                    let _ = settings.SetAreHostObjectsAllowed(false);
+                    // conditional security settings (toggled via Settings → Security)
+                    if disable_dev_tools { let _ = settings.SetAreDevToolsEnabled(false); }
+                    if disable_status_bar { let _ = settings.SetIsStatusBarEnabled(false); }
+                    if disable_autofill || disable_password_save {
+                        if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                            if disable_autofill { let _ = s4.SetIsGeneralAutofillEnabled(false); }
+                            if disable_password_save { let _ = s4.SetIsPasswordAutosaveEnabled(false); }
+                        }
+                    }
+                }
 
                 // try to get cookie manager for authenticated downloads
                 let cookie_mgr: Option<ICoreWebView2CookieManager> = core.cast::<ICoreWebView2_2>()
@@ -308,8 +358,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
                 let _ = core4.add_DownloadStarting(&handler, &mut token);
 
-                // adblock: intercept all sub-resource requests at network level
-                if block_enabled {
+                // intercept ALL requests — header stripping is always-on, adblock is conditional
+                {
                     let filter: Vec<u16> = "*\0".encode_utf16().collect();
                     let _ = core.AddWebResourceRequestedFilter(
                         windows::core::PCWSTR::from_raw(filter.as_ptr()),
@@ -326,35 +376,68 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                         move |_sender, args| {
                             if let Some(args) = args {
                                 let request = args.Request()?;
-                                let mut uri = windows::core::PWSTR::null();
-                                request.Uri(&mut uri)?;
-                                let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return Ok(()); };
 
-                                let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
-                                let _ = args.ResourceContext(&mut ctx);
-                                let rtype = blocker::resource_type_str(ctx.0 as u32);
+                                // always-on: strip tracking headers
+                                if let Ok(headers) = request.Headers() {
+                                    // Sec-CH-UA client hints
+                                    for h in ["Sec-CH-UA", "Sec-CH-UA-Arch", "Sec-CH-UA-Bitness",
+                                              "Sec-CH-UA-Full-Version", "Sec-CH-UA-Full-Version-List",
+                                              "Sec-CH-UA-Mobile", "Sec-CH-UA-Model", "Sec-CH-UA-Platform",
+                                              "Sec-CH-UA-Platform-Version", "Sec-CH-UA-WoW64"] {
+                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                    }
+                                    // Sec-Fetch-* headers
+                                    for h in ["Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User"] {
+                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                    }
+                                    // misc tracking headers
+                                    for h in ["X-Client-Data", "X-Requested-With"] {
+                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                    }
+                                    // normalize Referer to origin only
+                                    let referer_name: Vec<u16> = "Referer\0".encode_utf16().collect();
+                                    let mut referer_val = windows::core::PWSTR::null();
+                                    if headers.GetHeader(windows::core::PCWSTR::from_raw(referer_name.as_ptr()), &mut referer_val).is_ok() && !referer_val.is_null() {
+                                        if let Ok(ref_str) = referer_val.to_string() {
+                                            if let Ok(parsed) = url::Url::parse(&ref_str) {
+                                                let origin = parsed.origin().ascii_serialization();
+                                                let origin_wide: Vec<u16> = format!("{}/", origin).encode_utf16().chain(std::iter::once(0)).collect();
+                                                let _ = headers.SetHeader(
+                                                    windows::core::PCWSTR::from_raw(referer_name.as_ptr()),
+                                                    windows::core::PCWSTR::from_raw(origin_wide.as_ptr()),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
 
-                                let matched = Request::new(&url, &source, rtype)
-                                    .map(|req| engine_block.check_network_request(&req).matched)
-                                    .unwrap_or(false);
-                                if matched {
-                                    // block by setting empty 403 response
-                                    let env = args.GetDeferral(); // just need to set response
-                                    drop(env);
-                                    // simplest block: set response to empty with status 403
-                                    // WebView2 doesn't have a simple "block" — we use put_Response with empty body
-                                    // but we need the environment. get it from the core ref.
-                                    // actually the simplest approach: we can't easily get env here,
-                                    // so we use the Request to set the URI to about:blank
-                                    let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
-                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+                                // conditional: adblock engine check
+                                if block_enabled {
+                                    let mut uri = windows::core::PWSTR::null();
+                                    request.Uri(&mut uri)?;
+                                    let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return Ok(()); };
 
-                                    let count = blocked_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                                    if count <= 3 || count % 5 == 0 {
-                                        let _ = app_block.emit_to("main", "tab-blocked-count", serde_json::json!({
-                                            "id": tab_block,
-                                            "count": count
-                                        }));
+                                    let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+                                    let _ = args.ResourceContext(&mut ctx);
+                                    let rtype = blocker::resource_type_str(ctx.0 as u32);
+
+                                    let matched = Request::new(&url, &source, rtype)
+                                        .map(|req| engine_block.check_network_request(&req).matched)
+                                        .unwrap_or(false);
+                                    if matched {
+                                        let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
+                                        let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+
+                                        let count = blocked_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                        if count <= 3 || count % 5 == 0 {
+                                            let _ = app_block.emit_to("main", "tab-blocked-count", serde_json::json!({
+                                                "id": tab_block,
+                                                "count": count
+                                            }));
+                                        }
                                     }
                                 }
                             }
@@ -420,6 +503,20 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
                 let mut msg_token: i64 = 0;
                 let _ = core.add_WebMessageReceived(&msg_handler, &mut msg_token);
+
+                // crash handler — detect renderer process failures
+                let app_crash = app_for_block.clone();
+                let tab_id_crash = tab_id_block.clone();
+                let crash_handler = webview2_com::ProcessFailedEventHandler::create(Box::new(
+                    move |_sender, _args| {
+                        let _ = app_crash.emit_to("main", "tab-crashed", serde_json::json!({
+                            "id": tab_id_crash
+                        }));
+                        Ok(())
+                    },
+                ));
+                let mut crash_token: i64 = 0;
+                let _ = core.add_ProcessFailed(&crash_handler, &mut crash_token);
             }
         });
     }
@@ -843,6 +940,14 @@ async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), S
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView2 browser args — must be set before any webview creation
+    #[cfg(windows)]
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-quic --site-per-process --origin-agent-cluster=true \
+         --disable-dns-prefetch --disable-background-networking \
+         --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
+         --disable-features=UserAgentClientHint");
+
     // init adblock-rust engine (cached binary or cold compile)
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -909,6 +1014,13 @@ pub fn run() {
             })
             .build())
         .setup(|app| {
+            // boost process priority for UI responsiveness during heavy filtering
+            #[cfg(windows)]
+            {
+                use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS};
+                unsafe { let _ = SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS); }
+            }
+
             let sites = load_whitelist(&app.handle());
             app.manage(WhitelistState {
                 sites: Mutex::new(sites),

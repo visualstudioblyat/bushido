@@ -78,6 +78,13 @@ export default function App() {
 
   settingsRef.current = settings;
 
+  const secArgs = useCallback((sr: BushidoSettings) => ({
+    disableDevTools: sr.disableDevTools, disableStatusBar: sr.disableStatusBar,
+    disableAutofill: sr.disableAutofill, disablePasswordSave: sr.disablePasswordSave,
+    blockServiceWorkers: sr.blockServiceWorkers, blockFontEnum: sr.blockFontEnumeration,
+    spoofHwConcurrency: sr.spoofHardwareConcurrency,
+  }), []);
+
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
   const activeTab = activeWs?.activeTabId || "";
@@ -141,7 +148,8 @@ export default function App() {
       setSettings(s);
       settingsLoaded.current = true;
 
-      const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject, isPanel: false };
+      const sa = { disableDevTools: s.disableDevTools, disableStatusBar: s.disableStatusBar, disableAutofill: s.disableAutofill, disablePasswordSave: s.disablePasswordSave, blockServiceWorkers: s.blockServiceWorkers, blockFontEnum: s.blockFontEnumeration, spoofHwConcurrency: s.spoofHardwareConcurrency };
+      const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject, isPanel: false, ...sa };
 
       // helper: open a fresh NTP (no session restore)
       const openFreshNtp = () => {
@@ -399,6 +407,11 @@ export default function App() {
             : t
         ));
       }),
+      listen<{ id: string }>("tab-crashed", (e) => {
+        setTabs(prev => prev.map(t =>
+          t.id === e.payload.id ? { ...t, crashed: true, loading: false } : t
+        ));
+      }),
       // download events
       listen<{ url: string; suggestedFilename: string; cookies?: string }>("download-intercepted", (e) => {
         const dir = settingsRef.current.downloadLocation || "";
@@ -524,7 +537,7 @@ export default function App() {
     setTabs(prev => [...prev, tab]);
     setActiveWorkspaceId(wsId);
     const sr = settingsRef.current;
-    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false });
+    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) });
     clearLoading(tabId);
   }, [workspaces.length, clearLoading, layoutOffset, topOffset]);
 
@@ -600,7 +613,7 @@ export default function App() {
       const sr = settingsRef.current;
       const cw = window.innerWidth - layoutOffset;
       const ch = window.innerHeight - topOffset;
-      invoke("create_tab", { id, url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
+      invoke("create_tab", { id, url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
         invoke("layout_webviews", { panes: [{ tabId: id, x: 0, y: 0, w: cw, h: ch }], focusedTabId: id, sidebarW: layoutOffset, topOffset });
       });
       clearLoading(id);
@@ -681,9 +694,17 @@ export default function App() {
     const updated = { ...ws!, activeTabId: id, paneLayout: newLayout };
     setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
 
-    if (targetTab?.suspended) {
+    if (targetTab?.crashed) {
+      // recreate crashed webview
       const sr = settingsRef.current;
-      invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
+      invoke("close_tab", { id }).then(() =>
+        invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) })
+      ).then(() => syncLayout(updated));
+      clearLoading(id);
+      setTabs(prev => prev.map(t => t.id === id ? { ...t, crashed: false, loading: true, lastActiveAt: Date.now() } : t));
+    } else if (targetTab?.suspended) {
+      const sr = settingsRef.current;
+      invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
         syncLayout(updated);
       });
       clearLoading(id);
@@ -742,7 +763,7 @@ export default function App() {
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
     if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended) {
       const sr = settingsRef.current;
-      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
+      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
         // directly position — syncLayout would read stale tab URL from state
         const cw = window.innerWidth - layoutOffset;
         const ch = window.innerHeight - topOffset;
@@ -1172,7 +1193,7 @@ export default function App() {
     try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=32`; } catch {}
     setPanels(prev => [...prev, { id, url, title: url, favicon }]);
     const sr = settingsRef.current;
-    invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: true })
+    invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: true, ...secArgs(sr) })
       .then(() => invoke("register_panel", { id }));
     setActivePanelId(id);
   }, [sidebarW, topOffset, panels]);
@@ -1182,6 +1203,27 @@ export default function App() {
     setPanels(prev => prev.filter(p => p.id !== panelId));
     if (activePanelId === panelId) setActivePanelId(null);
   }, [activePanelId]);
+
+  const reloadAllTabs = useCallback(() => {
+    const sr = settingsRef.current;
+    const base = { httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, ...secArgs(sr) };
+    tabs.forEach(t => {
+      if (t.url.startsWith("bushido://") || t.suspended) return;
+      invoke("close_tab", { id: t.id }).then(() => {
+        invoke("create_tab", { id: t.id, url: t.url, sidebarW: layoutOffset, topOffset, isPanel: false, ...base });
+      });
+    });
+    panels.forEach(p => {
+      invoke("close_tab", { id: p.id }).then(() => {
+        invoke("create_tab", { id: p.id, url: p.url, sidebarW: layoutOffset, topOffset, isPanel: true, ...base })
+          .then(() => invoke("register_panel", { id: p.id }));
+      });
+    });
+    setTimeout(() => {
+      const ws = workspaces.find(w => w.id === activeWorkspaceId);
+      if (ws) syncLayout(ws);
+    }, 500);
+  }, [tabs, panels, layoutOffset, topOffset, secArgs, workspaces, activeWorkspaceId, syncLayout]);
 
   const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
     setSettings(prev => {
@@ -1330,6 +1372,7 @@ export default function App() {
             <SettingsPage
               settings={settings}
               onUpdate={updateSettings}
+              onReloadAllTabs={reloadAllTabs}
             />
           ) : (
             <WebviewPanel />

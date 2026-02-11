@@ -373,7 +373,7 @@ export default memo(function Sidebar({
   const renderTab = (tab: Tab, isPinned: boolean, idx?: number, depth = 0, childCount = 0) => (
     <div
       key={tab.id}
-      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${paneTabIds.includes(tab.id) ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
+      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${paneTabIds.includes(tab.id) ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${tab.crashed ? "tab-crashed" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
@@ -420,7 +420,9 @@ export default memo(function Sidebar({
         </button>
       )}
       <div className="tab-info">
-        {tab.suspended ? (
+        {tab.crashed ? (
+          <div className="tab-crash-badge">!</div>
+        ) : tab.suspended ? (
           <div className="tab-zzz">zzz</div>
         ) : tab.loading ? (
           <div className="tab-spinner" />
