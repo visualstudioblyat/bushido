@@ -76,7 +76,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
-    let whitelist_sites = ws.sites.lock().unwrap().clone();
+    let whitelist_sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let site_domain = url::Url::parse(&final_url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
@@ -187,7 +187,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     ).map_err(|e| e.to_string())?;
 
     let state = app.state::<WebviewState>();
-    state.tabs.lock().unwrap().insert(tab_id_track, true);
+    state.tabs.lock().unwrap_or_else(|e| e.into_inner()).insert(tab_id_track, true);
 
     // intercept downloads + ad blocking via WebView2 COM API
     #[cfg(windows)]
@@ -205,8 +205,14 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
             unsafe {
                 let controller = wv.controller();
-                let core = controller.CoreWebView2().unwrap();
-                let core4: ICoreWebView2_4 = core.cast().unwrap();
+                let core = match controller.CoreWebView2() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let core4: ICoreWebView2_4 = match core.cast() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
 
                 // try to get cookie manager for authenticated downloads
                 let cookie_mgr: Option<ICoreWebView2CookieManager> = core.cast::<ICoreWebView2_2>()
@@ -423,11 +429,12 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
 #[tauri::command]
 async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    if let Some(wv) = app.get_webview(&id) {
-        wv.close().map_err(|e| e.to_string())?;
-    }
+    // remove from state FIRST so layout_webviews won't try to position a dying webview
     let state = app.state::<WebviewState>();
-    state.tabs.lock().unwrap().remove(&id);
+    state.tabs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    if let Some(wv) = app.get_webview(&id) {
+        let _ = wv.close();
+    }
     Ok(())
 }
 
@@ -446,8 +453,8 @@ struct PaneRectArg {
 async fn layout_webviews(app: tauri::AppHandle, panes: Vec<PaneRectArg>, focused_tab_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
     let state = app.state::<WebviewState>();
     let panel_state = app.state::<PanelState>();
-    let panel_ids = panel_state.ids.lock().unwrap().clone();
-    let tabs = state.tabs.lock().unwrap().clone();
+    let panel_ids = panel_state.ids.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
     for (tab_id, _) in &tabs {
         if panel_ids.contains(tab_id) { continue; }
@@ -634,14 +641,14 @@ async fn media_mute(app: tauri::AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 async fn register_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let ps = app.state::<PanelState>();
-    ps.ids.lock().unwrap().insert(id);
+    ps.ids.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
     Ok(())
 }
 
 #[tauri::command]
 async fn unregister_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let ps = app.state::<PanelState>();
-    ps.ids.lock().unwrap().remove(&id);
+    ps.ids.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     Ok(())
 }
 
@@ -698,7 +705,7 @@ fn save_whitelist(app: &tauri::AppHandle, sites: &HashSet<String>) {
 async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
     let ws = app.state::<WhitelistState>();
     let (whitelisted, snapshot) = {
-        let mut sites = ws.sites.lock().unwrap();
+        let mut sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
         let wl = if sites.contains(&domain) {
             sites.remove(&domain);
             false
@@ -715,14 +722,14 @@ async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool,
 #[tauri::command]
 async fn get_whitelist(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let ws = app.state::<WhitelistState>();
-    let sites = ws.sites.lock().unwrap();
+    let sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
     Ok(sites.iter().cloned().collect())
 }
 
 #[tauri::command]
 async fn is_whitelisted(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
     let ws = app.state::<WhitelistState>();
-    let sites = ws.sites.lock().unwrap();
+    let sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
     Ok(sites.contains(&domain))
 }
 
@@ -807,7 +814,7 @@ async fn cancel_download(app: tauri::AppHandle, id: String) -> Result<(), String
 #[tauri::command]
 async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, String> {
     let dm = app.state::<downloads::DownloadManager>();
-    let downloads = dm.downloads.lock().unwrap();
+    let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
     Ok(downloads.values().cloned().collect())
 }
 
@@ -815,7 +822,7 @@ async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, 
 async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let dm = app.state::<downloads::DownloadManager>();
     let path = {
-        let downloads = dm.downloads.lock().unwrap();
+        let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
         let item = downloads.get(&id).ok_or("not found")?;
         item.file_path.clone()
     };
@@ -826,7 +833,7 @@ async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> 
 async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let dm = app.state::<downloads::DownloadManager>();
     let path = {
-        let downloads = dm.downloads.lock().unwrap();
+        let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
         let item = downloads.get(&id).ok_or("not found")?;
         item.file_path.clone()
     };
@@ -876,7 +883,10 @@ pub fn run() {
                 "ctrl+d",
                 "ctrl+h",
                 "ctrl+\\",
-            ]).unwrap()
+            ]).unwrap_or_else(|e| {
+                eprintln!("Warning: failed to register global shortcuts: {}", e);
+                tauri_plugin_global_shortcut::Builder::new()
+            })
             .with_handler(|app, shortcut, event| {
                 use tauri_plugin_global_shortcut::ShortcutState;
                 if event.state != ShortcutState::Pressed { return; }
@@ -908,7 +918,7 @@ pub fn run() {
             let pending = downloads::load_pending(&app.handle());
             if !pending.is_empty() {
                 let dm = app.state::<downloads::DownloadManager>();
-                let mut downloads = dm.downloads.lock().unwrap();
+                let mut downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
                 for item in pending {
                     downloads.insert(item.id.clone(), item);
                 }

@@ -41,7 +41,9 @@ pub fn compile_and_cache(data_dir: &PathBuf) -> Arc<Engine> {
     let engine = Engine::from_filter_set(filter_set, true);
 
     // cache for fast next startup
-    let _ = std::fs::create_dir_all(engine_path.parent().unwrap());
+    if let Some(parent) = engine_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let serialized = engine.serialize();
     let _ = std::fs::write(&engine_path, &serialized);
 
