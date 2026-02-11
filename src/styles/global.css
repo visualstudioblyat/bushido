@@ -52,7 +52,7 @@ html, body, #root {
   user-select: none;
 }
 
-/* ===== LAYOUT ===== */
+
 .browser {
   display: flex;
   flex-direction: column;
@@ -78,7 +78,7 @@ html, body, #root {
   background: var(--bg-primary);
 }
 
-/* ===== TITLEBAR ===== */
+
 .titlebar {
   height: var(--titlebar-height);
   display: flex;
@@ -131,7 +131,7 @@ html, body, #root {
   color: white;
 }
 
-/* ===== SIDEBAR ===== */
+
 
 /* Spacer sits in flex flow and claims horizontal space.
    Transitioning width on an empty div = near-zero reflow.
@@ -377,7 +377,7 @@ html, body, #root {
   opacity: 0.5;
 }
 
-/* ===== SPLIT VIEW OVERLAY ===== */
+
 .split-overlay {
   position: absolute;
   inset: 0;
@@ -550,7 +550,7 @@ html, body, #root {
   font-weight: 300;
 }
 
-/* ===== SIDEBAR HEADER + NAV + URL ===== */
+
 .sidebar-header-row {
   display: flex;
   align-items: center;
@@ -688,7 +688,7 @@ html, body, #root {
   100% { transform: translateX(100%) scaleX(0); opacity: 0; }
 }
 
-/* ===== SHIELD BADGE ===== */
+
 .shield-badge {
   position: relative;
   width: 30px;
@@ -741,7 +741,7 @@ html, body, #root {
   to { transform: scale(1); opacity: 1; }
 }
 
-/* ===== FIND BAR ===== */
+
 .find-bar {
   display: flex;
   align-items: center;
@@ -797,7 +797,7 @@ html, body, #root {
   color: var(--text-primary);
 }
 
-/* ===== WEBVIEW AREA ===== */
+
 .webview-container {
   flex: 1;
   background: var(--bg-primary);
@@ -816,7 +816,7 @@ html, body, #root {
   background: white;
 }
 
-/* ===== CONTEXT MENU ===== */
+
 .ctx-overlay {
   position: fixed;
   inset: 0;
@@ -910,7 +910,7 @@ html, body, #root {
   box-shadow: 0 0 0 2px var(--bg-elevated);
 }
 
-/* ===== WORKSPACE SWITCHER ===== */
+
 .workspace-switcher {
   display: flex;
   align-items: center;
@@ -998,7 +998,139 @@ html, body, #root {
   transition: border-color 150ms var(--spring), background-color 150ms var(--spring), transform 150ms var(--spring), box-shadow 150ms var(--spring);
 }
 
-/* ===== TAB TREE ===== */
+
+.panel-icons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+
+.panel-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  transition: background 150ms var(--spring);
+}
+
+.panel-icon:hover { background: var(--glass-hover); }
+
+.panel-icon.active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.panel-icon img {
+  border-radius: 3px;
+}
+
+.panel-icon.add { color: var(--text-dim); }
+.panel-icon.add:hover { color: var(--text-secondary); }
+
+.panel-icon-fallback {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.panel-picker-wrap {
+  position: relative;
+}
+
+.panel-picker {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  width: 220px;
+  background: rgba(26, 26, 32, 0.92);
+  border: 1px solid var(--edge-light);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xl);
+  backdrop-filter: blur(24px) saturate(1.5);
+  z-index: 100;
+  overflow: hidden;
+  animation: ctxIn 120ms ease-out;
+}
+
+.panel-picker-label {
+  padding: 10px 12px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text-dim);
+}
+
+.panel-picker-presets {
+  padding: 0 5px;
+}
+
+.panel-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background-color 80ms ease-in-out, color 80ms ease-in-out;
+}
+
+.panel-picker-item:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.panel-picker-item img {
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.panel-picker-custom {
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--glass-border);
+  margin-top: 4px;
+}
+
+.panel-picker-input {
+  width: 100%;
+  height: 30px;
+  background: var(--bg-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.panel-picker-input:focus {
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.panel-picker-input::placeholder {
+  color: var(--text-dim);
+}
+
+
 .tab-collapse-btn {
   background: none;
   border: none;
@@ -1039,7 +1171,7 @@ html, body, #root {
   background: var(--glass-hover);
 }
 
-/* ===== COMPACT MODE ===== */
+
 .sidebar.compact {
   transform: translateX(-100%);
   box-shadow: none;
@@ -1074,7 +1206,7 @@ html, body, #root {
 
 /* compact mode — no separate toolbar to hide, sidebar handles everything */
 
-/* ===== BOOKMARK SECTION (sidebar) ===== */
+
 .bookmark-section {
   padding: 0 10px;
 }
@@ -1136,7 +1268,7 @@ html, body, #root {
   color: var(--text-primary);
 }
 
-/* ===== MEDIA BAR ===== */
+
 .media-bar {
   margin: 0 8px 4px;
   padding: 8px 10px;
@@ -1249,7 +1381,7 @@ html, body, #root {
   transform: scale(0.9);
 }
 
-/* ===== SIDEBAR BOTTOM BUTTONS ===== */
+
 .sidebar-bottom-btns {
   display: flex;
   align-items: center;
@@ -1287,7 +1419,7 @@ html, body, #root {
   transition: background-color 200ms var(--spring), color 200ms var(--spring), border-color 200ms var(--spring), transform 200ms var(--spring), box-shadow 200ms var(--spring);
 }
 
-/* ===== HISTORY PANEL ===== */
+
 .history-panel {
   position: absolute;
   top: 0;
@@ -1509,7 +1641,7 @@ html, body, #root {
   white-space: nowrap;
 }
 
-/* ===== TOP SITES GRID ===== */
+
 .url-topsites {
   position: absolute;
   top: 100%;
@@ -1577,7 +1709,7 @@ html, body, #root {
   text-align: center;
 }
 
-/* ===== URL SUGGESTIONS ===== */
+
 .url-suggestions {
   position: absolute;
   top: 100%;
@@ -1654,7 +1786,7 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-/* ===== BOOKMARK STAR (toolbar) ===== */
+
 .bookmark-btn {
   width: 30px;
   height: 30px;
@@ -1691,7 +1823,7 @@ html, body, #root {
   filter: brightness(1.2);
 }
 
-/* ===== NEW TAB PAGE ===== */
+
 .ntp {
   flex: 1;
   display: flex;
@@ -1814,7 +1946,7 @@ html, body, #root {
   white-space: nowrap;
 }
 
-/* ===== COMMAND PALETTE ===== */
+
 .cmd-overlay {
   position: fixed;
   inset: 0;
@@ -1970,7 +2102,7 @@ html, body, #root {
   font-size: 12px;
 }
 
-/* ===== TAB SUSPENDED ===== */
+
 .tab-item.tab-suspended {
   opacity: 0.5;
 }
@@ -1990,7 +2122,7 @@ html, body, #root {
   opacity: 0.5;
 }
 
-/* ===== EXTENSIONS PANEL ===== */
+
 
 /* Trigger icon in URL bar */
 .ext-trigger {
@@ -2182,7 +2314,7 @@ html, body, #root {
   background: var(--accent-soft);
 }
 
-/* ===== READER SETTINGS ===== */
+
 .reader-settings {
   padding: 8px 12px;
   border-top: 1px solid var(--glass-border);
@@ -2268,7 +2400,7 @@ html, body, #root {
   border-color: var(--accent);
 }
 
-/* ===== SETTINGS PAGE ===== */
+
 .settings-page {
   flex: 1;
   overflow-y: auto;
@@ -2518,7 +2650,7 @@ html, body, #root {
   transform: rotate(30deg);
 }
 
-/* ===== DOWNLOAD BUTTON ===== */
+
 .download-btn {
   position: relative;
   width: 40px;
@@ -2562,7 +2694,7 @@ html, body, #root {
   line-height: 1;
 }
 
-/* ===== DOWNLOAD PANEL ===== */
+
 .download-panel {
   position: absolute;
   top: 0;

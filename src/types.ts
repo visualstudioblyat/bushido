@@ -1,3 +1,10 @@
+export interface WebPanel {
+  id: string;
+  url: string;
+  title: string;
+  favicon?: string;
+}
+
 export interface Tab {
   id: string;
   url: string;
@@ -51,6 +58,7 @@ export interface SessionData {
   tabs: { id: string; url: string; title: string; pinned?: boolean; workspaceId: string; parentId?: string; suspended?: boolean }[];
   activeWorkspaceId: string;
   compactMode?: boolean;
+  panels?: { id: string; url: string; title: string; favicon?: string }[];
 }
 
 export interface HistoryEntry {

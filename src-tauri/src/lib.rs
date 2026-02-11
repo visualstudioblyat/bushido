@@ -14,6 +14,10 @@ struct WebviewState {
     tabs: Mutex<HashMap<String, bool>>,
 }
 
+struct PanelState {
+    ids: Mutex<HashSet<String>>,
+}
+
 struct BlockerState {
     engine: Arc<Engine>,
     cosmetic_script: String,
@@ -26,13 +30,25 @@ struct WhitelistState {
     sites: Mutex<HashSet<String>>,
 }
 
+fn is_blocked_scheme(url: &str) -> bool {
+    let lower = url.trim().to_lowercase();
+    lower.starts_with("javascript:") || lower.starts_with("data:")
+        || lower.starts_with("file:") || lower.starts_with("vbscript:")
+        || lower.starts_with("blob:")
+}
+
 #[tauri::command]
-async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool) -> Result<(), String> {
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool) -> Result<(), String> {
     let window = app.get_window("main").ok_or("no main window")?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let content_w = (size.width as f64 / scale) - sidebar_w;
     let content_h = (size.height as f64 / scale) - top_offset;
+
+    // block dangerous URL schemes
+    if is_blocked_scheme(&url) {
+        return Err("Blocked URL scheme".into());
+    }
 
     // internal pages — handled by React, no webview needed
     if url.starts_with("bushido://") {
@@ -87,9 +103,20 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let load_cookie_reject = cookie_auto_reject;
 
     let mut builder = WebviewBuilder::new(&id, webview_url)
-        .auto_resize()
-        .on_navigation(move |url| {
+        .auto_resize();
+
+    // set mobile UA for panel webviews so sites serve narrow-friendly layouts
+    if is_panel {
+        builder = builder.user_agent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36");
+    }
+
+    builder = builder.on_navigation(move |url| {
             let url_str = url.to_string();
+
+            // block dangerous URL schemes (javascript:, data:, file:, etc.)
+            if is_blocked_scheme(&url_str) {
+                return false;
+            }
 
             // block http (only when https-only mode is enabled)
             if nav_https_only && url_str.starts_with("http://") {
@@ -418,9 +445,12 @@ struct PaneRectArg {
 #[tauri::command]
 async fn layout_webviews(app: tauri::AppHandle, panes: Vec<PaneRectArg>, focused_tab_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
     let state = app.state::<WebviewState>();
+    let panel_state = app.state::<PanelState>();
+    let panel_ids = panel_state.ids.lock().unwrap().clone();
     let tabs = state.tabs.lock().unwrap().clone();
 
     for (tab_id, _) in &tabs {
+        if panel_ids.contains(tab_id) { continue; }
         if let Some(wv) = app.get_webview(tab_id) {
             if let Some(pane) = panes.iter().find(|p| p.tab_id == *tab_id) {
                 let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + pane.x, top_offset + pane.y));
@@ -457,6 +487,9 @@ async fn switch_tab(app: tauri::AppHandle, id: String, split_id: String, sidebar
 
 #[tauri::command]
 async fn navigate_tab(app: tauri::AppHandle, id: String, url: String) -> Result<(), String> {
+    if is_blocked_scheme(&url) {
+        return Err("Blocked URL scheme".into());
+    }
     if let Some(wv) = app.get_webview(&id) {
         let parsed_url = if url.starts_with("https://") {
             url.parse().map_err(|e: url::ParseError| e.to_string())?
@@ -594,6 +627,29 @@ async fn media_mute(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
         wv.eval(r#"(function(){var v=document.querySelector('video,audio');if(v){v.muted=!v.muted}})()"#)
           .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn register_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().unwrap().insert(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn unregister_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().unwrap().remove(&id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn position_panel(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
+        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
     }
     Ok(())
 }
@@ -797,6 +853,9 @@ pub fn run() {
         .manage(WebviewState {
             tabs: Mutex::new(HashMap::new()),
         })
+        .manage(PanelState {
+            ids: Mutex::new(HashSet::new()),
+        })
         .manage(downloads::DownloadManager::new())
         .manage(BlockerState {
             engine,
@@ -893,7 +952,10 @@ pub fn run() {
             cancel_download,
             get_downloads,
             open_download,
-            open_download_folder
+            open_download_folder,
+            register_panel,
+            unregister_panel,
+            position_panel
         ])
         .run(tauri::generate_context!())
         .expect("error while running bushido");

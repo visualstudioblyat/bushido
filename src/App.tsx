@@ -10,7 +10,7 @@ import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
 import SplitOverlay from "./components/SplitOverlay";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo } from "./types";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf } from "./splitLayout";
 
 const NTP_URL = "bushido://newtab";
@@ -18,6 +18,7 @@ const SETTINGS_URL = "bushido://settings";
 const NEW_TAB_URL = NTP_URL;
 const DEFAULT_WS_COLOR = "#6366f1";
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
+const PANEL_W = 350;
 
 // generate short ids
 let tabCounter = Date.now();
@@ -25,6 +26,21 @@ const genId = (prefix = "tab") => `${prefix}-${++tabCounter}`;
 
 let wsCounter = 0;
 const genWsId = () => `ws-${++wsCounter}`;
+
+function sanitizePanelUrl(input: string): string | null {
+  const trimmed = input.trim().replace(/[\x00-\x1f\x7f]/g, "");
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  const blocked = ["javascript:", "data:", "file:", "vbscript:", "blob:", "about:", "bushido:"];
+  if (blocked.some(s => lower.startsWith(s))) return null;
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    if (["javascript:", "data:", "file:"].includes(url.protocol)) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
 
 function frecencyScore(visitCount: number, lastVisitMs: number): number {
   const ageHours = (Date.now() - lastVisitMs) / 3_600_000;
@@ -51,6 +67,8 @@ export default function App() {
   const [settings, setSettings] = useState<BushidoSettings>({ ...DEFAULT_SETTINGS });
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [panels, setPanels] = useState<WebPanel[]>([]);
+  const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
   const settingsLoaded = useRef(false);
@@ -67,6 +85,8 @@ export default function App() {
   const paneTabIds = useMemo(() => paneLayout ? allLeafIds(paneLayout) : [], [paneLayout]);
   const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
   const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
+  const panelW = activePanelId && !compactMode ? PANEL_W : 0;
+  const layoutOffset = sidebarW + panelW;
   const topOffset = 40;
   const pinnedTabs = useMemo(() => currentWsTabs.filter(t => t.pinned), [currentWsTabs]);
   const regularTabs = useMemo(() => currentWsTabs.filter(t => !t.pinned), [currentWsTabs]);
@@ -87,7 +107,7 @@ export default function App() {
   const syncLayout = useCallback((ws?: Workspace, allTabs?: Tab[]) => {
     const w = ws || activeWs;
     if (!w) return;
-    const cw = window.innerWidth - sidebarW;
+    const cw = window.innerWidth - layoutOffset;
     const ch = window.innerHeight - topOffset;
     const rect = { x: 0, y: 0, w: cw, h: ch };
 
@@ -100,8 +120,8 @@ export default function App() {
       else panes = [{ tabId: w.activeTabId, ...rect }];
     }
 
-    invoke("layout_webviews", { panes, focusedTabId: w.activeTabId, sidebarW, topOffset });
-  }, [activeWs, tabs, sidebarW, topOffset]);
+    invoke("layout_webviews", { panes, focusedTabId: w.activeTabId, sidebarW: layoutOffset, topOffset });
+  }, [activeWs, tabs, layoutOffset, topOffset]);
 
   // restore session or create first tab
   useEffect(() => {
@@ -121,7 +141,7 @@ export default function App() {
       setSettings(s);
       settingsLoaded.current = true;
 
-      const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject };
+      const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject, isPanel: false };
 
       // helper: open a fresh NTP (no session restore)
       const openFreshNtp = () => {
@@ -216,6 +236,17 @@ export default function App() {
             invoke("layout_webviews", { panes, focusedTabId: firstActiveWs.activeTabId, sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           }
         }
+
+        // restore web panels
+        if (session.panels?.length) {
+          setPanels(session.panels);
+          const panelArgs = { ...tabArgs, isPanel: true };
+          session.panels.forEach(p => {
+            invoke("create_tab", { id: p.id, url: p.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, ...panelArgs })
+              .then(() => invoke("register_panel", { id: p.id }))
+              .then(() => invoke("position_panel", { id: p.id, x: -9999, y: 0, w: PANEL_W, h: 0 }));
+          });
+        }
       } else {
         // old flat array format or empty — migrate to workspace format
         let saved: { url: string; title: string; pinned?: boolean }[] = [];
@@ -257,11 +288,12 @@ export default function App() {
         tabs: tabs.map(tab => ({ id: tab.id, url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
         activeWorkspaceId,
         compactMode,
+        panels: panels.map(p => ({ id: p.id, url: p.url, title: p.title, favicon: p.favicon })),
       };
       invoke("save_session", { tabs: JSON.stringify(session) });
     }, 1000);
     return () => clearTimeout(t);
-  }, [tabs, workspaces, activeWorkspaceId, compactMode]);
+  }, [tabs, workspaces, activeWorkspaceId, compactMode, panels]);
 
   // load history + bookmarks on init
   useEffect(() => {
@@ -330,6 +362,7 @@ export default function App() {
           domain = host;
         } catch {}
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, url: e.payload.url, favicon } : t));
+        setPanels(prev => prev.map(p => p.id === e.payload.id ? { ...p, url: e.payload.url, favicon } : p));
         recordHistory(e.payload.url, "", favicon);
         if (domain) {
           invoke<boolean>("is_whitelisted", { domain }).then(wl => {
@@ -346,6 +379,7 @@ export default function App() {
           }
           return prev.map(t => t.id === e.payload.id ? { ...t, title: clean, loading: false } : t);
         });
+        setPanels(prev => prev.map(p => p.id === e.payload.id ? { ...p, title: clean } : p));
       }),
       listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, loading: e.payload.loading } : t));
@@ -399,20 +433,39 @@ export default function App() {
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
 
+  // panel positioning
+  const positionActivePanel = useCallback(() => {
+    if (!activePanelId || compactMode) return;
+    const h = window.innerHeight - topOffset;
+    invoke("position_panel", { id: activePanelId, x: sidebarW, y: topOffset, w: PANEL_W, h });
+  }, [activePanelId, sidebarW, topOffset, compactMode]);
+
   // resize webviews when sidebar/topOffset changes
   // delay so CSS transition (300ms) completes before native resize (blocks compositor)
   useEffect(() => {
     if (!activeTab) return;
-    const t = setTimeout(() => syncLayout(), 320);
+    const t = setTimeout(() => { syncLayout(); positionActivePanel(); }, 320);
     return () => clearTimeout(t);
-  }, [sidebarW, topOffset, paneLayout]);
+  }, [sidebarW, topOffset, paneLayout, positionActivePanel]);
 
   useEffect(() => {
     if (!activeTab) return;
-    const handler = () => syncLayout();
+    const handler = () => { syncLayout(); positionActivePanel(); };
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
-  }, [activeTab, paneLayout, syncLayout]);
+  }, [activeTab, paneLayout, syncLayout, positionActivePanel]);
+
+  // reposition active panel when it changes
+  useEffect(() => {
+    positionActivePanel();
+  }, [positionActivePanel]);
+
+  // hide panel webview when entering compact mode
+  useEffect(() => {
+    if (compactMode && activePanelId) {
+      invoke("position_panel", { id: activePanelId, x: -9999, y: 0, w: PANEL_W, h: 0 });
+    }
+  }, [compactMode]);
 
   // sync compactMode setting ↔ state
   useEffect(() => {
@@ -471,9 +524,9 @@ export default function App() {
     setTabs(prev => [...prev, tab]);
     setActiveWorkspaceId(wsId);
     const sr = settingsRef.current;
-    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject });
+    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false });
     clearLoading(tabId);
-  }, [workspaces.length, clearLoading, sidebarW, topOffset]);
+  }, [workspaces.length, clearLoading, layoutOffset, topOffset]);
 
   const deleteWorkspace = useCallback((wsId: string) => {
     // can't delete last workspace
@@ -545,17 +598,17 @@ export default function App() {
     setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: id, paneLayout: undefined } : w));
     if (!isInternal) {
       const sr = settingsRef.current;
-      const cw = window.innerWidth - sidebarW;
+      const cw = window.innerWidth - layoutOffset;
       const ch = window.innerHeight - topOffset;
-      invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
-        invoke("layout_webviews", { panes: [{ tabId: id, x: 0, y: 0, w: cw, h: ch }], focusedTabId: id, sidebarW, topOffset });
+      invoke("create_tab", { id, url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
+        invoke("layout_webviews", { panes: [{ tabId: id, x: 0, y: 0, w: cw, h: ch }], focusedTabId: id, sidebarW: layoutOffset, topOffset });
       });
       clearLoading(id);
     } else {
       // hide all webviews since internal pages are React-rendered
-      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
     }
-  }, [activeWorkspaceId, clearLoading, sidebarW, topOffset]);
+  }, [activeWorkspaceId, clearLoading, layoutOffset, topOffset]);
 
   const closeTab = useCallback((id: string) => {
     invoke("close_tab", { id });
@@ -571,7 +624,7 @@ export default function App() {
       if (wsTabs.length <= 1) {
         const newId = genId();
         const newTab: Tab = { id: newId, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
-        invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+        invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
         setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: newId, paneLayout: undefined } : w));
         return [...next, newTab];
       }
@@ -606,7 +659,7 @@ export default function App() {
 
       return next;
     });
-  }, [activeWorkspaceId, sidebarW, topOffset, syncLayout]);
+  }, [activeWorkspaceId, layoutOffset, topOffset, syncLayout]);
 
   const selectTab = useCallback((id: string) => {
     const targetTab = tabs.find(t => t.id === id);
@@ -630,17 +683,17 @@ export default function App() {
 
     if (targetTab?.suspended) {
       const sr = settingsRef.current;
-      invoke("create_tab", { id, url: targetTab.url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
+      invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
         syncLayout(updated);
       });
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, loading: true, lastActiveAt: Date.now() } : t));
     } else if (isInternal) {
-      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+      invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
     } else {
       syncLayout(updated);
     }
-  }, [activeWorkspaceId, tabs, workspaces, sidebarW, topOffset, clearLoading, syncLayout]);
+  }, [activeWorkspaceId, tabs, workspaces, layoutOffset, topOffset, clearLoading, syncLayout]);
 
   const pinTab = useCallback((id: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
@@ -689,11 +742,11 @@ export default function App() {
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
     if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended) {
       const sr = settingsRef.current;
-      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject }).then(() => {
+      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false }).then(() => {
         // directly position — syncLayout would read stale tab URL from state
-        const cw = window.innerWidth - sidebarW;
+        const cw = window.innerWidth - layoutOffset;
         const ch = window.innerHeight - topOffset;
-        invoke("layout_webviews", { panes: [{ tabId: activeTab, x: 0, y: 0, w: cw, h: ch }], focusedTabId: activeTab, sidebarW, topOffset });
+        invoke("layout_webviews", { panes: [{ tabId: activeTab, x: 0, y: 0, w: cw, h: ch }], focusedTabId: activeTab, sidebarW: layoutOffset, topOffset });
       });
       if (currentTab?.suspended) {
         setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false } : t));
@@ -702,7 +755,7 @@ export default function App() {
       invoke("navigate_tab", { id: activeTab, url: finalUrl });
     }
     clearLoading(activeTab, 3000);
-  }, [activeTab, tabs, clearLoading, sidebarW, topOffset, syncLayout]);
+  }, [activeTab, tabs, clearLoading, layoutOffset, topOffset, syncLayout]);
 
   // split view — toggle or split with a specific tab, optional side
   const toggleSplit = useCallback((targetId?: string, side: "left" | "right" | "top" | "bottom" = "right") => {
@@ -744,10 +797,10 @@ export default function App() {
   // compute dividers from current layout
   const dividers = useMemo((): DividerInfo[] => {
     if (!paneLayout) return [];
-    const cw = window.innerWidth - sidebarW;
+    const cw = window.innerWidth - layoutOffset;
     const ch = window.innerHeight - topOffset;
     return computeDividers(paneLayout, { x: 0, y: 0, w: cw, h: ch });
-  }, [paneLayout, sidebarW, topOffset]);
+  }, [paneLayout, layoutOffset, topOffset]);
 
   const onDividerDown = useCallback((idx: number, e: React.MouseEvent) => {
     e.preventDefault();
@@ -755,14 +808,14 @@ export default function App() {
     const div = dividers[idx];
     if (!div) return;
     let lastPos = div.dir === "row" ? e.clientX : e.clientY;
-    const dimension = div.dir === "row" ? window.innerWidth - sidebarW : window.innerHeight - topOffset;
+    const dimension = div.dir === "row" ? window.innerWidth - layoutOffset : window.innerHeight - topOffset;
     let rafId = 0;
     let pendingDelta = 0;
     let currentLayout = workspaces.find(w => w.id === activeWorkspaceId)?.paneLayout;
     if (!currentLayout) return;
 
     // hide webviews so mousemove fires over the whole area (native webviews steal pointer)
-    invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW, topOffset });
+    invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
 
     const tick = () => {
       rafId = 0;
@@ -787,18 +840,18 @@ export default function App() {
           w.id === activeWorkspaceId ? { ...w, paneLayout: finalLayout } : w
         ));
         // show webviews at final positions
-        const cw = window.innerWidth - sidebarW;
+        const cw = window.innerWidth - layoutOffset;
         const ch = window.innerHeight - topOffset;
         const panes = computeRects(finalLayout, { x: 0, y: 0, w: cw, h: ch });
         const focusId = workspaces.find(w => w.id === activeWorkspaceId)?.activeTabId || "";
-        invoke("layout_webviews", { panes, focusedTabId: focusId, sidebarW, topOffset });
+        invoke("layout_webviews", { panes, focusedTabId: focusId, sidebarW: layoutOffset, topOffset });
       }
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, [dividers, workspaces, activeWorkspaceId, sidebarW, topOffset]);
+  }, [dividers, workspaces, activeWorkspaceId, layoutOffset, topOffset]);
 
   // drag-to-split not feasible — WebView2 child windows are native OS windows that
   // intercept all mouse/drag events. Use context menu "split with this tab" or Ctrl+\ instead.
@@ -1098,6 +1151,38 @@ export default function App() {
     if (playingTab) invoke("media_mute", { id: playingTab.id });
   }, [playingTab]);
 
+  const togglePanel = useCallback((panelId: string) => {
+    if (activePanelId === panelId) {
+      invoke("position_panel", { id: panelId, x: -9999, y: 0, w: PANEL_W, h: 0 });
+      setActivePanelId(null);
+    } else {
+      if (activePanelId) {
+        invoke("position_panel", { id: activePanelId, x: -9999, y: 0, w: PANEL_W, h: 0 });
+      }
+      setActivePanelId(panelId);
+    }
+  }, [activePanelId]);
+
+  const addPanel = useCallback((rawUrl: string) => {
+    const url = sanitizePanelUrl(rawUrl);
+    if (!url) return;
+    if (panels.some(p => p.url === url)) return;
+    const id = genId("panel");
+    let favicon: string | undefined;
+    try { favicon = `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=32`; } catch {}
+    setPanels(prev => [...prev, { id, url, title: url, favicon }]);
+    const sr = settingsRef.current;
+    invoke("create_tab", { id, url, sidebarW, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: true })
+      .then(() => invoke("register_panel", { id }));
+    setActivePanelId(id);
+  }, [sidebarW, topOffset, panels]);
+
+  const removePanel = useCallback((panelId: string) => {
+    invoke("unregister_panel", { id: panelId }).then(() => invoke("close_tab", { id: panelId }));
+    setPanels(prev => prev.filter(p => p.id !== panelId));
+    if (activePanelId === panelId) setActivePanelId(null);
+  }, [activePanelId]);
+
   const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
@@ -1200,6 +1285,11 @@ export default function App() {
           playingTab={playingTab}
           onMediaPlayPause={mediaPlayPause}
           onMediaMute={mediaMute}
+          panels={panels}
+          activePanelId={activePanelId}
+          onTogglePanel={togglePanel}
+          onAddPanel={addPanel}
+          onRemovePanel={removePanel}
         />
         {historyOpen && (
           <HistoryPanel
@@ -1223,6 +1313,7 @@ export default function App() {
           />
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
+        {panelW > 0 && <div style={{ width: panelW, flexShrink: 0 }} />}
         <div className="main" ref={mainRef}>
           {findOpen && activeTab && !showInternalPage && (
             <FindBar tabId={activeTab} onClose={closeFindBar} />

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo, memo, RefObject } from "react";
-import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult } from "../types";
+import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult, WebPanel } from "../types";
 import logoSrc from "../assets/logo.png";
 
 const GearIcon = () => (
@@ -10,6 +10,15 @@ const GearIcon = () => (
 );
 
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
+
+const PANEL_PRESETS = [
+  { name: "ChatGPT", url: "https://chatgpt.com", favicon: "https://www.google.com/s2/favicons?domain=chatgpt.com&sz=32" },
+  { name: "Spotify", url: "https://open.spotify.com", favicon: "https://www.google.com/s2/favicons?domain=spotify.com&sz=32" },
+  { name: "Discord", url: "https://discord.com/app", favicon: "https://www.google.com/s2/favicons?domain=discord.com&sz=32" },
+  { name: "WhatsApp", url: "https://web.whatsapp.com", favicon: "https://www.google.com/s2/favicons?domain=whatsapp.com&sz=32" },
+  { name: "YouTube Music", url: "https://music.youtube.com", favicon: "https://www.google.com/s2/favicons?domain=music.youtube.com&sz=32" },
+  { name: "Twitter / X", url: "https://x.com", favicon: "https://www.google.com/s2/favicons?domain=x.com&sz=32" },
+] as const;
 
 interface Props {
   tabs: Tab[];
@@ -69,6 +78,11 @@ interface Props {
   playingTab?: Tab;
   onMediaPlayPause: () => void;
   onMediaMute: () => void;
+  panels: WebPanel[];
+  activePanelId: string | null;
+  onTogglePanel: (id: string) => void;
+  onAddPanel: (url: string) => void;
+  onRemovePanel: (id: string) => void;
 }
 
 interface CtxMenu {
@@ -160,6 +174,7 @@ export default memo(function Sidebar({
   activeDownloadCount, onToggleDownloads,
   paneTabIds, onSplitWith,
   playingTab, onMediaPlayPause, onMediaMute,
+  panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -179,6 +194,9 @@ export default memo(function Sidebar({
   const [bmCtx, setBmCtx] = useState<{ x: number; y: number; id: string } | null>(null);
   const bmCtxMenuRef = useRef<HTMLDivElement>(null);
   const bmCtxPos = useClampedMenu(bmCtxMenuRef, bmCtx);
+  const [panelPickerOpen, setPanelPickerOpen] = useState(false);
+  const [panelCustomUrl, setPanelCustomUrl] = useState("");
+  const panelPickerRef = useRef<HTMLDivElement>(null);
 
   // url bar state (absorbed from Toolbar)
   const [urlInput, setUrlInput] = useState(url);
@@ -202,6 +220,18 @@ export default memo(function Sidebar({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [extPanelOpen]);
+
+  // close panel picker on click outside
+  useEffect(() => {
+    if (!panelPickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (panelPickerRef.current && !panelPickerRef.current.contains(e.target as Node)) {
+        setPanelPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [panelPickerOpen]);
 
   useEffect(() => {
     setSelectedIdx(-1);
@@ -297,6 +327,21 @@ export default memo(function Sidebar({
       renameRef.current.select();
     }
   }, [renaming]);
+
+  const handlePanelPreset = useCallback((url: string) => {
+    onAddPanel(url);
+    setPanelPickerOpen(false);
+    setPanelCustomUrl("");
+  }, [onAddPanel]);
+
+  const handlePanelCustomSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (panelCustomUrl.trim()) {
+      onAddPanel(panelCustomUrl.trim());
+      setPanelPickerOpen(false);
+      setPanelCustomUrl("");
+    }
+  }, [panelCustomUrl, onAddPanel]);
 
   const handleCtx = useCallback((e: React.MouseEvent, tabId: string, pinned: boolean) => {
     e.preventDefault();
@@ -704,6 +749,48 @@ export default memo(function Sidebar({
               >
                 +
               </button>
+            </div>
+
+            <div className="panel-icons">
+              {panels.map(p => (
+                <button
+                  key={p.id}
+                  className={`panel-icon${activePanelId === p.id ? " active" : ""}`}
+                  onClick={() => onTogglePanel(p.id)}
+                  onContextMenu={e => { e.preventDefault(); onRemovePanel(p.id); }}
+                  title={p.title}
+                >
+                  {p.favicon ? <img src={p.favicon} alt="" width={18} height={18} /> : <span className="panel-icon-fallback">{(p.title || "?")[0]}</span>}
+                </button>
+              ))}
+              <div className="panel-picker-wrap" ref={panelPickerRef}>
+                <button className="panel-icon add" onClick={() => setPanelPickerOpen(p => !p)} title="Add web panel">
+                  <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                </button>
+                {panelPickerOpen && (
+                  <div className="panel-picker">
+                    <div className="panel-picker-label">add panel</div>
+                    <div className="panel-picker-presets">
+                      {PANEL_PRESETS.map(p => (
+                        <button key={p.url} className="panel-picker-item" onClick={() => handlePanelPreset(p.url)}>
+                          <img src={p.favicon} alt="" width={16} height={16} />
+                          <span>{p.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <form className="panel-picker-custom" onSubmit={handlePanelCustomSubmit}>
+                      <input
+                        className="panel-picker-input"
+                        value={panelCustomUrl}
+                        onChange={e => setPanelCustomUrl(e.target.value)}
+                        placeholder="enter url..."
+                        spellCheck={false}
+                        autoFocus
+                      />
+                    </form>
+                  </div>
+                )}
+              </div>
             </div>
 
             {filteredPinned.length > 0 && (
