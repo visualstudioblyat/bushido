@@ -29,7 +29,7 @@
 
 ## Why Bushido?
 
-Google killed ad blockers with Manifest V3. Bushido doesn't care — blocking is built into the browser core, not an extension that can be neutered.
+Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care — blocking is built into the browser core, not an extension that can be neutered.
 
 - **Native Ad & Tracker Blocking** — 140,000+ filter rules from EasyList and EasyPrivacy, matched in under 0.05ms per request. Blocking happens at the WebView2 network level before connections are established — page JavaScript can't bypass it.
 - **Cookie Banner Rejection** — Automatically clicks "Reject All" on consent popups across 8+ frameworks. You never see them.
@@ -39,6 +39,7 @@ Google killed ad blockers with Manifest V3. Bushido doesn't care — blocking is
 - **Command Palette** (`Ctrl+K`) — Fuzzy search tabs, bookmarks, history, and actions from one input.
 - **Reader Mode** (`Ctrl+Shift+R`) — Strip pages to just text and images. Pick font, theme, line width.
 - **Picture-in-Picture** — Video detection + one-click PiP. Shadow DOM button injection so sites can't block it.
+- **Web Panels** — Pin any site as a persistent sidebar webview. Spotify, Discord, WhatsApp — always one click away, stays open across tab switches. Mobile UA so sites render properly at narrow widths.
 - **Tab Suspender** — Inactive tabs auto-suspend after 5 minutes. Webview destroyed, memory freed, click to restore.
 - **Minimal UI** — No bloat, no crypto wallets, no AI assistants, no sponsored tiles.
 
@@ -73,6 +74,8 @@ The installer lands in `src-tauri/target/release/bundle/`.
 
 Bushido is open source under the [MPL 2.0](LICENSE) license. Contributions welcome — open an issue or submit a PR.
 
+Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-BY-SA 3.0).
+
 ## Roadmap
 
 - [x] ~~Workspaces~~ — shipped in v0.3.0
@@ -81,7 +84,7 @@ Bushido is open source under the [MPL 2.0](LICENSE) license. Contributions welco
 - [x] ~~Download Manager with parallel chunks~~ — shipped in v0.5.2
 - [x] ~~adblock-rust engine (EasyList + EasyPrivacy)~~ — shipped in v0.6.0
 - [x] ~~Split View~~ — shipped in v0.6.1
-- [ ] Web Panels — persistent sidebar webviews (ChatGPT, Slack, etc.)
+- [x] ~~Web Panels~~ — shipped in v0.8.0
 - [ ] Boosts — per-site CSS/JS injection
 - [ ] Fingerprint protection
 - [ ] Custom themes

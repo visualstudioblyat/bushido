@@ -2,6 +2,32 @@
 
 ---
 
+## v0.8.0
+
+**2026-02-10**
+
+Vivaldi and Opera have sidebar panels. Edge has them too. They're all the same — a tiny webview pinned to the side so you can keep Spotify or Discord open without burning a tab. Bushido does the same thing, but panels get a mobile user agent by default so sites serve mobile layouts at 350px instead of cramming desktop into a phone-width column.
+
+Click "+" in the panel row to pick from presets (Spotify, Discord, WhatsApp, YouTube Music, X) or paste any URL. Click the favicon to toggle. Right-click to remove. Panels persist across restarts. Only one open at a time — it slides between the sidebar and your content area.
+
+### Added
+
+- **Web Panels** — persistent sidebar webviews that survive tab switches. Pin any site as a side panel, toggle with one click. 350px fixed width, positioned between sidebar and content area. Session save/restore included.
+- **Mobile UA on panels** — panel webviews get a Chrome Android user agent via `WebviewBuilder::user_agent()`. Sites serve mobile-friendly layouts instead of trying to cram a desktop page into 350px. Regular tabs are unaffected.
+- **Panel site picker** — "+" button opens a dropdown with 6 presets and a custom URL input. No more cloning the current tab URL — you pick what goes in the panel.
+- **`PanelState` isolation** — panels tracked in a separate `HashSet<String>` so `layout_webviews` doesn't hide them at (-9999, -9999) every time the tab layout recalculates.
+
+### Security
+
+- **URL scheme blocklist** — `javascript:`, `data:`, `file:`, `vbscript:`, `blob:` schemes now blocked in `create_tab`, `navigate_tab`, and the `on_navigation` callback. Defense-in-depth with a React-side `sanitizePanelUrl()` that validates before any `invoke` call.
+- **Panel URL sanitization** — strips control characters, rejects dangerous schemes, validates via `URL()` parse. Blocks `bushido://` URLs from being opened as panels (no webview for internal pages).
+
+### Changed
+
+- **`create_tab` takes `is_panel` param** — controls whether the webview gets mobile UA. All 8 call sites updated. Session restore passes `isPanel: true` for restored panels.
+
+---
+
 ## v0.7.0
 
 **2026-02-10**
@@ -50,7 +76,7 @@ Also: split view got a full rewrite. The old version was two panes. The new one 
 
 **2026-02-10**
 
-Chrome and Edge ship with basic ad blockers that catch maybe 30% of what you'd want blocked. Firefox relies on uBlock Origin — which is great until Manifest V3 finishes gutting extension APIs. Bushido now runs a real content blocking engine at the WebView2 COM level — 140,000+ filter rules from EasyList and EasyPrivacy, sub-millisecond matching, and it intercepts requests before the browser even starts the connection. No extension, no flag to enable, no way for page JavaScript to bypass it.
+Chrome and Edge ship with basic ad blockers that catch maybe 30% of what you'd want blocked. Firefox relies on uBlock Origin — which still works, but Manifest V3 has been tightening what extensions can do. Bushido now runs a real content blocking engine at the WebView2 COM level — 140,000+ filter rules from EasyList and EasyPrivacy, sub-millisecond matching, and it intercepts requests before the browser even starts the connection. No extension, no flag to enable, no way for page JavaScript to bypass it.
 
 ### Added
 
