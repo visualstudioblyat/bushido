@@ -181,9 +181,11 @@
         }
     } catch(e) {}
 
-    // 7. normalize hardware concurrency
+    // 7. normalize hardware concurrency (Firefox RFP logic: 4 default, 8 if real >= 8)
     try {
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 4; }, configurable: false });
+        var realCores = navigator.hardwareConcurrency;
+        var spoofedCores = (realCores >= 8) ? 8 : 4;
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return spoofedCores; }, configurable: false });
     } catch(e) {}
 
     // 8. normalize language
@@ -208,20 +210,28 @@
         Object.defineProperty(screen, 'pixelDepth', { get: function() { return 24; }, configurable: false });
     } catch(e) {}
 
-    // 11. canvas fingerprint noise
+    // 11. canvas fingerprint noise (per-session seed — changes every page load)
     try {
         var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
         var origToBlob = HTMLCanvasElement.prototype.toBlob;
         var origGetCtx = HTMLCanvasElement.prototype.getContext;
+        // per-session PRNG seed — same noise pattern within a session, different across sessions
+        var canvasSeed = Math.floor(Math.random() * 0xFFFFFF);
         var addNoise = function(canvas) {
             try {
                 var ctx = origGetCtx.call(canvas, '2d');
                 if (!ctx) return;
                 var w = canvas.width, h = canvas.height;
-                if (w === 0 || h === 0) return;
+                if (w === 0 || h === 0 || w > 4096 || h > 4096) return;
                 var img = ctx.getImageData(0, 0, w, h);
                 var d = img.data;
-                for (var i = 0; i < d.length; i += 4) { d[i] = d[i] ^ 1; }
+                // deterministic noise from seed — subtle, imperceptible, but unique per session
+                var s = canvasSeed;
+                for (var i = 0; i < d.length; i += 4) {
+                    s = (s * 1103515245 + 12345) & 0x7FFFFFFF;
+                    d[i] = d[i] ^ (s & 1);       // red: flip LSB based on PRNG
+                    d[i+1] = d[i+1] ^ ((s >> 1) & 1); // green
+                }
                 ctx.putImageData(img, 0, 0);
             } catch(e) {}
         };
@@ -297,5 +307,80 @@
                 }, configurable: false
             });
         }
+    } catch(e) {}
+
+    // 17. clamp performance.now() to ~16.67ms + random jitter (anti-Spectre + anti-fingerprint)
+    try {
+        var origPerfNow = performance.now.bind(performance);
+        var CLAMP = 16.67; // 60fps frame boundary
+        performance.now = function() {
+            var t = origPerfNow();
+            var clamped = Math.floor(t / CLAMP) * CLAMP;
+            // add 0-100ms jitter to prevent averaging attacks
+            clamped += Math.floor(Math.random() * 6) * CLAMP;
+            return clamped;
+        };
+    } catch(e) {}
+
+    // 18. block speechSynthesis.getVoices() (leaks installed TTS voices — high entropy)
+    try {
+        if (window.speechSynthesis) {
+            window.speechSynthesis.getVoices = function() { return []; };
+            window.speechSynthesis.addEventListener = function() {};
+        }
+    } catch(e) {}
+
+    // 19. stub navigator.mediaDevices.enumerateDevices (leaks camera/mic hardware IDs)
+    try {
+        if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+            navigator.mediaDevices.enumerateDevices = function() { return Promise.resolve([]); };
+        }
+    } catch(e) {}
+
+    // 20. block navigator.storage.estimate (leaks disk usage fingerprint)
+    try {
+        if (navigator.storage && navigator.storage.estimate) {
+            navigator.storage.estimate = function() {
+                return Promise.resolve({ quota: 1073741824, usage: 0 });
+            };
+        }
+    } catch(e) {}
+
+    // 21. hide webdriver flag (automation detection)
+    try {
+        Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: false });
+    } catch(e) {}
+
+    // 22. block performance.memory (Chrome-only, leaks heap size)
+    try {
+        if (performance.memory) {
+            Object.defineProperty(performance, 'memory', {
+                get: function() { return { jsHeapSizeLimit: 2172649472, totalJSHeapSize: 10000000, usedJSHeapSize: 10000000 }; },
+                configurable: false
+            });
+        }
+    } catch(e) {}
+
+    // 23. harden toString on all spoofed prototype methods
+    try {
+        var nativeStr = 'function () { [native code] }';
+        var toHarden = [
+            HTMLCanvasElement.prototype.toDataURL,
+            HTMLCanvasElement.prototype.toBlob,
+            WebGLRenderingContext.prototype.getParameter,
+            AnalyserNode.prototype.getFloatFrequencyData,
+            performance.now
+        ];
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            toHarden.push(WebGL2RenderingContext.prototype.getParameter);
+        }
+        toHarden.forEach(function(fn) {
+            if (fn) {
+                try {
+                    fn.toString = function() { return nativeStr; };
+                    fn.toLocaleString = function() { return nativeStr; };
+                } catch(e) {}
+            }
+        });
     } catch(e) {}
 })();

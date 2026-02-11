@@ -2,6 +2,40 @@
 
 ---
 
+## v0.8.2
+
+**2026-02-10**
+
+v0.8.1 added the security settings page, but the underlying security implementation had gaps that production browsers (Firefox, Brave, Chromium) had already solved. v0.8.2 closes those gaps — informed by deep research into Firefox's `privacy.resistFingerprinting`, WebView2 COM safety patterns, and Chromium's `Sec-Fetch-*` header behavior.
+
+The headline: a panic in any COM callback could crash the entire browser with a 0xc0000005 access violation. Every other change is important, but that one was a real defect.
+
+### Security
+
+- **COM callback safety** — all 5 COM event handlers (DownloadStarting, GetCookiesCompleted, WebResourceRequested, WebMessageReceived, ProcessFailed) wrapped in `std::panic::catch_unwind` + `AssertUnwindSafe`. A panic in any callback now returns gracefully instead of crossing the Rust/C++ FFI boundary into undefined behavior. This was the most critical fix — a malformed URL, unexpected null pointer, or edge case in the download handler would previously kill the process instantly.
+- **Env var injection prevention** — `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` now cleared with `remove_var()` before `set_var()`. Previously, another process running before Bushido could pre-populate this with `--remote-debugging-port=9222` and remotely control every tab.
+- **Dangerous URI scheme blocking** — `ms-msdt:`, `search-ms:`, `ms-officecmd:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `ms-cxh:`, `ms-cxh-full:` added to the scheme blocklist. `ms-msdt:` is the Follina exploit (CVE-2022-30190) — a link on any page could trigger Windows diagnostics with arbitrary PowerShell execution.
+- **Accept-Language normalization** — set to `en-US,en;q=0.9` at the COM level on every outgoing request. Previously the JS spoof said `en-US` but the actual HTTP header leaked the real system locale — servers could see the mismatch.
+
+### Changed
+
+- **Stopped stripping Sec-Fetch-\* headers** — research confirmed Chromium's network stack overwrites `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-Site`, and `Sec-Fetch-User` after the `WebResourceRequested` handler runs. Stripping them was a no-op that wasted CPU on the hottest path in the browser. Removed the loop entirely.
+- **Smarter hardwareConcurrency spoof** — was hardcoded to 4, now uses Firefox's RFP logic: returns 8 if real core count >= 8, else 4. Maintains a larger anonymity set while giving web apps enough workers for real work. The old value of 4 was a known Bushido/Brave signature.
+- **Per-session canvas noise** — replaced static `d[i] ^ 1` XOR (same noise every time, hashable by trackers) with a per-session PRNG seed. Deterministic within a session (consistent for pages that check twice), unique across sessions (useless for cross-session tracking). Uses a linear congruential generator seeded from `Math.random()` at script injection time.
+- **performance.now() clamped** — clamped to 16.67ms intervals (60fps frame boundary) with random jitter of 0–5 additional frames. Prevents Spectre-class timing attacks and high-resolution clock fingerprinting. Matches Firefox RFP's approach.
+
+### Added
+
+- **5 new fingerprint vectors blocked** (total now 23):
+  - `speechSynthesis.getVoices()` → empty array (prevents TTS voice fingerprinting — high entropy)
+  - `navigator.mediaDevices.enumerateDevices()` → empty array (prevents camera/mic hardware ID leaking)
+  - `navigator.storage.estimate()` → fixed 1GB quota, 0 usage (prevents disk usage pattern fingerprinting)
+  - `navigator.webdriver` → false (anti-automation detection flag)
+  - `performance.memory` → fixed values (Chrome-only heap size fingerprint)
+- **toString hardening** — all spoofed prototype methods (canvas, WebGL, AudioContext, performance.now) now return `function () { [native code] }` from `.toString()` and `.toLocaleString()`. Prevents detection by fingerprinting libraries that check whether browser APIs have been monkey-patched.
+
+---
+
 ## v0.8.1
 
 **2026-02-10**

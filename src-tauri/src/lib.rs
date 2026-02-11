@@ -5,6 +5,7 @@ use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
 use std::sync::{Mutex, Arc};
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::fs;
 use std::path::PathBuf;
 use adblock::engine::Engine;
@@ -35,6 +36,11 @@ fn is_blocked_scheme(url: &str) -> bool {
     lower.starts_with("javascript:") || lower.starts_with("data:")
         || lower.starts_with("file:") || lower.starts_with("vbscript:")
         || lower.starts_with("blob:")
+        // Windows-specific dangerous URI schemes (Follina CVE-2022-30190 + friends)
+        || lower.starts_with("ms-msdt:") || lower.starts_with("search-ms:")
+        || lower.starts_with("ms-officecmd:") || lower.starts_with("ms-word:")
+        || lower.starts_with("ms-excel:") || lower.starts_with("ms-powerpoint:")
+        || lower.starts_with("ms-cxh:") || lower.starts_with("ms-cxh-full:")
 }
 
 #[tauri::command]
@@ -274,84 +280,87 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
                 let handler = webview2_com::DownloadStartingEventHandler::create(Box::new(
                     move |_sender, args| {
-                        if let Some(args) = args {
-                            // suppress default UI + cancel browser download
-                            args.SetHandled(true)?;
-                            args.SetCancel(true)?;
+                        // SAFETY: catch_unwind prevents panics from crossing the FFI boundary (UB)
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_inner);
+                        let cookie_ref = AssertUnwindSafe(&cookie_mgr);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let _ = args.SetHandled(true);
+                                let _ = args.SetCancel(true);
 
-                            // extract url via out-pointer
-                            let download_op = args.DownloadOperation()?;
-                            let mut uri_pwstr = windows::core::PWSTR::null();
-                            download_op.Uri(&mut uri_pwstr)?;
-                            let url = if !uri_pwstr.is_null() {
-                                uri_pwstr.to_string().unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
+                                let download_op = match args.DownloadOperation() { Ok(d) => d, Err(_) => return };
+                                let mut uri_pwstr = windows::core::PWSTR::null();
+                                if download_op.Uri(&mut uri_pwstr).is_err() { return; }
+                                let url = if !uri_pwstr.is_null() {
+                                    uri_pwstr.to_string().unwrap_or_default()
+                                } else { String::new() };
 
-                            // extract content-disposition via out-pointer
-                            let mut disp_pwstr = windows::core::PWSTR::null();
-                            let disposition = if download_op.ContentDisposition(&mut disp_pwstr).is_ok() && !disp_pwstr.is_null() {
-                                disp_pwstr.to_string().unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
+                                let mut disp_pwstr = windows::core::PWSTR::null();
+                                let disposition = if download_op.ContentDisposition(&mut disp_pwstr).is_ok() && !disp_pwstr.is_null() {
+                                    disp_pwstr.to_string().unwrap_or_default()
+                                } else { String::new() };
 
-                            let filename = downloads::parse_filename(&url, &disposition);
+                                let filename = downloads::parse_filename(&url, &disposition);
 
-                            // extract cookies for authenticated downloads
-                            if let Some(ref mgr) = cookie_mgr {
-                                let url_clone = url.clone();
-                                let filename_clone = filename.clone();
-                                let app_cookie = app_inner.clone();
-                                let url_wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
-                                let url_pcwstr = windows::core::PCWSTR::from_raw(url_wide.as_ptr());
+                                if let Some(ref mgr) = *cookie_ref {
+                                    let url_clone = url.clone();
+                                    let filename_clone = filename.clone();
+                                    let app_cookie = app_ref.clone();
+                                    let url_wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+                                    let url_pcwstr = windows::core::PCWSTR::from_raw(url_wide.as_ptr());
 
-                                let cookie_handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(
-                                    move |hr, cookie_list| {
-                                        let mut cookies_str = String::new();
-                                        if hr.is_ok() {
-                                            if let Some(ref list) = cookie_list {
-                                                let mut count = 0u32;
-                                                if list.Count(&mut count).is_ok() {
-                                                    for i in 0..count {
-                                                        if let Ok(cookie) = list.GetValueAtIndex(i) {
-                                                            let mut name_pw = windows::core::PWSTR::null();
-                                                            let mut val_pw = windows::core::PWSTR::null();
-                                                            if cookie.Name(&mut name_pw).is_ok() && cookie.Value(&mut val_pw).is_ok() {
-                                                                let name = if !name_pw.is_null() { name_pw.to_string().unwrap_or_default() } else { String::new() };
-                                                                let val = if !val_pw.is_null() { val_pw.to_string().unwrap_or_default() } else { String::new() };
-                                                                if !name.is_empty() {
-                                                                    if !cookies_str.is_empty() { cookies_str.push_str("; "); }
-                                                                    cookies_str.push_str(&name);
-                                                                    cookies_str.push('=');
-                                                                    cookies_str.push_str(&val);
+                                    let cookie_handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(
+                                        move |hr, cookie_list| {
+                                            let hr_ref = AssertUnwindSafe(hr);
+                                            let list_ref = AssertUnwindSafe(&cookie_list);
+                                            let app_c = AssertUnwindSafe(&app_cookie);
+                                            let url_c = AssertUnwindSafe(&url_clone);
+                                            let fname_c = AssertUnwindSafe(&filename_clone);
+                                            let _ = catch_unwind(move || {
+                                                let mut cookies_str = String::new();
+                                                if hr_ref.is_ok() {
+                                                    if let Some(ref list) = *list_ref {
+                                                        let mut count = 0u32;
+                                                        if list.Count(&mut count).is_ok() {
+                                                            for i in 0..count {
+                                                                if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                                                    let mut name_pw = windows::core::PWSTR::null();
+                                                                    let mut val_pw = windows::core::PWSTR::null();
+                                                                    if cookie.Name(&mut name_pw).is_ok() && cookie.Value(&mut val_pw).is_ok() {
+                                                                        let name = if !name_pw.is_null() { name_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                        let val = if !val_pw.is_null() { val_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                        if !name.is_empty() {
+                                                                            if !cookies_str.is_empty() { cookies_str.push_str("; "); }
+                                                                            cookies_str.push_str(&name);
+                                                                            cookies_str.push('=');
+                                                                            cookies_str.push_str(&val);
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
-
-                                        let cookies_opt = if cookies_str.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(cookies_str) };
-                                        let _ = app_cookie.emit_to("main", "download-intercepted", serde_json::json!({
-                                            "url": url_clone,
-                                            "suggestedFilename": filename_clone,
-                                            "cookies": cookies_opt
-                                        }));
-                                        Ok(())
-                                    },
-                                ));
-                                let _ = mgr.GetCookies(url_pcwstr, &cookie_handler);
-                            } else {
-                                // no cookie manager — emit without cookies
-                                let _ = app_inner.emit_to("main", "download-intercepted", serde_json::json!({
-                                    "url": url,
-                                    "suggestedFilename": filename
-                                }));
+                                                let cookies_opt = if cookies_str.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(cookies_str) };
+                                                let _ = app_c.emit_to("main", "download-intercepted", serde_json::json!({
+                                                    "url": *url_c,
+                                                    "suggestedFilename": *fname_c,
+                                                    "cookies": cookies_opt
+                                                }));
+                                            });
+                                            Ok(())
+                                        },
+                                    ));
+                                    let _ = mgr.GetCookies(url_pcwstr, &cookie_handler);
+                                } else {
+                                    let _ = app_ref.emit_to("main", "download-intercepted", serde_json::json!({
+                                        "url": url,
+                                        "suggestedFilename": filename
+                                    }));
+                                }
                             }
-                        }
+                        });
                         Ok(())
                     },
                 ));
@@ -374,73 +383,85 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
                     let block_handler = webview2_com::WebResourceRequestedEventHandler::create(Box::new(
                         move |_sender, args| {
-                            if let Some(args) = args {
-                                let request = args.Request()?;
+                            let args_ref = AssertUnwindSafe(&args);
+                            let engine_ref = AssertUnwindSafe(&engine_block);
+                            let app_ref = AssertUnwindSafe(&app_block);
+                            let tab_ref = AssertUnwindSafe(&tab_block);
+                            let source_ref = AssertUnwindSafe(&source);
+                            let count_ref = AssertUnwindSafe(&blocked_count);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let request = match args.Request() { Ok(r) => r, Err(_) => return };
 
-                                // always-on: strip tracking headers
-                                if let Ok(headers) = request.Headers() {
-                                    // Sec-CH-UA client hints
-                                    for h in ["Sec-CH-UA", "Sec-CH-UA-Arch", "Sec-CH-UA-Bitness",
-                                              "Sec-CH-UA-Full-Version", "Sec-CH-UA-Full-Version-List",
-                                              "Sec-CH-UA-Mobile", "Sec-CH-UA-Model", "Sec-CH-UA-Platform",
-                                              "Sec-CH-UA-Platform-Version", "Sec-CH-UA-WoW64"] {
-                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
-                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                    // always-on: strip tracking headers
+                                    if let Ok(headers) = request.Headers() {
+                                        for h in ["Sec-CH-UA", "Sec-CH-UA-Arch", "Sec-CH-UA-Bitness",
+                                                  "Sec-CH-UA-Full-Version", "Sec-CH-UA-Full-Version-List",
+                                                  "Sec-CH-UA-Mobile", "Sec-CH-UA-Model", "Sec-CH-UA-Platform",
+                                                  "Sec-CH-UA-Platform-Version", "Sec-CH-UA-WoW64"] {
+                                            let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                        }
+                                        // NOTE: Sec-Fetch-* intentionally NOT stripped (Chromium overwrites post-handler)
+
+                                        for h in ["X-Client-Data", "X-Requested-With"] {
+                                            let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                        }
+                                        // normalize Accept-Language to match JS navigator.language spoof
+                                        {
+                                            let al_name: Vec<u16> = "Accept-Language\0".encode_utf16().collect();
+                                            let al_val: Vec<u16> = "en-US,en;q=0.9\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(al_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(al_val.as_ptr()),
+                                            );
+                                        }
+                                        // normalize Referer to origin only
+                                        let referer_name: Vec<u16> = "Referer\0".encode_utf16().collect();
+                                        let mut referer_val = windows::core::PWSTR::null();
+                                        if headers.GetHeader(windows::core::PCWSTR::from_raw(referer_name.as_ptr()), &mut referer_val).is_ok() && !referer_val.is_null() {
+                                            if let Ok(ref_str) = referer_val.to_string() {
+                                                if let Ok(parsed) = url::Url::parse(&ref_str) {
+                                                    let origin = parsed.origin().ascii_serialization();
+                                                    let origin_wide: Vec<u16> = format!("{}/", origin).encode_utf16().chain(std::iter::once(0)).collect();
+                                                    let _ = headers.SetHeader(
+                                                        windows::core::PCWSTR::from_raw(referer_name.as_ptr()),
+                                                        windows::core::PCWSTR::from_raw(origin_wide.as_ptr()),
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
-                                    // Sec-Fetch-* headers
-                                    for h in ["Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User"] {
-                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
-                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
-                                    }
-                                    // misc tracking headers
-                                    for h in ["X-Client-Data", "X-Requested-With"] {
-                                        let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
-                                        let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
-                                    }
-                                    // normalize Referer to origin only
-                                    let referer_name: Vec<u16> = "Referer\0".encode_utf16().collect();
-                                    let mut referer_val = windows::core::PWSTR::null();
-                                    if headers.GetHeader(windows::core::PCWSTR::from_raw(referer_name.as_ptr()), &mut referer_val).is_ok() && !referer_val.is_null() {
-                                        if let Ok(ref_str) = referer_val.to_string() {
-                                            if let Ok(parsed) = url::Url::parse(&ref_str) {
-                                                let origin = parsed.origin().ascii_serialization();
-                                                let origin_wide: Vec<u16> = format!("{}/", origin).encode_utf16().chain(std::iter::once(0)).collect();
-                                                let _ = headers.SetHeader(
-                                                    windows::core::PCWSTR::from_raw(referer_name.as_ptr()),
-                                                    windows::core::PCWSTR::from_raw(origin_wide.as_ptr()),
-                                                );
+
+                                    // conditional: adblock engine check
+                                    if block_enabled {
+                                        let mut uri = windows::core::PWSTR::null();
+                                        if request.Uri(&mut uri).is_err() { return; }
+                                        let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return; };
+
+                                        let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+                                        let _ = args.ResourceContext(&mut ctx);
+                                        let rtype = blocker::resource_type_str(ctx.0 as u32);
+
+                                        let matched = Request::new(&url, &source_ref, rtype)
+                                            .map(|req| engine_ref.check_network_request(&req).matched)
+                                            .unwrap_or(false);
+                                        if matched {
+                                            let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
+                                            let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+
+                                            let count = count_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                            if count <= 3 || count % 5 == 0 {
+                                                let _ = app_ref.emit_to("main", "tab-blocked-count", serde_json::json!({
+                                                    "id": *tab_ref,
+                                                    "count": count
+                                                }));
                                             }
                                         }
                                     }
                                 }
-
-                                // conditional: adblock engine check
-                                if block_enabled {
-                                    let mut uri = windows::core::PWSTR::null();
-                                    request.Uri(&mut uri)?;
-                                    let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return Ok(()); };
-
-                                    let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
-                                    let _ = args.ResourceContext(&mut ctx);
-                                    let rtype = blocker::resource_type_str(ctx.0 as u32);
-
-                                    let matched = Request::new(&url, &source, rtype)
-                                        .map(|req| engine_block.check_network_request(&req).matched)
-                                        .unwrap_or(false);
-                                    if matched {
-                                        let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
-                                        let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
-
-                                        let count = blocked_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                                        if count <= 3 || count % 5 == 0 {
-                                            let _ = app_block.emit_to("main", "tab-blocked-count", serde_json::json!({
-                                                "id": tab_block,
-                                                "count": count
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
+                            });
                             Ok(())
                         },
                     ));
@@ -455,48 +476,50 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
                 let msg_handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(
                     move |_sender, args| {
-                        if let Some(args) = args {
-                            let mut msg_pwstr = windows::core::PWSTR::null();
-                            args.WebMessageAsJson(&mut msg_pwstr)?;
-                            let json_str = if !msg_pwstr.is_null() {
-                                msg_pwstr.to_string().unwrap_or_default()
-                            } else {
-                                return Ok(());
-                            };
-                            // WebMessageAsJson returns a JSON-escaped string
-                            let raw: String = serde_json::from_str(&json_str).unwrap_or_default();
-                            let msg: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_msg);
+                        let tab_ref = AssertUnwindSafe(&tab_id_msg);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let mut msg_pwstr = windows::core::PWSTR::null();
+                                if args.WebMessageAsJson(&mut msg_pwstr).is_err() { return; }
+                                let json_str = if !msg_pwstr.is_null() {
+                                    msg_pwstr.to_string().unwrap_or_default()
+                                } else { return; };
+                                let raw: String = serde_json::from_str(&json_str).unwrap_or_default();
+                                let msg: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
 
-                            match msg.get("__bushido").and_then(|v| v.as_str()) {
-                                Some("shortcut") => {
-                                    let valid = ["toggle-compact","new-tab","close-tab","focus-url",
-                                                 "find","toggle-sidebar","bookmark","history",
-                                                 "command-palette","reader-mode"];
-                                    if let Some(action) = msg.get("action").and_then(|v| v.as_str()) {
-                                        if valid.contains(&action) {
-                                            let _ = app_msg.emit_to("main", "global-shortcut", action);
+                                match msg.get("__bushido").and_then(|v| v.as_str()) {
+                                    Some("shortcut") => {
+                                        let valid = ["toggle-compact","new-tab","close-tab","focus-url",
+                                                     "find","toggle-sidebar","bookmark","history",
+                                                     "command-palette","reader-mode"];
+                                        if let Some(action) = msg.get("action").and_then(|v| v.as_str()) {
+                                            if valid.contains(&action) {
+                                                let _ = app_ref.emit_to("main", "global-shortcut", action);
+                                            }
                                         }
                                     }
-                                }
-                                Some("media") => {
-                                    if let Some(state) = msg.get("state").and_then(|v| v.as_str()) {
-                                        if !matches!(state, "playing" | "paused" | "ended") { return Ok(()); }
-                                        let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                                        let clean = title.replace(|c: char| c == '<' || c == '>', "");
-                                        let _ = app_msg.emit_to("main", "tab-media-state", serde_json::json!({
-                                            "id": tab_id_msg, "state": state, "title": clean
+                                    Some("media") => {
+                                        if let Some(state) = msg.get("state").and_then(|v| v.as_str()) {
+                                            if !matches!(state, "playing" | "paused" | "ended") { return; }
+                                            let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                            let clean = title.replace(|c: char| c == '<' || c == '>', "");
+                                            let _ = app_ref.emit_to("main", "tab-media-state", serde_json::json!({
+                                                "id": *tab_ref, "state": state, "title": clean
+                                            }));
+                                        }
+                                    }
+                                    Some("video") => {
+                                        let has = msg.get("hasVideo").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        let _ = app_ref.emit_to("main", "tab-has-video", serde_json::json!({
+                                            "id": *tab_ref, "hasVideo": has
                                         }));
                                     }
+                                    _ => {}
                                 }
-                                Some("video") => {
-                                    let has = msg.get("hasVideo").and_then(|v| v.as_bool()).unwrap_or(false);
-                                    let _ = app_msg.emit_to("main", "tab-has-video", serde_json::json!({
-                                        "id": tab_id_msg, "hasVideo": has
-                                    }));
-                                }
-                                _ => {}
                             }
-                        }
+                        });
                         Ok(())
                     },
                 ));
@@ -509,9 +532,13 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let tab_id_crash = tab_id_block.clone();
                 let crash_handler = webview2_com::ProcessFailedEventHandler::create(Box::new(
                     move |_sender, _args| {
-                        let _ = app_crash.emit_to("main", "tab-crashed", serde_json::json!({
-                            "id": tab_id_crash
-                        }));
+                        let app_ref = AssertUnwindSafe(&app_crash);
+                        let tab_ref = AssertUnwindSafe(&tab_id_crash);
+                        let _ = catch_unwind(move || {
+                            let _ = app_ref.emit_to("main", "tab-crashed", serde_json::json!({
+                                "id": *tab_ref
+                            }));
+                        });
                         Ok(())
                     },
                 ));
@@ -941,12 +968,16 @@ async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), S
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebView2 browser args — must be set before any webview creation
+    // SECURITY: clear first to prevent injection from pre-existing env (e.g. --remote-debugging-port)
     #[cfg(windows)]
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-quic --site-per-process --origin-agent-cluster=true \
-         --disable-dns-prefetch --disable-background-networking \
-         --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
-         --disable-features=UserAgentClientHint");
+    {
+        std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-quic --site-per-process --origin-agent-cluster=true \
+             --disable-dns-prefetch --disable-background-networking \
+             --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
+             --disable-features=UserAgentClientHint");
+    }
 
     // init adblock-rust engine (cached binary or cold compile)
     let data_dir = dirs::data_dir()
