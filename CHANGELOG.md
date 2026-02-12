@@ -2,6 +2,30 @@
 
 ---
 
+## v0.9.1
+
+**2026-02-11**
+
+Every tab is a WebView2 process. Each one eats 120-180MB. Open 7 heavy tabs and you're past 1.2GB before you've done anything useful. The old tab suspender was brutal about it — alive or destroyed, nothing in between. Destroy the webview and you save all the memory, but clicking the tab means a full page reload. Scroll position gone, form state gone, JS heap gone.
+
+Edge solved this years ago with "sleeping tabs" — `ICoreWebView2_3::TrySuspend()`. Microsoft tested it across 13,000 devices and claims 83-85% memory reduction per tab. The tab freezes in place. Scripts stop, timers stop, the OS reclaims the renderer memory. But the DOM and JS heap stay intact. Call `Resume()` and it wakes up instantly — no network requests, no reload, scroll position right where you left it.
+
+Bushido now has the same thing. Tabs go through three states instead of two: active → suspended → destroyed. The suspended tier sits in the gap where the old system was wasting the most memory.
+
+### Added
+
+- **Smart tab lifecycle** — active (full resources) → suspended at 2min idle (`TrySuspend`, ~85% memory saved, instant resume) → destroyed at 5min idle (0MB, full reload). The 2-5 minute window is where the real savings happen — those tabs were costing ~200MB each. Now they cost ~30MB, and clicking them doesn't reload the page.
+- **`suspend_tab` command** — injects `document.querySelectorAll('video,audio').forEach(m=>m.pause())` first (WebView2 has a known bug where suspended tabs with playing media hit `AUDIO_RENDERER_ERROR` on resume — GitHub issue #3106), then calls `TrySuspend` through the COM layer.
+- **`resume_tab` command** — `ICoreWebView2_3::Resume()`. That's it. One COM call, instant wake.
+
+### Changed
+
+- **Lifecycle check runs every 15s** — was 60s. The check is just timestamp math, no DOM work, so running it 4x more often costs nothing but catches idle tabs faster.
+- **Tabs playing music never get suspended** — Spotify in a background tab stays alive. The old system only exempted pinned tabs and the active tab.
+- **Split view tabs exempt** — `TrySuspend` requires the webview to be offscreen (`IsVisible = false`). Tabs in split panes are visible, so they can't be suspended anyway. Now they're explicitly skipped instead of silently failing.
+
+---
+
 ## v0.8.2
 
 **2026-02-10**

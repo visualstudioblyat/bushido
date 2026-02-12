@@ -1,6 +1,6 @@
 [package]
 name = "bushido-browser"
-version = "0.8.2"
+version = "0.9.1"
 description = "Bushido Browser"
 authors = [""]
 edition = "2021"
@@ -26,6 +26,7 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 tokio = { version = "1", features = ["fs", "macros"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

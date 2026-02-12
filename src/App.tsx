@@ -10,6 +10,7 @@ import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
 import SplitOverlay from "./components/SplitOverlay";
+import Onboarding from "./components/Onboarding";
 import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf } from "./splitLayout";
 
@@ -69,6 +70,7 @@ export default function App() {
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [panels, setPanels] = useState<WebPanel[]>([]);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
   const settingsLoaded = useRef(false);
@@ -84,6 +86,20 @@ export default function App() {
     blockServiceWorkers: sr.blockServiceWorkers, blockFontEnum: sr.blockFontEnumeration,
     spoofHwConcurrency: sr.spoofHardwareConcurrency,
   }), []);
+
+  const applyTheme = useCallback((accent: string, mode: "dark" | "light") => {
+    const root = document.documentElement;
+    root.style.setProperty("--accent", accent);
+    root.style.setProperty("--accent-soft", accent.replace(")", ", 0.1)").replace("rgb", "rgba").replace("#", ""));
+    // derive soft/glow from hex
+    const r = parseInt(accent.slice(1, 3), 16), g = parseInt(accent.slice(3, 5), 16), b = parseInt(accent.slice(5, 7), 16);
+    if (!isNaN(r)) {
+      root.style.setProperty("--accent-soft", `rgba(${r}, ${g}, ${b}, 0.1)`);
+      root.style.setProperty("--accent-glow", `rgba(${r}, ${g}, ${b}, 0.15)`);
+    }
+    if (mode === "light") root.classList.add("light");
+    else root.classList.remove("light");
+  }, []);
 
   // derived state (memoized to avoid recomputing on every render)
   const activeWs = useMemo(() => workspaces.find(w => w.id === activeWorkspaceId), [workspaces, activeWorkspaceId]);
@@ -148,6 +164,23 @@ export default function App() {
       setSettings(s);
       settingsLoaded.current = true;
 
+      // apply saved theme
+      applyTheme(s.accentColor || "#6366f1", s.themeMode || "dark");
+
+      // if onboarding hasn't been completed, show it and skip session restore
+      if (!s.onboardingComplete) {
+        setShowOnboarding(true);
+        // still set up a default workspace so the app has something after onboarding
+        const wsId = genWsId();
+        const id = genId();
+        const ws: Workspace = { id: wsId, name: "Home", color: DEFAULT_WS_COLOR, activeTabId: id };
+        const tab: Tab = { id, url: NTP_URL, title: "New Tab", loading: false, workspaceId: wsId, lastActiveAt: Date.now() };
+        setWorkspaces([ws]);
+        setTabs([tab]);
+        setActiveWorkspaceId(wsId);
+        return;
+      }
+
       const sa = { disableDevTools: s.disableDevTools, disableStatusBar: s.disableStatusBar, disableAutofill: s.disableAutofill, disablePasswordSave: s.disablePasswordSave, blockServiceWorkers: s.blockServiceWorkers, blockFontEnum: s.blockFontEnumeration, spoofHwConcurrency: s.spoofHardwareConcurrency };
       const tabArgs = { httpsOnly: s.httpsOnly, adBlocker: s.adBlocker, cookieAutoReject: s.cookieAutoReject, isPanel: false, ...sa };
 
@@ -193,7 +226,7 @@ export default function App() {
           idMap[(st as any).id || ""] = id;
           const isInternal = st.url.startsWith("bushido://");
           const isSuspended = st.suspended || false;
-          return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: !isInternal && !isSuspended, pinned: st.pinned, workspaceId: st.workspaceId, parentId: st.parentId, suspended: isSuspended, lastActiveAt: Date.now() };
+          return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: !isInternal && !isSuspended, pinned: st.pinned, workspaceId: st.workspaceId, parentId: st.parentId, suspended: isSuspended, memoryState: isSuspended ? "destroyed" as const : "active" as const, lastActiveAt: Date.now() };
         });
 
         // remap workspace references
@@ -488,30 +521,44 @@ export default function App() {
     }
   }, [settings.compactMode]);
 
-  // tab suspender — check every 60s, suspend tabs after configured timeout
+  // smart tab lifecycle — 3-tier: active → suspended (TrySuspend) → destroyed
   useEffect(() => {
     if (settings.suspendTimeout === 0) return; // disabled
-    const timeoutMs = settings.suspendTimeout * 60 * 1000;
+    const destroyMs = settings.suspendTimeout * 60 * 1000;
+    const suspendMs = Math.min(destroyMs * 0.4, 120_000); // 40% of destroy time, max 2min
+
     const interval = setInterval(() => {
       const now = Date.now();
       setTabs(prev => {
         let changed = false;
         const next = prev.map(t => {
           if (t.id === activeTab || paneTabIds.includes(t.id)) return t;
-          if (t.pinned) return t;
-          if (t.suspended) return t;
-          if (t.url.startsWith("bushido://")) return t;
-          const lastActive = t.lastActiveAt || 0;
-          if (now - lastActive > timeoutMs) {
+          if (t.pinned || t.url.startsWith("bushido://")) return t;
+          if (t.memoryState === "destroyed") return t;
+          if (t.mediaState === "playing") return t;
+
+          const idle = now - (t.lastActiveAt || 0);
+          const state = t.memoryState || "active";
+
+          // tier 2: destroy webview (full page reload on restore)
+          if (idle > destroyMs) {
             invoke("close_tab", { id: t.id });
             changed = true;
-            return { ...t, suspended: true, loading: false };
+            return { ...t, memoryState: "destroyed" as const, suspended: true, loading: false };
           }
+
+          // tier 1: TrySuspend (instant resume, no reload)
+          if (idle > suspendMs && state === "active") {
+            invoke("suspend_tab", { id: t.id });
+            changed = true;
+            return { ...t, memoryState: "suspended" as const };
+          }
+
           return t;
         });
         return changed ? next : prev;
       });
-    }, 60_000);
+    }, 15_000);
     return () => clearInterval(interval);
   }, [activeTab, paneTabIds, settings.suspendTimeout]);
 
@@ -702,13 +749,19 @@ export default function App() {
       ).then(() => syncLayout(updated));
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, crashed: false, loading: true, lastActiveAt: Date.now() } : t));
-    } else if (targetTab?.suspended) {
+    } else if (targetTab?.memoryState === "suspended") {
+      // instant resume — no page reload needed
+      invoke("resume_tab", { id });
+      setTabs(prev => prev.map(t => t.id === id ? { ...t, memoryState: "active" as const, lastActiveAt: Date.now() } : t));
+      syncLayout(updated);
+    } else if (targetTab?.suspended || targetTab?.memoryState === "destroyed") {
+      // full recreate — page reload required
       const sr = settingsRef.current;
       invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
         syncLayout(updated);
       });
       clearLoading(id);
-      setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, loading: true, lastActiveAt: Date.now() } : t));
+      setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, memoryState: "active" as const, loading: true, lastActiveAt: Date.now() } : t));
     } else if (isInternal) {
       invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
     } else {
@@ -761,7 +814,7 @@ export default function App() {
     }
     const currentTab = tabs.find(t => t.id === activeTab);
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
-    if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended) {
+    if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended || currentTab?.memoryState === "destroyed" || currentTab?.memoryState === "suspended") {
       const sr = settingsRef.current;
       invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
         // directly position — syncLayout would read stale tab URL from state
@@ -769,8 +822,8 @@ export default function App() {
         const ch = window.innerHeight - topOffset;
         invoke("layout_webviews", { panes: [{ tabId: activeTab, x: 0, y: 0, w: cw, h: ch }], focusedTabId: activeTab, sidebarW: layoutOffset, topOffset });
       });
-      if (currentTab?.suspended) {
-        setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false } : t));
+      if (currentTab?.suspended || currentTab?.memoryState === "destroyed" || currentTab?.memoryState === "suspended") {
+        setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, suspended: false, memoryState: "active" as const } : t));
       }
     } else {
       invoke("navigate_tab", { id: activeTab, url: finalUrl });
@@ -792,7 +845,7 @@ export default function App() {
     }
 
     // find a tab to split with
-    const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("bushido://") && !t.suspended);
+    const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("bushido://") && !t.suspended && t.memoryState !== "destroyed");
     let splitWith = targetId;
     if (!splitWith) {
       const candidates = wsTabs.filter(t => t.id !== ws.activeTabId).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
@@ -912,6 +965,37 @@ export default function App() {
     }));
   }, []);
 
+  const addBookmarkFolder = useCallback((name: string, parentId = "root"): string => {
+    const id = `bmf-${Date.now()}`;
+    setBookmarkData(prev => ({
+      ...prev,
+      folders: [...prev.folders, { id, name, parentId, order: prev.folders.length }],
+    }));
+    return id;
+  }, []);
+
+  const renameBookmarkFolder = useCallback((folderId: string, name: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      folders: prev.folders.map(f => f.id === folderId ? { ...f, name } : f),
+    }));
+  }, []);
+
+  const deleteBookmarkFolder = useCallback((folderId: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      folders: prev.folders.filter(f => f.id !== folderId),
+      bookmarks: prev.bookmarks.map(b => b.folderId === folderId ? { ...b, folderId: "" } : b),
+    }));
+  }, []);
+
+  const moveBookmarkToFolder = useCallback((bookmarkId: string, folderId: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      bookmarks: prev.bookmarks.map(b => b.id === bookmarkId ? { ...b, folderId } : b),
+    }));
+  }, []);
+
   const bookmarkedUrls = useMemo(() => new Set(bookmarkData.bookmarks.map(b => b.url)), [bookmarkData.bookmarks]);
 
   const toggleBookmark = useCallback(() => {
@@ -1002,7 +1086,7 @@ export default function App() {
   const toggleReader = useCallback(() => {
     if (!activeTab) return;
     const tab = tabs.find(t => t.id === activeTab);
-    if (!tab || tab.url.startsWith("bushido://") || tab.suspended) return;
+    if (!tab || tab.url.startsWith("bushido://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") return;
 
     invoke("toggle_reader", {
       id: activeTab,
@@ -1034,7 +1118,7 @@ export default function App() {
   useEffect(() => {
     if (!activeTab) return;
     const tab = tabs.find(t => t.id === activeTab);
-    if (!tab || tab.url.startsWith("bushido://") || tab.suspended) {
+    if (!tab || tab.url.startsWith("bushido://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") {
       setHasVideo(false);
       setPipActive(false);
       return;
@@ -1204,11 +1288,55 @@ export default function App() {
     if (activePanelId === panelId) setActivePanelId(null);
   }, [activePanelId]);
 
+  // onboarding handlers
+  const handleOnboardingComplete = useCallback(() => {
+    setShowOnboarding(false);
+    setSettings(prev => ({ ...prev, onboardingComplete: true }));
+  }, []);
+
+  const handleImportBookmarks = useCallback((imported: { title: string; url: string; folder: string }[]) => {
+    setBookmarkData(prev => {
+      const existing = new Set(prev.bookmarks.map(b => b.url));
+      const newBookmarks = imported
+        .filter(b => b.url && !existing.has(b.url))
+        .map(b => ({
+          id: genId("bm"),
+          url: b.url,
+          title: b.title || b.url,
+          folderId: "imported",
+          createdAt: Date.now(),
+        }));
+      const hasImportedFolder = prev.folders.some(f => f.id === "imported");
+      const folders = hasImportedFolder ? prev.folders : [...prev.folders, { id: "imported", name: "Imported", parentId: "root", order: prev.folders.length }];
+      return { bookmarks: [...prev.bookmarks, ...newBookmarks], folders };
+    });
+  }, []);
+
+  const handleImportHistory = useCallback((imported: { title: string; url: string; visit_count: number; last_visit: number }[]) => {
+    setHistoryEntries(prev => {
+      const existing = new Set(prev.map(h => h.url));
+      const newEntries = imported
+        .filter(h => h.url && !existing.has(h.url))
+        .map(h => ({
+          url: h.url,
+          title: h.title || h.url,
+          visitCount: h.visit_count,
+          lastVisitAt: h.last_visit,
+        }));
+      return [...prev, ...newEntries];
+    });
+  }, []);
+
+  const handleThemeChange = useCallback((accent: string, mode: "dark" | "light") => {
+    applyTheme(accent, mode);
+    setSettings(prev => ({ ...prev, accentColor: accent, themeMode: mode }));
+  }, [applyTheme]);
+
   const reloadAllTabs = useCallback(() => {
     const sr = settingsRef.current;
     const base = { httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, ...secArgs(sr) };
     tabs.forEach(t => {
-      if (t.url.startsWith("bushido://") || t.suspended) return;
+      if (t.url.startsWith("bushido://") || t.suspended || t.memoryState === "destroyed") return;
       invoke("close_tab", { id: t.id }).then(() => {
         invoke("create_tab", { id: t.id, url: t.url, sidebarW: layoutOffset, topOffset, isPanel: false, ...base });
       });
@@ -1240,7 +1368,18 @@ export default function App() {
   const closeWindow = useCallback(() => invoke("close_window"), []);
 
   return (
-    <div className="browser">
+    <>
+    {showOnboarding && (
+      <Onboarding
+        onComplete={handleOnboardingComplete}
+        onImportBookmarks={handleImportBookmarks}
+        onImportHistory={handleImportHistory}
+        onThemeChange={handleThemeChange}
+        initialAccent={settings.accentColor}
+        initialMode={settings.themeMode}
+      />
+    )}
+    <div className="browser" style={showOnboarding ? { display: "none" } : undefined}>
       {cmdOpen && (
         <CommandPalette
           tabs={tabs}
@@ -1295,6 +1434,10 @@ export default function App() {
           bookmarkFolders={bookmarkData.folders}
           onSelectBookmark={selectBookmark}
           onRemoveBookmark={removeBookmark}
+          onAddBookmarkFolder={addBookmarkFolder}
+          onRenameBookmarkFolder={renameBookmarkFolder}
+          onDeleteBookmarkFolder={deleteBookmarkFolder}
+          onMoveBookmarkToFolder={moveBookmarkToFolder}
           onToggleHistory={toggleHistory}
           onBack={goBack}
           onForward={goForward}
@@ -1373,6 +1516,7 @@ export default function App() {
               settings={settings}
               onUpdate={updateSettings}
               onReloadAllTabs={reloadAllTabs}
+              onThemeChange={handleThemeChange}
             />
           ) : (
             <WebviewPanel />
@@ -1387,5 +1531,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </>
   );
 }

@@ -5,6 +5,7 @@ interface Props {
   settings: BushidoSettings;
   onUpdate: (patch: Partial<BushidoSettings>) => void;
   onReloadAllTabs: () => void;
+  onThemeChange: (accent: string, mode: "dark" | "light") => void;
 }
 
 const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[] = [
@@ -69,12 +70,17 @@ function Select({ value, options, onChange }: { value: string | number; options:
   );
 }
 
+const ACCENT_COLORS = [
+  "#6366f1", "#f43f5e", "#22c55e", "#f59e0b",
+  "#06b6d4", "#a855f7", "#ec4899", "#14b8a6",
+];
+
 const SECURITY_KEYS: (keyof BushidoSettings)[] = [
   "disableDevTools", "disableStatusBar", "disableAutofill", "disablePasswordSave",
   "blockServiceWorkers", "blockFontEnumeration", "spoofHardwareConcurrency",
 ];
 
-export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs }: Props) {
+export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange }: Props) {
   const [securityDirty, setSecurityDirty] = useState(false);
 
   const set = useCallback(<K extends keyof BushidoSettings>(key: K, value: BushidoSettings[K]) => {
@@ -262,6 +268,36 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs 
           <h2 className="settings-section-title">Appearance</h2>
           <div className="settings-row">
             <div className="settings-label">
+              <span>Accent color</span>
+              <span className="settings-hint">Applied across the entire UI</span>
+            </div>
+            <div className="settings-colors">
+              {ACCENT_COLORS.map(c => (
+                <button
+                  key={c}
+                  className={`settings-color-dot${settings.accentColor === c ? " active" : ""}`}
+                  style={{ background: c }}
+                  onClick={() => onThemeChange(c, settings.themeMode)}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Theme</span>
+              <span className="settings-hint">Dark or light mode</span>
+            </div>
+            <Select
+              value={settings.themeMode}
+              options={[
+                { value: "dark", label: "Dark" },
+                { value: "light", label: "Light" },
+              ]}
+              onChange={(v: "dark" | "light") => onThemeChange(settings.accentColor, v)}
+            />
+          </div>
+          <div className="settings-row">
+            <div className="settings-label">
               <span>Compact mode</span>
               <span className="settings-hint">Auto-hide sidebar (Ctrl+Shift+B)</span>
             </div>
@@ -298,7 +334,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs 
           <h2 className="settings-section-title">About</h2>
           <div className="settings-about">
             <div className="settings-about-name">Bushido Browser</div>
-            <div className="settings-about-version">v0.8.1</div>
+            <div className="settings-about-version">v0.9.0</div>
             <div className="settings-about-desc">A minimal, privacy-focused browser built with Tauri.</div>
           </div>
         </section>

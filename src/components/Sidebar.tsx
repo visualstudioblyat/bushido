@@ -46,6 +46,10 @@ interface Props {
   bookmarkFolders: BookmarkFolder[];
   onSelectBookmark: (url: string) => void;
   onRemoveBookmark: (id: string) => void;
+  onAddBookmarkFolder: (name: string) => string;
+  onRenameBookmarkFolder: (folderId: string, name: string) => void;
+  onDeleteBookmarkFolder: (folderId: string) => void;
+  onMoveBookmarkToFolder: (bookmarkId: string, folderId: string) => void;
   onToggleHistory: () => void;
   onBack: () => void;
   onForward: () => void;
@@ -162,7 +166,9 @@ export default memo(function Sidebar({
   workspaces, activeWorkspaceId,
   onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onRenameWorkspace, onRecolorWorkspace,
   onToggleCollapse, onAddChildTab, onMoveTabToWorkspace,
-  bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark, onToggleHistory,
+  bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark,
+  onAddBookmarkFolder, onRenameBookmarkFolder, onDeleteBookmarkFolder, onMoveBookmarkToFolder,
+  onToggleHistory,
   onBack, onForward, onReload,
   url, onNavigate, loading, inputRef,
   blockedCount, whitelisted, onToggleWhitelist,
@@ -191,9 +197,16 @@ export default memo(function Sidebar({
   const [startIdx, setStartIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const [bookmarksExpanded, setBookmarksExpanded] = useState(true);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [bmCtx, setBmCtx] = useState<{ x: number; y: number; id: string } | null>(null);
   const bmCtxMenuRef = useRef<HTMLDivElement>(null);
   const bmCtxPos = useClampedMenu(bmCtxMenuRef, bmCtx);
+  const [folderCtx, setFolderCtx] = useState<{ x: number; y: number; folderId: string } | null>(null);
+  const folderCtxMenuRef = useRef<HTMLDivElement>(null);
+  const folderCtxPos = useClampedMenu(folderCtxMenuRef, folderCtx);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renameFolderValue, setRenameFolderValue] = useState("");
+  const renameFolderRef = useRef<HTMLInputElement>(null);
   const [panelPickerOpen, setPanelPickerOpen] = useState(false);
   const [panelCustomUrl, setPanelCustomUrl] = useState("");
   const panelPickerRef = useRef<HTMLDivElement>(null);
@@ -328,6 +341,22 @@ export default memo(function Sidebar({
     }
   }, [renaming]);
 
+  useEffect(() => {
+    if (renamingFolder && renameFolderRef.current) {
+      renameFolderRef.current.focus();
+      renameFolderRef.current.select();
+    }
+  }, [renamingFolder]);
+
+  const toggleFolderExpand = useCallback((folderId: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  }, []);
+
   const handlePanelPreset = useCallback((url: string) => {
     onAddPanel(url);
     setPanelPickerOpen(false);
@@ -373,7 +402,7 @@ export default memo(function Sidebar({
   const renderTab = (tab: Tab, isPinned: boolean, idx?: number, depth = 0, childCount = 0) => (
     <div
       key={tab.id}
-      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${paneTabIds.includes(tab.id) ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended ? "tab-suspended" : ""} ${tab.crashed ? "tab-crashed" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
+      className={`tab-item ${tab.id === activeTab ? "active" : ""} ${paneTabIds.includes(tab.id) ? "split-active" : ""} ${isPinned ? "pinned" : ""} ${tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed" ? "tab-suspended" : ""} ${tab.crashed ? "tab-crashed" : ""} ${dragIdx === idx ? "dragging" : ""} ${dropIdx === idx ? "drop-target" : ""}`}
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
@@ -422,7 +451,7 @@ export default memo(function Sidebar({
       <div className="tab-info">
         {tab.crashed ? (
           <div className="tab-crash-badge">!</div>
-        ) : tab.suspended ? (
+        ) : (tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") ? (
           <div className="tab-zzz">zzz</div>
         ) : tab.loading ? (
           <div className="tab-spinner" />
@@ -803,7 +832,7 @@ export default memo(function Sidebar({
               </div>
             )}
 
-            {bookmarks.length > 0 && (
+            {(bookmarks.length > 0 || bookmarkFolders.length > 0) && (
               <div className="bookmark-section">
                 <div className="section-label section-label-clickable" onClick={() => setBookmarksExpanded(p => !p)}>
                   <span>bookmarks</span>
@@ -811,7 +840,57 @@ export default memo(function Sidebar({
                 </div>
                 {bookmarksExpanded && (
                   <div className="bookmark-list">
-                    {bookmarks.map(b => (
+                    {/* Folders */}
+                    {bookmarkFolders.map(folder => {
+                      const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id);
+                      const isExpanded = expandedFolders.has(folder.id);
+                      return (
+                        <div key={folder.id}>
+                          <div
+                            className="bm-folder-row"
+                            onClick={() => toggleFolderExpand(folder.id)}
+                            onContextMenu={e => { e.preventDefault(); setFolderCtx({ x: e.clientX, y: e.clientY, folderId: folder.id }); }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }}>
+                              <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                              <path d="M2 3h3.5l1.5 1.5H12v7H2V3z" stroke="var(--text-dim)" strokeWidth="1.2" fill={isExpanded ? "var(--accent-soft)" : "none"}/>
+                            </svg>
+                            {renamingFolder === folder.id ? (
+                              <input
+                                ref={renameFolderRef}
+                                className="bm-folder-rename"
+                                value={renameFolderValue}
+                                onChange={e => setRenameFolderValue(e.target.value)}
+                                onBlur={() => { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); }}
+                                onKeyDown={e => { if (e.key === "Enter") { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); } if (e.key === "Escape") setRenamingFolder(null); }}
+                                onClick={e => e.stopPropagation()}
+                                spellCheck={false}
+                              />
+                            ) : (
+                              <span className="bm-folder-name">{folder.name}</span>
+                            )}
+                            <span className="bm-folder-count">{folderBookmarks.length}</span>
+                          </div>
+                          {isExpanded && folderBookmarks.map(b => (
+                            <div
+                              key={b.id}
+                              className="bookmark-item bm-indented"
+                              onClick={() => onSelectBookmark(b.url)}
+                              onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                            >
+                              <div className="tab-favicon">
+                                {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                              </div>
+                              <span className="tab-title">{b.title || b.url}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    {/* Unfiled bookmarks (no folder) */}
+                    {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).map(b => (
                       <div
                         key={b.id}
                         className="bookmark-item"
@@ -824,6 +903,20 @@ export default memo(function Sidebar({
                         <span className="tab-title">{b.title || b.url}</span>
                       </div>
                     ))}
+                    {/* New folder button */}
+                    <div
+                      className="bm-new-folder"
+                      onClick={() => {
+                        const id = onAddBookmarkFolder("New Folder");
+                        setRenameFolderValue("New Folder");
+                        setRenamingFolder(id);
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                      </svg>
+                      <span>new folder</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -934,8 +1027,41 @@ export default memo(function Sidebar({
       {bmCtx && (
         <div className="ctx-overlay" onClick={() => setBmCtx(null)}>
           <div ref={bmCtxMenuRef} className="ctx-menu" style={{ top: bmCtxPos.top, left: bmCtxPos.left }}>
+            {bookmarkFolders.length > 0 && (
+              <>
+                <div className="ctx-label">move to folder</div>
+                {bookmarkFolders.map(f => (
+                  <button key={f.id} className="ctx-item" onClick={() => { onMoveBookmarkToFolder(bmCtx.id, f.id); setBmCtx(null); }}>
+                    {f.name}
+                  </button>
+                ))}
+                <button className="ctx-item" onClick={() => { onMoveBookmarkToFolder(bmCtx.id, ""); setBmCtx(null); }}>
+                  (no folder)
+                </button>
+                <div className="ctx-divider" />
+              </>
+            )}
             <button className="ctx-item ctx-danger" onClick={() => { onRemoveBookmark(bmCtx.id); setBmCtx(null); }}>
               remove bookmark
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* folder context menu */}
+      {folderCtx && (
+        <div className="ctx-overlay" onClick={() => setFolderCtx(null)}>
+          <div ref={folderCtxMenuRef} className="ctx-menu" style={{ top: folderCtxPos.top, left: folderCtxPos.left }}>
+            <button className="ctx-item" onClick={() => {
+              const folder = bookmarkFolders.find(f => f.id === folderCtx.folderId);
+              setRenameFolderValue(folder?.name || "");
+              setRenamingFolder(folderCtx.folderId);
+              setFolderCtx(null);
+            }}>
+              rename folder
+            </button>
+            <button className="ctx-item ctx-danger" onClick={() => { onDeleteBookmarkFolder(folderCtx.folderId); setFolderCtx(null); }}>
+              delete folder
             </button>
           </div>
         </div>

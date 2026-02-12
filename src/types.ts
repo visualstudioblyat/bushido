@@ -19,6 +19,7 @@ export interface Tab {
   collapsed?: boolean;
   suspended?: boolean;
   lastActiveAt?: number;
+  memoryState?: "active" | "suspended" | "destroyed";
   mediaState?: "playing" | "paused";
   mediaTitle?: string;
   crashed?: boolean;
@@ -121,6 +122,9 @@ export interface BushidoSettings {
   blockServiceWorkers: boolean;
   blockFontEnumeration: boolean;
   spoofHardwareConcurrency: boolean;
+  onboardingComplete: boolean;
+  accentColor: string;
+  themeMode: "dark" | "light";
 }
 
 export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
@@ -162,4 +166,7 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   blockServiceWorkers: false,
   blockFontEnumeration: false,
   spoofHardwareConcurrency: false,
+  onboardingComplete: false,
+  accentColor: "#6366f1",
+  themeMode: "dark" as const,
 };

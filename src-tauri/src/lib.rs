@@ -1,5 +1,6 @@
 mod blocker;
 mod downloads;
+mod import;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
@@ -552,6 +553,60 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 }
 
 #[tauri::command]
+async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        // pause media before suspending to prevent AUDIO_RENDERER_ERROR on resume
+        let _ = wv.eval("document.querySelectorAll('video,audio').forEach(m=>m.pause())");
+
+        #[cfg(windows)]
+        {
+            let _ = wv.with_webview(move |wv| {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows::core::Interface;
+                unsafe {
+                    let controller = wv.controller();
+                    let core = match controller.CoreWebView2() {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                        let handler = webview2_com::TrySuspendCompletedHandler::create(
+                            Box::new(|_hr, _is_successful| Ok(()))
+                        );
+                        let _ = core3.TrySuspend(&handler);
+                    }
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        #[cfg(windows)]
+        {
+            let _ = wv.with_webview(move |wv| {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows::core::Interface;
+                unsafe {
+                    let controller = wv.controller();
+                    let core = match controller.CoreWebView2() {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                        let _ = core3.Resume();
+                    }
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
     // remove from state FIRST so layout_webviews won't try to position a dying webview
     let state = app.state::<WebviewState>();
@@ -1071,6 +1126,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_tab,
+            suspend_tab,
+            resume_tab,
             close_tab,
             layout_webviews,
             switch_tab,
@@ -1108,7 +1165,10 @@ pub fn run() {
             open_download_folder,
             register_panel,
             unregister_panel,
-            position_panel
+            position_panel,
+            import::detect_browsers,
+            import::import_bookmarks,
+            import::import_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running bushido");

@@ -20,9 +20,9 @@ export default memo(function NewTabPage({ topSites, onNavigate, onSelectSite, sh
 
   const greeting = useMemo(() => {
     const h = time.getHours();
-    if (h < 12) return "good morning";
-    if (h < 18) return "good afternoon";
-    return "good evening";
+    if (h < 12) return "Good Morning";
+    if (h < 18) return "Good Afternoon";
+    return "Good Evening";
   }, [time]);
 
   const handleSubmit = useCallback((e: React.FormEvent) => {

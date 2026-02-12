@@ -1268,6 +1268,78 @@ html, body, #root {
   color: var(--text-primary);
 }
 
+/* Bookmark folders */
+.bm-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+  transition: background-color var(--transition), color var(--transition);
+  user-select: none;
+}
+
+.bm-folder-row:hover {
+  background: var(--glass-hover);
+  color: var(--text-secondary);
+}
+
+.bm-folder-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.bm-folder-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--glass);
+  padding: 1px 5px;
+  border-radius: 6px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.bm-folder-rename {
+  flex: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 2px 6px;
+  outline: none;
+  font-family: inherit;
+}
+
+.bm-indented {
+  padding-left: 28px !important;
+}
+
+.bm-new-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 11px;
+  transition: background-color var(--transition), color var(--transition);
+}
+
+.bm-new-folder:hover {
+  background: var(--glass-hover);
+  color: var(--accent);
+}
 
 .media-bar {
   margin: 0 8px 4px;
@@ -2891,4 +2963,412 @@ html, body, #root {
   background: rgba(239, 68, 68, 0.1);
   color: var(--danger);
   border-color: rgba(239, 68, 68, 0.3);
+}
+
+
+/* ========== ONBOARDING ========== */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.onboarding-container {
+  width: 100%;
+  max-width: 560px;
+  padding: 0 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.onboarding-screens {
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.onboarding-track {
+  display: flex;
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
+}
+
+.onboarding-screen {
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 32px 0;
+}
+
+.onboarding-logo {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -1px;
+}
+
+.onboarding-tagline {
+  font-size: 16px;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.onboarding-subtitle {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.onboarding-btn {
+  height: 44px;
+  padding: 0 32px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.onboarding-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.onboarding-btn:active {
+  transform: scale(0.97);
+}
+
+.onboarding-btn-secondary {
+  height: 40px;
+  padding: 0 24px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--transition), color var(--transition);
+}
+
+.onboarding-btn-secondary:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+
+.onboarding-skip {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 6px 12px;
+  transition: color var(--transition);
+}
+
+.onboarding-skip:hover {
+  color: var(--text-secondary);
+}
+
+/* dots nav */
+.onboarding-dots {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.onboarding-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--glass-active);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background-color var(--transition), transform var(--transition);
+}
+
+.onboarding-dot.active {
+  background: var(--accent);
+  transform: scale(1.25);
+}
+
+/* browser import list */
+.onboarding-browsers {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-browser-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+.onboarding-browser-row:hover {
+  background: var(--glass-hover);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.onboarding-browser-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.onboarding-browser-icon {
+  font-size: 24px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.onboarding-browser-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.onboarding-browser-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.onboarding-check {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+.onboarding-browser-row.selected .onboarding-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.onboarding-import-options {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.onboarding-import-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  transition: border-color var(--transition), background-color var(--transition);
+}
+
+.onboarding-import-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.onboarding-progress {
+  width: 100%;
+  height: 3px;
+  background: var(--glass-active);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.onboarding-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 300ms ease-out;
+}
+
+.onboarding-import-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-height: 18px;
+}
+
+/* accent color picker */
+.onboarding-colors {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.onboarding-color {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.onboarding-color:hover {
+  transform: scale(1.15);
+}
+
+.onboarding-color.active {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 3px var(--bg-primary), 0 0 12px currentColor;
+}
+
+/* theme toggle */
+.onboarding-theme-toggle {
+  display: flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.onboarding-theme-btn {
+  padding: 10px 24px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--transition), color var(--transition);
+}
+
+.onboarding-theme-btn.active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* feature cards */
+.onboarding-features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  width: 100%;
+}
+
+.onboarding-feature {
+  padding: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-feature-icon {
+  font-size: 20px;
+  color: var(--accent);
+}
+
+.onboarding-feature-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.onboarding-feature-desc {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+
+/* ========== LIGHT THEME ========== */
+html.light {
+  --bg-primary: #f8f8fa;
+  --bg-secondary: #efefef;
+  --bg-tertiary: #e5e5ea;
+  --bg-elevated: #ffffff;
+  --bg-surface: rgba(0, 0, 0, 0.03);
+  --glass: rgba(0, 0, 0, 0.025);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-hover: rgba(0, 0, 0, 0.05);
+  --glass-active: rgba(0, 0, 0, 0.08);
+  --text-primary: #1a1a2e;
+  --text-secondary: #555566;
+  --text-dim: #888899;
+  --accent-soft: rgba(99, 102, 241, 0.08);
+  --accent-glow: rgba(99, 102, 241, 0.12);
+  --inner-light: rgba(255, 255, 255, 0.5);
+  --edge-light: rgba(0, 0, 0, 0.06);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.1), 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-xl: 0 16px 48px rgba(0,0,0,0.12), 0 8px 24px rgba(0,0,0,0.08);
+}
+
+html.light .ctx-menu,
+html.light .url-suggestions {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+html.light .webview {
+  background: #fff;
+}
+
+/* settings accent color picker (reuses onboarding color styles) */
+.settings-colors {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-color-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform var(--transition), border-color var(--transition);
+}
+
+.settings-color-dot:hover {
+  transform: scale(1.15);
+}
+
+.settings-color-dot.active {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-primary);
 }
