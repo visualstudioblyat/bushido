@@ -976,11 +976,33 @@ async fn load_history(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 async fn save_bookmarks(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    // if sync enabled, write through SyncDoc
+    let state = app.try_state::<sync::SyncState>();
+    if let Some(state) = state {
+        let mut doc_guard = state.sync_doc.lock().await;
+        if let Some(ref mut doc) = *doc_guard {
+            doc.write_full_from_json(&data)?;
+            doc.save()?;
+            drop(doc_guard); // release before notify
+            sync::notify_sync_change(&state);
+            return Ok(());
+        }
+    }
+    // fallback: plain JSON
     fs::write(bookmarks_path(&app), data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn load_bookmarks(app: tauri::AppHandle) -> Result<String, String> {
+    // if sync enabled, read from SyncDoc
+    let state = app.try_state::<sync::SyncState>();
+    if let Some(state) = state {
+        let doc_guard = state.sync_doc.lock().await;
+        if let Some(ref doc) = *doc_guard {
+            return doc.read_bookmarks_as_json();
+        }
+    }
+    // fallback: plain JSON
     let p = bookmarks_path(&app);
     if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok(r#"{"bookmarks":[],"folders":[]}"#.into()) }
 }
@@ -1143,8 +1165,10 @@ pub fn run() {
             // Initialize sync state
             let sync_state = match sync::keys::load_identity(&sync_data_dir) {
                 Ok(Some(identity)) => {
-                    // Check if sync was enabled (settings.json has syncEnabled: true)
-                    let settings_p = sync_data_dir.join("settings.json");
+                    // Read syncEnabled from the app settings (Tauri app_data_dir), NOT sync_data_dir
+                    let settings_p = app.path().app_data_dir()
+                        .unwrap_or_else(|_| sync_data_dir.clone())
+                        .join("settings.json");
                     let sync_enabled = if settings_p.exists() {
                         fs::read_to_string(&settings_p).ok()
                             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -1181,6 +1205,23 @@ pub fn run() {
                 let ss = app.state::<sync::SyncState>();
                 if ss.enabled {
                     sync::start_tcp_listener(app.handle().clone());
+                }
+            }
+
+            // Init SyncDoc + migration + sync debounce + health check if sync enabled
+            {
+                let ss = app.state::<sync::SyncState>();
+                if ss.enabled {
+                    match sync::sync_doc::SyncDoc::init(&ss.app_data_dir, ss.peer_id, &ss.device_id) {
+                        Ok(mut doc) => {
+                            let _ = doc.maybe_migrate_json(&ss.app_data_dir);
+                            *ss.sync_doc.blocking_lock() = Some(doc);
+                            sync::start_sync_debounce(app.handle().clone());
+                            sync::start_health_check(app.handle().clone());
+                            sync::start_compaction(app.handle().clone());
+                        }
+                        Err(e) => eprintln!("[sync] SyncDoc init failed: {}", e),
+                    }
                 }
             }
 
@@ -1258,7 +1299,22 @@ pub fn run() {
             sync::start_pairing,
             sync::enter_pairing_code,
             sync::remove_device,
-            sync::simulate_pairing
+            sync::simulate_pairing,
+            sync::force_sync,
+            sync::simulate_sync,
+            sync::sync_add_bookmark,
+            sync::sync_remove_bookmark,
+            sync::sync_add_folder,
+            sync::sync_remove_folder,
+            sync::sync_rename_folder,
+            sync::sync_move_bookmark,
+            sync::sync_add_history,
+            sync::sync_write_setting,
+            sync::sync_write_tabs,
+            sync::sync_get_all_tabs,
+            sync::sync_set_data_types,
+            sync::send_tab_to_device,
+            sync::reset_sync_data
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

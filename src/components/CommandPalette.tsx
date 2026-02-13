@@ -30,6 +30,7 @@ const ACTIONS: CmdResult[] = [
   { id: "action-history", type: "action", title: "Open History", subtitle: "Ctrl+H" },
   { id: "action-bookmark", type: "action", title: "Bookmark Page", subtitle: "Ctrl+D" },
   { id: "action-clear-history", type: "action", title: "Clear All History", subtitle: "" },
+  { id: "action-screenshot", type: "action", title: "Screenshot", subtitle: "Ctrl+Shift+S" },
 ];
 
 function fuzzyScore(query: string, text: string): number {

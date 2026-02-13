@@ -10,6 +10,9 @@ import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
 import SplitOverlay from "./components/SplitOverlay";
+import ScreenshotOverlay from "./components/ScreenshotOverlay";
+import AnnotationEditor from "./components/AnnotationEditor";
+import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
 import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf } from "./splitLayout";
@@ -61,6 +64,9 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [urlQuery, setUrlQuery] = useState("");
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
+  const [annotationData, setAnnotationData] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [readerTabs, setReaderTabs] = useState<Set<string>>(new Set());
   const [readerSettings, setReaderSettings] = useState({ fontSize: 18, font: "serif" as "serif" | "sans", theme: "dark" as "dark" | "light" | "sepia", lineWidth: 680 });
   const [hasVideo, setHasVideo] = useState(false);
@@ -71,12 +77,18 @@ export default function App() {
   const [panels, setPanels] = useState<WebPanel[]>([]);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [syncToast, setSyncToast] = useState<"syncing" | "success" | "error" | null>(null);
+  const [syncTabReceived, setSyncTabReceived] = useState<{ from_device: string; url: string; title: string } | null>(null);
+  const [syncPairedDevices, setSyncPairedDevices] = useState<{ device_id: string; name: string }[]>([]);
+  const syncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
   const settingsLoaded = useRef(false);
   const settingsRef = useRef(settings);
   const historyLoaded = useRef(false);
   const bookmarksLoaded = useRef(false);
+  const bookmarkBulkRef = useRef(false);
+  const prevSettingsRef = useRef<BushidoSettings | null>(null);
 
   settingsRef.current = settings;
 
@@ -360,12 +372,14 @@ export default function App() {
     return () => clearTimeout(t);
   }, [historyEntries]);
 
-  // save bookmarks debounced
+  // save bookmarks debounced (skip when sync enabled — surgical commands handle Loro persistence)
   useEffect(() => {
     if (!bookmarksLoaded.current) return;
+    if (settings.syncEnabled && !bookmarkBulkRef.current) return;
+    bookmarkBulkRef.current = false;
     const t = setTimeout(() => invoke("save_bookmarks", { data: JSON.stringify(bookmarkData) }), 1000);
     return () => clearTimeout(t);
-  }, [bookmarkData]);
+  }, [bookmarkData, settings.syncEnabled]);
 
   // save settings debounced
   useEffect(() => {
@@ -373,6 +387,47 @@ export default function App() {
     const t = setTimeout(() => invoke("save_settings", { data: JSON.stringify(settings) }), 500);
     return () => clearTimeout(t);
   }, [settings]);
+
+  // sync settings to CRDT — diff only changed keys (React optimization)
+  useEffect(() => {
+    if (!settingsLoaded.current || !settings.syncEnabled) return;
+    const prev = prevSettingsRef.current;
+    if (prev) {
+      const keys = Object.keys(settings) as (keyof BushidoSettings)[];
+      keys.forEach(key => {
+        if (settings[key] !== prev[key]) {
+          invoke("sync_write_setting", { key, value: JSON.stringify(settings[key]) }).catch(() => {});
+        }
+      });
+    }
+    prevSettingsRef.current = { ...settings };
+  }, [settings]);
+
+  // fetch paired devices for sidebar send-tab feature
+  useEffect(() => {
+    if (!settings.syncEnabled) { setSyncPairedDevices([]); return; }
+    const fetch = () => {
+      invoke<{ enabled: boolean; paired_devices: { device_id: string; name: string }[] }>("get_sync_status")
+        .then(info => setSyncPairedDevices(info.paired_devices || []))
+        .catch(() => {});
+    };
+    fetch();
+    const unlisten = listen("pair-complete", fetch);
+    return () => { unlisten.then(u => u()); };
+  }, [settings.syncEnabled]);
+
+  // sync open tabs every 30s
+  useEffect(() => {
+    if (!settings.syncEnabled) return;
+    const sync = () => {
+      const tabsForSync = tabs.filter(t => t.memoryState !== "destroyed")
+        .map(t => ({ id: t.id, url: t.url, title: t.title, favicon: t.favicon }));
+      invoke("sync_write_tabs", { tabs: JSON.stringify(tabsForSync) }).catch(() => {});
+    };
+    sync();
+    const iv = setInterval(sync, 30000);
+    return () => clearInterval(iv);
+  }, [settings.syncEnabled, tabs]);
 
   // record history from navigation events
   const recordHistory = useCallback((url: string, title: string, favicon?: string) => {
@@ -389,6 +444,10 @@ export default function App() {
       if (next.length > 10000) next.length = 10000;
       return next;
     });
+    // sync history to CRDT (fire-and-forget)
+    if (settingsRef.current.syncEnabled) {
+      invoke("sync_add_history", { url, title: title || "", favicon: favicon || null, timestamp: now }).catch(() => {});
+    }
   }, []);
 
   // listen for webview events from rust
@@ -468,6 +527,53 @@ export default function App() {
       }),
       listen<{ id: string }>("download-cancelled", (e) => {
         setDownloads(prev => prev.filter(d => d.id !== e.payload.id));
+      }),
+      // sync: reload bookmarks when remote changes arrive
+      listen("sync-bookmarks-changed", () => {
+        console.log("[sync] sync-bookmarks-changed event received, reloading...");
+        invoke<string>("load_bookmarks").then(json => {
+          console.log("[sync] load_bookmarks returned:", json?.substring(0, 300));
+          try { const p = JSON.parse(json); if (p?.bookmarks) { console.log("[sync] setting bookmarkData:", p.bookmarks.length, "bookmarks,", p.folders.length, "folders"); setBookmarkData(p); } } catch (e) { console.error("[sync] parse error:", e); }
+        }).catch(e => console.error("[sync] load_bookmarks failed:", e));
+      }),
+      // sync: activity indicator
+      listen<string>("sync-activity", (e) => {
+        const state = e.payload as "syncing" | "success" | "error";
+        setSyncToast(state);
+        if (syncToastTimer.current) clearTimeout(syncToastTimer.current);
+        if (state !== "syncing") {
+          syncToastTimer.current = setTimeout(() => setSyncToast(null), 2500);
+        }
+      }),
+      // sync: merge remote history
+      listen("sync-history-changed", () => {
+        // history is additive from CRDT — no merge needed, local state is source of truth
+        // remote entries appear on next full reload from load_history
+      }),
+      // sync: apply remote settings
+      listen("sync-settings-changed", () => {
+        // reload settings from disk to pick up remotely-synced keys
+        invoke<string>("load_settings").then(json => {
+          try {
+            const remote = JSON.parse(json);
+            setSettings(prev => {
+              const merged = { ...prev };
+              // only apply universal (non-device-local) keys
+              const deviceLocal = new Set(["compactMode", "suspendTimeout", "downloadLocation", "askDownloadLocation", "onStartup", "syncDeviceName", "syncEnabled", "onboardingComplete"]);
+              for (const key of Object.keys(remote)) {
+                if (!deviceLocal.has(key) && remote[key] !== undefined) {
+                  (merged as any)[key] = remote[key];
+                }
+              }
+              return merged;
+            });
+          } catch {}
+        }).catch(() => {});
+      }),
+      // sync: tab received from another device
+      listen<{ from_device: string; url: string; title: string }>("tab-received", (e) => {
+        setSyncTabReceived(e.payload);
+        setTimeout(() => setSyncTabReceived(null), 8000);
       }),
     ];
 
@@ -952,10 +1058,12 @@ export default function App() {
 
   const addBookmark = useCallback((url: string, title: string, favicon?: string, folderId = "") => {
     const id = `bm-${Date.now()}`;
+    const createdAt = Date.now();
     setBookmarkData(prev => ({
       ...prev,
-      bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt: Date.now() }],
+      bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt }],
     }));
+    invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(() => {});
   }, []);
 
   const removeBookmark = useCallback((id: string) => {
@@ -963,6 +1071,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.filter(b => b.id !== id),
     }));
+    invoke("sync_remove_bookmark", { id }).catch(() => {});
   }, []);
 
   const addBookmarkFolder = useCallback((name: string, parentId = "root"): string => {
@@ -971,6 +1080,7 @@ export default function App() {
       ...prev,
       folders: [...prev.folders, { id, name, parentId, order: prev.folders.length }],
     }));
+    invoke("sync_add_folder", { id, name, parentId, order: 0 }).catch(() => {});
     return id;
   }, []);
 
@@ -979,6 +1089,7 @@ export default function App() {
       ...prev,
       folders: prev.folders.map(f => f.id === folderId ? { ...f, name } : f),
     }));
+    invoke("sync_rename_folder", { id: folderId, name }).catch(() => {});
   }, []);
 
   const deleteBookmarkFolder = useCallback((folderId: string) => {
@@ -987,6 +1098,7 @@ export default function App() {
       folders: prev.folders.filter(f => f.id !== folderId),
       bookmarks: prev.bookmarks.map(b => b.folderId === folderId ? { ...b, folderId: "" } : b),
     }));
+    invoke("sync_remove_folder", { id: folderId }).catch(() => {});
   }, []);
 
   const moveBookmarkToFolder = useCallback((bookmarkId: string, folderId: string) => {
@@ -994,6 +1106,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.map(b => b.id === bookmarkId ? { ...b, folderId } : b),
     }));
+    invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(() => {});
   }, []);
 
   const bookmarkedUrls = useMemo(() => new Set(bookmarkData.bookmarks.map(b => b.url)), [bookmarkData.bookmarks]);
@@ -1141,6 +1254,21 @@ export default function App() {
     addTab(SETTINGS_URL);
   }, [tabs, selectTab, addTab]);
 
+  // Screenshot: capture viewport while webview is on-screen, then hide + open overlay
+  const openScreenshot = useCallback(async () => {
+    if (!activeTab) return;
+    try {
+      const b64: string = await invoke("capture_visible", { id: activeTab });
+      // Hide webviews so React overlay is visible
+      invoke("layout_webviews", { panes: [], focusedTabId: activeTab, sidebarW: 0, topOffset: 0 });
+      setScreenshotPreview(b64);
+    } catch (e: any) {
+      // If capture fails, still open overlay with empty preview
+      invoke("layout_webviews", { panes: [], focusedTabId: activeTab || "__none__", sidebarW: 0, topOffset: 0 });
+      setScreenshotPreview("");
+    }
+  }, [activeTab]);
+
   const executeAction = useCallback((action: string) => {
     switch (action) {
       case "action-new-tab": addTab(); break;
@@ -1152,8 +1280,9 @@ export default function App() {
       case "action-clear-history": clearHistory("all"); break;
       case "action-history": setHistoryOpen(true); break;
       case "action-bookmark": toggleBookmark(); break;
+      case "action-screenshot": openScreenshot(); break;
     }
-  }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark, onOpenSettings, toggleReader]);
+  }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark, onOpenSettings, toggleReader, openScreenshot]);
 
   // keyboard shortcuts (works when React UI has focus)
   useEffect(() => {
@@ -1205,12 +1334,13 @@ export default function App() {
         case "focus-url": urlBarRef.current?.focus(); urlBarRef.current?.select(); break;
         case "find": setFindOpen(true); break;
         case "command-palette": setCmdOpen(p => !p); break;
+        case "screenshot": openScreenshot(); break;
         case "reader-mode": toggleReader(); break;
         case "split-view": toggleSplit(); break;
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
-  }, [toggleBookmark, addTab, closeTab, activeTab, toggleSplit]);
+  }, [toggleBookmark, addTab, closeTab, activeTab, toggleSplit, openScreenshot]);
 
   // listen for child webview shortcut bridge events
   useEffect(() => {
@@ -1295,6 +1425,7 @@ export default function App() {
   }, []);
 
   const handleImportBookmarks = useCallback((imported: { title: string; url: string; folder: string }[]) => {
+    bookmarkBulkRef.current = true; // allow debounced save_bookmarks for bulk import
     setBookmarkData(prev => {
       const existing = new Set(prev.bookmarks.map(b => b.url));
       const newBookmarks = imported
@@ -1380,6 +1511,28 @@ export default function App() {
       />
     )}
     <div className="browser" style={showOnboarding ? { display: "none" } : undefined}>
+      {screenshotPreview !== null && activeTab && (
+        <ScreenshotOverlay
+          tabId={activeTab}
+          tabUrl={current?.url || ""}
+          preview={screenshotPreview}
+          onClose={() => { setScreenshotPreview(null); syncLayout(); }}
+          onAnnotate={(data) => { setScreenshotPreview(null); syncLayout(); setAnnotationData(data); }}
+          onRestoreWebview={() => syncLayout()}
+        />
+      )}
+      {annotationData && (
+        <AnnotationEditor
+          imageData={annotationData}
+          onClose={() => setAnnotationData(null)}
+        />
+      )}
+      {shareOpen && current?.url && (
+        <ShareMenu
+          url={current.url}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
       {cmdOpen && (
         <CommandPalette
           tabs={tabs}
@@ -1475,6 +1628,10 @@ export default function App() {
           onTogglePanel={togglePanel}
           onAddPanel={addPanel}
           onRemovePanel={removePanel}
+          onScreenshot={openScreenshot}
+          onShareUrl={() => setShareOpen(true)}
+          syncEnabled={settings.syncEnabled}
+          pairedDevices={syncPairedDevices}
         />
         {historyOpen && (
           <HistoryPanel
@@ -1531,6 +1688,39 @@ export default function App() {
         </div>
       </div>
     </div>
+    {syncToast && (
+      <div className={`sync-toast sync-toast--${syncToast}`}>
+        {syncToast === "syncing" && (
+          <svg className="sync-toast-icon sync-toast-spin" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1.5A6.5 6.5 0 1 0 14.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        )}
+        {syncToast === "success" && (
+          <svg className="sync-toast-icon sync-toast-check" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M3 8.5L6.5 12L13 4" stroke="var(--success)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+        {syncToast === "error" && (
+          <svg className="sync-toast-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 4v5M8 11v1" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        )}
+        <span>{syncToast === "syncing" ? "Syncing..." : syncToast === "success" ? "Synced" : "Sync failed"}</span>
+      </div>
+    )}
+    {syncTabReceived && (
+      <div className="sync-toast sync-toast--tab-received" onClick={() => {
+        navigate(syncTabReceived.url);
+        setSyncTabReceived(null);
+      }}>
+        <svg className="sync-toast-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 3h12v10H2z" stroke="var(--accent)" strokeWidth="1.3"/>
+          <path d="M2 5.5h12" stroke="var(--accent)" strokeWidth="1"/>
+        </svg>
+        <span>Tab from {syncTabReceived.from_device}: {syncTabReceived.title.substring(0, 40)}</span>
+        <span style={{ opacity: 0.6, fontSize: 11 }}>click to open</span>
+      </div>
+    )}
     </>
   );
 }

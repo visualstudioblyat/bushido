@@ -146,6 +146,28 @@ export interface DownloadItem {
   segments: number; // 0 = single-stream, >1 = parallel connections
 }
 
+// sync types (Phase D)
+export interface SyncTab {
+  id: string;
+  url: string;
+  title: string;
+  favicon?: string;
+}
+
+export interface DeviceTabs {
+  device_id: string;
+  device_name?: string;
+  tabs: string; // JSON string of SyncTab[]
+  timestamp: number;
+}
+
+export interface SyncLogEntry {
+  timestamp: number;
+  type: "connect" | "sync" | "send" | "receive" | "error";
+  message: string;
+  device?: string;
+}
+
 export const DEFAULT_SETTINGS: BushidoSettings = {
   searchEngine: "google",
   customSearchUrl: "",

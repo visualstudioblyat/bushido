@@ -112,6 +112,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     code?: string;
   } | null>(null);
   const [simulateCode, setSimulateCode] = useState<string | null>(null);
+  const [syncTypes, setSyncTypes] = useState({ bookmarks: true, history: true, settings: true, tabs: true });
 
   // Fetch sync status on mount and when syncEnabled changes
   useEffect(() => {
@@ -392,6 +393,61 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                 </div>
               )}
               <div className="settings-subsection">
+                <h3 className="settings-subsection-title">Data Types</h3>
+                <div className="settings-row">
+                  <div className="settings-label"><span>Sync bookmarks</span></div>
+                  <Toggle checked={syncTypes.bookmarks} onChange={v => {
+                    const next = { ...syncTypes, bookmarks: v };
+                    setSyncTypes(next);
+                    invoke("sync_set_data_types", next).catch(() => {});
+                  }} />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-label"><span>Sync history</span></div>
+                  <Toggle checked={syncTypes.history} onChange={v => {
+                    const next = { ...syncTypes, history: v };
+                    setSyncTypes(next);
+                    invoke("sync_set_data_types", next).catch(() => {});
+                  }} />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-label"><span>Sync settings</span></div>
+                  <Toggle checked={syncTypes.settings} onChange={v => {
+                    const next = { ...syncTypes, settings: v };
+                    setSyncTypes(next);
+                    invoke("sync_set_data_types", next).catch(() => {});
+                  }} />
+                </div>
+                <div className="settings-row">
+                  <div className="settings-label"><span>Sync open tabs</span></div>
+                  <Toggle checked={syncTypes.tabs} onChange={v => {
+                    const next = { ...syncTypes, tabs: v };
+                    setSyncTypes(next);
+                    invoke("sync_set_data_types", next).catch(() => {});
+                  }} />
+                </div>
+              </div>
+              <div className="settings-subsection">
+                <h3 className="settings-subsection-title">Danger Zone</h3>
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>Reset sync data</span>
+                    <span className="settings-hint">Backs up current sync data and starts fresh. Bookmarks are preserved locally.</span>
+                  </div>
+                  <button className="settings-remove-btn" onClick={async () => {
+                    if (!confirm("Reset all sync data? Local data is preserved, but the CRDT history is wiped.")) return;
+                    try {
+                      await invoke("reset_sync_data");
+                      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+                    } catch (e) {
+                      console.error("Reset failed:", e);
+                    }
+                  }}>
+                    Reset
+                  </button>
+                </div>
+              </div>
+              <div className="settings-subsection">
                 <h3 className="settings-subsection-title">Debug</h3>
                 <div className="settings-row">
                   <div className="settings-label">
@@ -418,6 +474,23 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                     <span className="settings-mono" style={{ color: "var(--accent)", fontSize: 18, letterSpacing: 4 }}>{simulateCode}</span>
                   </div>
                 )}
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>Loopback sync test</span>
+                    <span className="settings-hint">Pair a ghost device then sync 3 sample bookmarks over Noise + Loro</span>
+                  </div>
+                  <button className="settings-about-btn" onClick={async () => {
+                    try {
+                      setSimulateCode(null);
+                      const result = await invoke<{ device_id: string; device_name: string; code: string; info: string }>("simulate_sync");
+                      setSimulateCode(result.code);
+                    } catch (e) {
+                      console.error("Simulate sync failed:", e);
+                    }
+                  }}>
+                    Simulate Sync
+                  </button>
+                </div>
               </div>
             </>
           )}

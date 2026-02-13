@@ -181,12 +181,7 @@
         }
     } catch(e) {}
 
-    // 7. normalize hardware concurrency (Firefox RFP logic: 4 default, 8 if real >= 8)
-    try {
-        var realCores = navigator.hardwareConcurrency;
-        var spoofedCores = (realCores >= 8) ? 8 : 4;
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return spoofedCores; }, configurable: false });
-    } catch(e) {}
+    // 7. hardware concurrency — MOVED to toggleable security_js in lib.rs
 
     // 8. normalize language
     try {
@@ -281,33 +276,8 @@
         Object.defineProperty(navigator, 'webkitConnection', { get: function() { return undefined; }, configurable: false });
     } catch(e) {}
 
-    // 15. block font enumeration
-    try {
-        if (document.fonts) {
-            Object.defineProperty(document, 'fonts', {
-                get: function() {
-                    return { forEach: function(){}, size: 0, ready: Promise.resolve(),
-                             check: function(){ return false; }, has: function(){ return false; } };
-                }, configurable: false
-            });
-        }
-    } catch(e) {}
-
-    // 16. block service worker registration (prevents sw-based tracker bypass)
-    try {
-        if (navigator.serviceWorker) {
-            Object.defineProperty(navigator, 'serviceWorker', {
-                get: function() {
-                    return {
-                        register: function() { return Promise.reject(new DOMException('blocked','SecurityError')); },
-                        getRegistration: function() { return Promise.resolve(undefined); },
-                        getRegistrations: function() { return Promise.resolve([]); },
-                        ready: new Promise(function(){})
-                    };
-                }, configurable: false
-            });
-        }
-    } catch(e) {}
+    // 15. font enumeration — MOVED to toggleable security_js in lib.rs
+    // 16. service worker blocking — MOVED to toggleable security_js in lib.rs
 
     // 17. clamp performance.now() to ~16.67ms + random jitter (anti-Spectre + anti-fingerprint)
     try {

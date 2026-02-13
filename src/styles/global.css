@@ -1227,6 +1227,23 @@ html, body, #root {
   padding: 0 4px;
 }
 
+.bm-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text-dim);
+  font: 400 11px/1 system-ui, sans-serif;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition), color var(--transition);
+}
+
+.bm-empty:hover {
+  background: var(--glass-hover);
+  color: var(--text-secondary);
+}
+
 .bookmark-list::-webkit-scrollbar {
   width: 4px;
 }
@@ -2819,8 +2836,15 @@ html, body, #root {
 }
 
 .settings-remove-btn {
+  padding: 6px 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: transparent;
   color: #ef4444;
-  border-color: rgba(239, 68, 68, 0.2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
 }
 .settings-remove-btn:hover {
   background: rgba(239, 68, 68, 0.1);
@@ -4352,4 +4376,80 @@ html.light .webview {
 .share-menu-item:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ── Sync Toast ──────────────────────────────────────────────── */
+
+.sync-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(16px);
+  color: var(--text-secondary);
+  font: 500 12px/1 system-ui, sans-serif;
+  z-index: 99999;
+  animation: syncToastIn 300ms var(--spring) forwards;
+  pointer-events: none;
+}
+
+.sync-toast--success {
+  border-color: rgba(34, 197, 94, 0.2);
+  color: var(--success);
+}
+
+.sync-toast--error {
+  border-color: rgba(239, 68, 68, 0.2);
+  color: var(--danger);
+}
+
+.sync-toast-icon {
+  flex-shrink: 0;
+}
+
+.sync-toast-spin {
+  animation: syncSpin 800ms linear infinite;
+}
+
+.sync-toast-check path {
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+  animation: syncCheck 400ms ease-out 100ms forwards;
+}
+
+@keyframes syncToastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px) scale(0.95); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+@keyframes syncSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes syncCheck {
+  to { stroke-dashoffset: 0; }
+}
+
+.sync-toast--tab-received {
+  border-color: rgba(99, 102, 241, 0.3);
+  color: var(--text-primary);
+  pointer-events: auto;
+  cursor: pointer;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 360px;
+}
+
+.sync-toast--tab-received:hover {
+  border-color: var(--accent);
+  background: var(--bg-surface);
 }

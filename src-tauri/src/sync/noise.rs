@@ -4,6 +4,8 @@ use tokio::net::TcpStream;
 
 const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const MAX_MSG_LEN: usize = 65535;
+// leave room for Noise overhead (16-byte AEAD tag + length prefix)
+const NOISE_CHUNK_SIZE: usize = 65000;
 
 pub struct NoiseStream {
     stream: TcpStream,
@@ -116,6 +118,47 @@ impl NoiseStream {
             .read_message(&ciphertext, &mut self.recv_buf)
             .map_err(|e| format!("noise decrypt: {}", e))?;
         Ok(self.recv_buf[..len].to_vec())
+    }
+
+    /// Send a payload that may exceed the Noise max message size.
+    /// Sends a u32 chunk count, then each chunk as a separate Noise message.
+    pub async fn send_large(&mut self, plaintext: &[u8]) -> Result<(), String> {
+        let chunks: Vec<&[u8]> = plaintext.chunks(NOISE_CHUNK_SIZE).collect();
+        let count = if plaintext.is_empty() { 1 } else { chunks.len() };
+
+        // send chunk count as a single Noise message
+        let count_bytes = (count as u32).to_be_bytes();
+        self.send(&count_bytes).await?;
+
+        if plaintext.is_empty() {
+            // single empty chunk
+            self.send(&[]).await?;
+        } else {
+            for chunk in &chunks {
+                self.send(chunk).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Receive a chunked payload (inverse of send_large).
+    pub async fn recv_large(&mut self) -> Result<Vec<u8>, String> {
+        // read chunk count
+        let count_bytes = self.recv().await?;
+        if count_bytes.len() != 4 {
+            return Err("invalid chunk count".into());
+        }
+        let count = u32::from_be_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]) as usize;
+        if count > 1000 {
+            return Err("too many chunks".into());
+        }
+
+        let mut result = Vec::with_capacity(count * NOISE_CHUNK_SIZE);
+        for _ in 0..count {
+            let chunk = self.recv().await?;
+            result.extend_from_slice(&chunk);
+        }
+        Ok(result)
     }
 
     /// Get the remote peer's static public key (available after XX handshake).

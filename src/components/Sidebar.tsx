@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, memo, RefObject } from "react";
-import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult, WebPanel } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult, WebPanel, SyncTab } from "../types";
 import logoSrc from "../assets/logo.png";
 
 const GearIcon = () => (
@@ -87,6 +89,10 @@ interface Props {
   onTogglePanel: (id: string) => void;
   onAddPanel: (url: string) => void;
   onRemovePanel: (id: string) => void;
+  onScreenshot: () => void;
+  onShareUrl: () => void;
+  syncEnabled?: boolean;
+  pairedDevices?: { device_id: string; name: string }[];
 }
 
 interface CtxMenu {
@@ -181,6 +187,8 @@ export default memo(function Sidebar({
   paneTabIds, onSplitWith,
   playingTab, onMediaPlayPause, onMediaMute,
   panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel,
+  onScreenshot, onShareUrl,
+  syncEnabled, pairedDevices,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -210,6 +218,8 @@ export default memo(function Sidebar({
   const [panelPickerOpen, setPanelPickerOpen] = useState(false);
   const [panelCustomUrl, setPanelCustomUrl] = useState("");
   const panelPickerRef = useRef<HTMLDivElement>(null);
+  const [syncedTabsOpen, setSyncedTabsOpen] = useState(false);
+  const [syncedTabs, setSyncedTabs] = useState<{ device_id: string; device_name?: string; tabs: SyncTab[]; timestamp: number }[]>([]);
 
   // url bar state (absorbed from Toolbar)
   const [urlInput, setUrlInput] = useState(url);
@@ -221,6 +231,28 @@ export default memo(function Sidebar({
   useEffect(() => {
     if (!urlFocused) setUrlInput(url);
   }, [url, urlFocused]);
+
+  // poll synced tabs from other devices
+  useEffect(() => {
+    if (!syncEnabled) return;
+    const fetch = () => {
+      invoke<string>("sync_get_all_tabs").then(json => {
+        try {
+          const raw = JSON.parse(json) as { device_id: string; tabs: string; timestamp: number }[];
+          setSyncedTabs(raw.map(d => ({
+            device_id: d.device_id,
+            device_name: pairedDevices?.find(p => p.device_id === d.device_id)?.name,
+            tabs: (() => { try { return JSON.parse(d.tabs) as SyncTab[]; } catch { return []; } })(),
+            timestamp: d.timestamp,
+          })));
+        } catch {}
+      }).catch(() => {});
+    };
+    fetch();
+    const iv = setInterval(fetch, 10000);
+    const unlisten = listen("sync-tabs-changed", fetch);
+    return () => { clearInterval(iv); unlisten.then(u => u()); };
+  }, [syncEnabled, pairedDevices]);
 
   // close extensions panel on click outside
   useEffect(() => {
@@ -596,7 +628,7 @@ export default memo(function Sidebar({
                         <path d="M4 2H12V14L8 11L4 14V2Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill={isBookmarked ? "currentColor" : "none"}/>
                       </svg>
                     </button>
-                    <button className="ext-action-btn" title="Screenshot">
+                    <button className="ext-action-btn" onClick={onScreenshot} title="Screenshot">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <rect x="1.5" y="3.5" width="13" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
                         <circle cx="8" cy="8.5" r="2.5" stroke="currentColor" strokeWidth="1.3"/>
@@ -617,7 +649,7 @@ export default memo(function Sidebar({
                         </svg>
                       </button>
                     )}
-                    <button className="ext-action-btn" title="Share">
+                    <button className="ext-action-btn" onClick={onShareUrl} title="Share">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path d="M8 2V10M8 2L5 5M8 2L11 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
                         <path d="M3 9V13H13V9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
@@ -832,91 +864,131 @@ export default memo(function Sidebar({
               </div>
             )}
 
-            {(bookmarks.length > 0 || bookmarkFolders.length > 0) && (
-              <div className="bookmark-section">
-                <div className="section-label section-label-clickable" onClick={() => setBookmarksExpanded(p => !p)}>
-                  <span>bookmarks</span>
-                  <span className="tab-count">{bookmarks.length}</span>
-                </div>
-                {bookmarksExpanded && (
-                  <div className="bookmark-list">
-                    {/* Folders */}
-                    {bookmarkFolders.map(folder => {
-                      const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id);
-                      const isExpanded = expandedFolders.has(folder.id);
-                      return (
-                        <div key={folder.id}>
-                          <div
-                            className="bm-folder-row"
-                            onClick={() => toggleFolderExpand(folder.id)}
-                            onContextMenu={e => { e.preventDefault(); setFolderCtx({ x: e.clientX, y: e.clientY, folderId: folder.id }); }}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }}>
-                              <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                              <path d="M2 3h3.5l1.5 1.5H12v7H2V3z" stroke="var(--text-dim)" strokeWidth="1.2" fill={isExpanded ? "var(--accent-soft)" : "none"}/>
-                            </svg>
-                            {renamingFolder === folder.id ? (
-                              <input
-                                ref={renameFolderRef}
-                                className="bm-folder-rename"
-                                value={renameFolderValue}
-                                onChange={e => setRenameFolderValue(e.target.value)}
-                                onBlur={() => { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); }}
-                                onKeyDown={e => { if (e.key === "Enter") { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); } if (e.key === "Escape") setRenamingFolder(null); }}
-                                onClick={e => e.stopPropagation()}
-                                spellCheck={false}
-                              />
-                            ) : (
-                              <span className="bm-folder-name">{folder.name}</span>
-                            )}
-                            <span className="bm-folder-count">{folderBookmarks.length}</span>
-                          </div>
-                          {isExpanded && folderBookmarks.map(b => (
+            <div className="bookmark-section">
+              <div className="section-label section-label-clickable" onClick={() => setBookmarksExpanded(p => !p)}>
+                <span>bookmarks</span>
+              </div>
+              {bookmarksExpanded && (
+                <div className="bookmark-list">
+                  {bookmarks.length === 0 && bookmarkFolders.length === 0 ? (
+                    <div className="bm-empty" onClick={onToggleBookmark}>
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 2L9.8 5.6L14 6.2L11 9.1L11.7 13.2L8 11.3L4.3 13.2L5 9.1L2 6.2L6.2 5.6L8 2Z"
+                              stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" fill="none" />
+                      </svg>
+                      <span>Press Ctrl+D to bookmark a page</span>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Folders */}
+                      {bookmarkFolders.map(folder => {
+                        const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id);
+                        const isExpanded = expandedFolders.has(folder.id);
+                        return (
+                          <div key={folder.id}>
                             <div
-                              key={b.id}
-                              className="bookmark-item bm-indented"
-                              onClick={() => onSelectBookmark(b.url)}
-                              onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                              className="bm-folder-row"
+                              onClick={() => toggleFolderExpand(folder.id)}
+                              onContextMenu={e => { e.preventDefault(); setFolderCtx({ x: e.clientX, y: e.clientY, folderId: folder.id }); }}
                             >
-                              <div className="tab-favicon">
-                                {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
-                              </div>
-                              <span className="tab-title">{b.title || b.url}</span>
+                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }}>
+                                <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <path d="M2 3h3.5l1.5 1.5H12v7H2V3z" stroke="var(--text-dim)" strokeWidth="1.2" fill={isExpanded ? "var(--accent-soft)" : "none"}/>
+                              </svg>
+                              {renamingFolder === folder.id ? (
+                                <input
+                                  ref={renameFolderRef}
+                                  className="bm-folder-rename"
+                                  value={renameFolderValue}
+                                  onChange={e => setRenameFolderValue(e.target.value)}
+                                  onBlur={() => { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); }}
+                                  onKeyDown={e => { if (e.key === "Enter") { if (renameFolderValue.trim()) onRenameBookmarkFolder(folder.id, renameFolderValue.trim()); setRenamingFolder(null); } if (e.key === "Escape") setRenamingFolder(null); }}
+                                  onClick={e => e.stopPropagation()}
+                                  spellCheck={false}
+                                />
+                              ) : (
+                                <span className="bm-folder-name">{folder.name}</span>
+                              )}
+                              <span className="bm-folder-count">{folderBookmarks.length}</span>
                             </div>
-                          ))}
+                            {isExpanded && folderBookmarks.map(b => (
+                              <div
+                                key={b.id}
+                                className="bookmark-item bm-indented"
+                                onClick={() => onSelectBookmark(b.url)}
+                                onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                              >
+                                <div className="tab-favicon">
+                                  {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                                </div>
+                                <span className="tab-title">{b.title || b.url}</span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                      {/* Unfiled bookmarks (no folder) */}
+                      {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).map(b => (
+                        <div
+                          key={b.id}
+                          className="bookmark-item"
+                          onClick={() => onSelectBookmark(b.url)}
+                          onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                        >
+                          <div className="tab-favicon">
+                            {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                          </div>
+                          <span className="tab-title">{b.title || b.url}</span>
                         </div>
-                      );
-                    })}
-                    {/* Unfiled bookmarks (no folder) */}
-                    {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).map(b => (
+                      ))}
+                      {/* New folder button */}
                       <div
-                        key={b.id}
-                        className="bookmark-item"
-                        onClick={() => onSelectBookmark(b.url)}
-                        onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                        className="bm-new-folder"
+                        onClick={() => {
+                          const id = onAddBookmarkFolder("New Folder");
+                          setRenameFolderValue("New Folder");
+                          setRenamingFolder(id);
+                        }}
                       >
-                        <div className="tab-favicon">
-                          {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                        </svg>
+                        <span>new folder</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {syncEnabled && syncedTabs.length > 0 && (
+              <div className="bookmark-section">
+                <div className="section-label section-label-clickable" onClick={() => setSyncedTabsOpen(p => !p)}>
+                  <span>synced tabs</span>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: syncedTabsOpen ? "rotate(90deg)" : "", transition: "transform 0.15s" }}>
+                    <path d="M3 1L7 5L3 9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+                {syncedTabsOpen && (
+                  <div className="bookmark-list">
+                    {syncedTabs.map(device => (
+                      <div key={device.device_id}>
+                        <div className="section-label" style={{ fontSize: 10, opacity: 0.5, paddingLeft: 12 }}>
+                          {device.device_name || device.device_id.substring(0, 8)}
+                          <span style={{ marginLeft: 4, fontSize: 9 }}>
+                            {Date.now() - device.timestamp < 300000 ? "  online" : ""}
+                          </span>
                         </div>
-                        <span className="tab-title">{b.title || b.url}</span>
+                        {device.tabs.slice(0, 5).map((st, i) => (
+                          <div key={i} className="bookmark-item" onClick={() => onSelectBookmark(st.url)} title={st.url}>
+                            {st.favicon && <img src={st.favicon} alt="" width={14} height={14} style={{ marginRight: 6, borderRadius: 2 }} />}
+                            <span className="bookmark-title">{st.title || st.url}</span>
+                          </div>
+                        ))}
                       </div>
                     ))}
-                    {/* New folder button */}
-                    <div
-                      className="bm-new-folder"
-                      onClick={() => {
-                        const id = onAddBookmarkFolder("New Folder");
-                        setRenameFolderValue("New Folder");
-                        setRenamingFolder(id);
-                      }}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                      </svg>
-                      <span>new folder</span>
-                    </div>
                   </div>
                 )}
               </div>
@@ -1012,6 +1084,22 @@ export default memo(function Sidebar({
                 split with this tab
               </button>
             )}
+            {syncEnabled && pairedDevices && pairedDevices.length > 0 && (() => {
+              const tab = [...tabs, ...pinnedTabs].find(t => t.id === ctx.tabId);
+              return tab && tab.url.startsWith("http") ? (
+                <>
+                  <div className="ctx-divider" />
+                  {pairedDevices.map(d => (
+                    <button key={d.device_id} className="ctx-item" onClick={() => {
+                      invoke("send_tab_to_device", { deviceId: d.device_id, url: tab.url, title: tab.title });
+                      closeCtx();
+                    }}>
+                      send to {d.name}
+                    </button>
+                  ))}
+                </>
+              ) : null;
+            })()}
             <div className="ctx-divider" />
             <button className="ctx-item" onClick={() => {
               tabs.filter(t => t.id !== ctx.tabId).forEach(t => onClose(t.id));

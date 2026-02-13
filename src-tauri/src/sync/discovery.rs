@@ -137,6 +137,14 @@ impl DiscoveryService {
                         }
 
                         let _ = app.emit_to("main", "peer-discovered", &peer);
+
+                        // auto-sync with paired peers when they appear
+                        let app_sync = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            // small delay so peer is fully registered
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            super::trigger_sync(app_sync);
+                        });
                     }
                     ServiceEvent::ServiceRemoved(_ty, fullname) => {
                         // extract device_id from fullname and remove

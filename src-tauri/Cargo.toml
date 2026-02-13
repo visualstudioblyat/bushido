@@ -48,6 +48,10 @@ chacha20poly1305 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 
+# LAN Sync — Phase C: Bookmark CRDT + Sync Engine
+loro = "1.10"
+lz4_flex = "0.11"
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage"] }
