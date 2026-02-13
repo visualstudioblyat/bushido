@@ -8,60 +8,107 @@
 
 I want my bookmarks on both my machines without trusting a cloud server. Every browser syncs through Google, Apple, or Mozilla's servers — my data leaves my network, sits in someone else's database, and I get a privacy policy instead of a guarantee. Bushido syncs over your local network. No accounts, no servers, no data leaving your house. Two machines on the same WiFi, end-to-end encrypted, zero trust required.
 
-This release is the foundation — device identity, network discovery, and cryptographic pairing. I'm not syncing any data yet. I wanted to get the crypto and the connection right first, because if the pairing is broken, everything built on top of it is broken. The actual bookmark/history sync comes next. This one is about making sure that when two Bushido instances talk to each other, nobody else can listen.
+This release is the foundation — device identity, network discovery, and cryptographic pairing. I'm not syncing any data yet. I wanted to get the crypto and the connection right first, because if the pairing is broken, everything built on top of it is broken. The actual bookmark/history sync comes next.
 
 ### Added
 
-- **LAN Sync — Device Identity** — first time you enable sync, Bushido generates a unique identity for your machine: 32-char hex device_id, a 64-bit peer_id I'll need later for CRDT conflict resolution, and an X25519 Noise keypair (same curve Signal and WireGuard use). The private key never leaves the machine. I serialize the whole bundle with MessagePack and encrypt it with Windows DPAPI (`CryptProtectData`) before writing to disk. DPAPI ties the encryption to your Windows user account — another user on the same PC can't read it, and copying the file to another machine gives you garbage. I went with DPAPI over a hardcoded key or a keyring because it's the one approach where I don't have to manage a master secret at all — Windows handles it.
+- **LAN Sync — Device Identity** — first time you enable sync, Bushido generates a unique identity: device_id, CRDT peer_id, and an X25519 Noise keypair. Private key never leaves the machine. Encrypted with Windows DPAPI and saved to disk.
+  <details>
+  <summary>Why DPAPI?</summary>
 
-- **LAN Sync — mDNS Discovery** — when sync is on, Bushido registers itself as `_bushido-sync._tcp.local.` on your network using mDNS — same protocol AirDrop and Chromecast use. TXT records carry the device_id, name, and fingerprint. At the same time it browses for other instances. When another Bushido shows up, it appears in Settings → Sync → Discovered Devices within a few seconds. I considered a manual IP entry approach first, but mDNS is what people expect — you turn it on and the other device just appears. No IP addresses to type, no ports to remember.
+  I needed to encrypt the Noise private key and paired device keys at rest. The options were: hardcode an encryption key (useless — anyone who reads the source has it), use a keyring/credential manager (platform-specific APIs, extra dependencies), or use DPAPI. DPAPI ties encryption to the Windows user account — I don't manage any master secret, Windows handles it. Another user on the same PC can't read the file, and copying `keys.dat` to another machine gives you garbage. One function call to encrypt, one to decrypt, zero key management on my end. The whole identity bundle is serialized with MessagePack (compact, handles raw bytes natively) and encrypted in one shot.
+  </details>
 
-- **LAN Sync — SPAKE2 Pairing** — this is the core of the security model. Click "Pair" on a discovered device, you get a 6-digit code on your screen. Walk over to the other machine and type it in. That's the UX — Bluetooth-style, everyone understands it. Behind the scenes it's doing something much more interesting. Both sides run SPAKE2 (Password-Authenticated Key Exchange) on the Ed25519 group. Each side computes a 33-byte message derived from the code plus random ephemeral values, they exchange those messages, and each side independently derives the same 32-byte shared secret. The code itself never goes over the wire — the SPAKE2 messages are computationally indistinguishable from random to anyone watching. I looked at SRP and J-PAKE as alternatives but SPAKE2 has the cleanest API and the `spake2` crate is well-maintained. After key derivation, both sides compute `HMAC-SHA256(shared_key, "bushido-pair-confirm")` and compare — if the HMACs don't match, someone entered the wrong code (or there's a MITM) and the pairing aborts immediately. If they match, each side encrypts their Noise public key with XChaCha20Poly1305 using the shared key and sends it over. 24-byte random nonce, AEAD authenticated — tampering gets caught, not just eavesdropping. The paired device's key gets stored to the DPAPI-encrypted key file on disk.
+- **LAN Sync — mDNS Discovery** — Bushido registers as `_bushido-sync._tcp.local.` on your network. Other instances appear in Settings → Sync → Discovered Devices automatically.
+  <details>
+  <summary>Why mDNS over manual IP?</summary>
 
-- **LAN Sync — TCP Listener** — binds port 22000 when sync is enabled. Each incoming connection spawns a separate tokio task. The first message determines what the connection wants — right now that's either `PairRequest` (starts the pairing flow) or `Ping` (health check). Wire format is dead simple: 4-byte big-endian length prefix, then MessagePack-encoded message body. Max 64KB per message. I went with MessagePack over JSON because the pairing messages carry raw byte arrays (SPAKE2 outputs, encrypted keys) and I didn't want to deal with base64 encoding overhead on a hot path.
+  I considered having users type in IP addresses to connect, but that's not how anyone expects device pairing to work in 2026. AirDrop, Chromecast, Bluetooth — you turn it on and the other device just shows up. mDNS (multicast DNS / Bonjour) does exactly that. Bushido broadcasts a service with TXT records carrying the device_id, name, and fingerprint. At the same time it browses for other instances. When one appears, it fires a `peer-discovered` event to the UI. No IP addresses to type, no ports to remember, works on any network with multicast enabled.
+  </details>
 
-- **LAN Sync — Rate Limiting** — max 3 failed pairing attempts per device per 5-minute window. A 6-digit code has 900,000 possibilities (100000–999999). At 3 tries every 5 minutes, brute-forcing the full space would take about 7.7 days — and the code changes with every new pairing attempt, so it's effectively impossible. I track attempts per device_id in a `HashMap<String, (u32, Instant)>` that cleans up expired entries lazily on the next attempt.
+- **LAN Sync — SPAKE2 Pairing** — click "Pair" on a discovered device, get a 6-digit code. Walk over to the other machine and type it in. Zero-knowledge proof — the code never goes over the wire. HMAC-SHA256 confirmation, then Noise public keys exchanged via XChaCha20Poly1305.
+  <details>
+  <summary>Why SPAKE2? Why not just send the code?</summary>
 
-- **LAN Sync — Noise Protocol Infrastructure** — I built the full `NoiseStream` wrapper for `Noise_XX_25519_ChaChaPoly_BLAKE2s` even though it's not active yet. Three-message XX handshake with forward secrecy, length-framed encrypt/decrypt over TCP. This is the transport layer for the next release when actual data starts flowing. I built it now because I wanted the Noise code to compile and the types to be right before I add another layer on top. It's ~160 lines and it'll just sit there until Phase C — the compiler gives me dead code warnings for it, which is fine.
+  If you send the code over the network, anyone on the same WiFi can sniff it and pair with you instead. The whole point is proving both sides know the code *without transmitting it*. SPAKE2 (Password-Authenticated Key Exchange) does this — each side computes a 33-byte message derived from the code plus random ephemeral values, they exchange those, and each side independently derives the same 32-byte shared secret. An eavesdropper sees random bytes. A MITM gets caught at the HMAC confirmation step.
 
-- **LAN Sync — Paired Devices** — Settings shows all your paired devices: name, fingerprint (first 8 bytes of SHA-256 of their Noise public key, as hex), and the date you paired. There's a "Remove" button that deletes the stored key and writes the updated key bundle back to disk. Simple, but it needs to exist before I build anything on top of it.
+  I looked at three protocols: SRP requires storing a verifier on one side, which creates an asymmetry I didn't want — both devices should be equal. J-PAKE needs two round trips instead of one. SPAKE2 is one round trip, symmetric, and the `spake2` crate has a clean API on Ed25519. After key derivation, both sides compute `HMAC-SHA256(shared_key, "bushido-pair-confirm")` and compare. Wrong code = wrong key = wrong HMAC = instant abort. Right code = both sides encrypt their Noise public key with XChaCha20Poly1305 (24-byte random nonce, AEAD authenticated) and exchange. Tampering gets caught, not just eavesdropping.
+  </details>
 
-- **PairingWizard UI** — modal overlay with 5 states: showing-code (6 monospace digit boxes in accent color), entering-code (auto-focus input, digits-only filtering), verifying (spinner + status text), success (checkmark in accent color), error (red X with the error message). Glass styling matching the command palette. ESC or click-outside to close. Nothing fancy — it's a pairing dialog, it needs to be clear, not beautiful.
+- **LAN Sync — TCP Listener** — port 22000, spawns a tokio task per connection. Wire format: 4-byte length prefix + MessagePack body, max 64KB.
+  <details>
+  <summary>Why MessagePack over JSON?</summary>
 
-- **Loopback Pairing Test** — this was the interesting problem. Testing pairing requires two machines on the same LAN. I don't always have two machines in front of me. So I built a `simulate_pairing` command that spawns a "Ghost Device" — a fake peer with its own identity that connects to your own TCP listener on `127.0.0.1:22000` and runs the full initiator-side SPAKE2 flow against you. From the UI, a device called "Ghost Device" appears in your discovered list, the wizard opens asking you to enter a code, and a Debug section in Settings shows you the code to type. The entire pairing protocol runs for real — real TCP connection, real SPAKE2 key exchange, real XChaCha20 encryption, real HMAC verification. If any of the crypto is wrong, it fails identically to how it would on two real machines. Zero mocking. The only fake part is both endpoints are on localhost.
+  The pairing messages carry raw byte arrays — SPAKE2 outputs (33 bytes), HMAC digests (32 bytes), encrypted keys (variable). With JSON I'd have to base64-encode every binary field, adding ~33% overhead and an encode/decode step on both sides. MessagePack handles `Vec<u8>` natively as binary. It's also faster to parse, but that's not why I chose it — the binary field support is what matters here.
+  </details>
+
+- **LAN Sync — Rate Limiting** — max 3 failed pairing attempts per device per 5-minute window. Brute-forcing a 6-digit code at that rate would take ~7.7 days, and the code changes each attempt.
+
+- **LAN Sync — Noise Protocol Infrastructure** — full `NoiseStream` wrapper for `Noise_XX_25519_ChaChaPoly_BLAKE2s`. Not active yet — built for Phase C when actual data sync starts.
+  <details>
+  <summary>Why build it now?</summary>
+
+  I wanted the Noise transport code to compile and the types to be right before I add bookmark sync on top of it. If I wait until Phase C, I'm debugging crypto issues and sync logic at the same time. Building it now means the ~160 lines of handshake + encrypt/decrypt are already passing `cargo check`. The compiler gives me dead code warnings for it, which is fine — that's expected infrastructure. Same primitives as WireGuard: X25519 key exchange, ChaChaPoly encryption, BLAKE2s hashing. XX pattern means both sides prove their identity during the handshake with forward secrecy.
+  </details>
+
+- **LAN Sync — Paired Devices** — Settings shows paired devices with name, fingerprint, and paired date. Remove button unpairs and deletes the stored key.
+
+- **PairingWizard UI** — modal overlay: showing-code → entering-code → verifying → success/error. Glass styling, ESC to close.
+
+- **Loopback Pairing Test** — `simulate_pairing` spawns a "Ghost Device" on localhost that runs the full SPAKE2 flow against your own TCP listener. Real crypto, real TCP, zero mocking.
+  <details>
+  <summary>The testing problem and how I solved it</summary>
+
+  Testing pairing requires two machines on the same LAN. I don't always have two machines in front of me. Mocking the protocol would defeat the purpose — I need to know the real crypto works, not that a mock returns the right values. Running two instances on the same machine doesn't work either because they'd fight over port 22000 and mDNS would see itself.
+
+  So I built a debug command that spawns a "Ghost Device" — a fake peer with its own freshly generated identity (device_id, Noise keypair, the works). It injects itself into the discovery peers list at `127.0.0.1:22000`, then after 500ms connects to your real TCP listener and runs `run_initiator` with a code it generated. From the UI, a device appears, the pairing wizard opens asking you to enter a code, and a Debug section shows you what code to type. The entire SPAKE2 → HMAC → XChaCha20 → key storage pipeline runs for real. If any of the crypto is wrong, it fails exactly like it would on two real machines. The only fake part is both endpoints are on localhost.
+  </details>
 
 ### Changed
 
-- **Async coordination pattern** — the pairing flow has a tricky coordination problem. The TCP listener runs in a background tokio task and receives the `PairRequest`. But the 6-digit code comes from the user typing it into the UI, which goes through a Tauri command on a different task. I bridge these with a `tokio::sync::oneshot` channel — the TCP handler creates the channel, stores the sender in `SyncState`, and awaits the receiver with a 60-second timeout. When the user enters the code, `enter_pairing_code` takes the sender out of state and fires the code through. Clean, no polling, no shared mutable string.
+- **Async coordination via oneshot channels** — TCP handler and UI code on different tokio tasks, bridged with `tokio::sync::oneshot` for the pairing code. 60-second timeout.
+  <details>
+  <summary>The coordination problem</summary>
 
-- **`std::sync::Mutex` everywhere, not `tokio::sync::Mutex`** — Tauri's `State<T>` requires `Send + Sync` and I'm sharing state between Tauri commands (sync) and tokio tasks (async). I went with `std::sync::Mutex` with the rule that I never hold the guard across an `.await` point. I hit this exact bug during development — a `MutexGuard` held across an await made the future `!Send` and the compiler rejected it. The fix was restructuring: grab the lock, compute a bool or clone what I need, drop the guard, then await. Every mutex access in `mod.rs` follows this pattern now. It's uglier than `tokio::sync::Mutex` but it works with Tauri's state system without any wrapper gymnastics.
+  The pairing flow crosses two async boundaries. The TCP listener receives a `PairRequest` in a background tokio task. But the 6-digit code comes from the user typing it into the React UI, which goes through a Tauri command running on a different task entirely. I need to get the code from task B to task A without shared mutable state.
 
-- **`tauri::Manager` trait disambiguation** — calling `.state::<SyncState>()` on an `AppHandle` requires importing `tauri::Manager`. I had `tauri::Emitter` imported but not `Manager`, and got a confusing `no method named state found for AppHandle` error that cascaded into 5+ downstream type inference failures. One missing import, thirteen errors. Added `use tauri::{Emitter, Manager}` and they all vanished.
+  I bridge them with a `tokio::sync::oneshot` channel. The TCP handler creates the channel, stores the `Sender` in `SyncState` behind a mutex, and awaits the `Receiver` with a 60-second timeout. When the user enters the code, `enter_pairing_code` takes the sender out of state and fires the code through. One shot, one value, no polling, no shared mutable string. If the timeout fires first, the pairing aborts cleanly.
+  </details>
 
-- **HMAC trait disambiguation** — `hmac::Mac::new_from_slice` and `hmac::digest::KeyInit::new_from_slice` are both in scope when you import `hmac`. Calling `HmacSha256::new_from_slice()` gives you `E0034: multiple applicable items`. I had to use fully-qualified syntax: `<HmacSha256 as Mac>::new_from_slice(shared_key)`. Not obvious from the docs, but it's a one-line fix once you know.
+- **`std::sync::Mutex` over `tokio::sync::Mutex`** — never hold guards across `.await` points. Restructured every lock to grab-compute-drop.
+  <details>
+  <summary>The MutexGuard bug</summary>
 
-- **`AeadCore` import for nonce generation** — `XChaCha20Poly1305::generate_nonce()` is defined on the `AeadCore` trait, not on the struct directly. The compiler error says "no function named generate_nonce found" which makes it look like the function doesn't exist. Adding `use chacha20poly1305::aead::AeadCore` fixes it. The chacha20poly1305 docs don't make this obvious.
+  Tauri's `State<T>` requires `Send + Sync`. I'm sharing `SyncState` between Tauri commands (sync context) and tokio tasks (async context). My first attempt used `std::sync::Mutex` but held the guard across an `.await` — something like `let guard = state.lock(); do_something().await; drop(guard)`. The compiler rejected it: `MutexGuard` is `!Send`, and a future that holds a `!Send` value across an await point can't be spawned on a multi-threaded runtime.
 
-- **`abort_handle()` doesn't exist on Tauri's JoinHandle** — Tauri wraps tokio's `JoinHandle` but doesn't expose `abort_handle()`. I was trying to store an `AbortHandle` for the TCP listener so I could kill it on `disable_sync`. Switched to storing the full `JoinHandle<()>` and calling `.abort()` directly on it. Same result, slightly different API.
+  I considered switching to `tokio::sync::Mutex` (which has a `Send` guard), but it doesn't play nicely with Tauri's state system without wrapper gymnastics. Instead I restructured every mutex access: grab the lock, compute a bool or clone what I need into a local, drop the guard (end the block), *then* await. Every mutex access in `mod.rs` follows this `{ let guard = lock(); let result = ...; drop(guard); } // now safe to await` pattern. It's uglier but it's correct.
+  </details>
 
-- **Borrow-after-move on AppHandle** — `app.state::<SyncState>()` borrows `app`, then I moved `app` into an async block. Rust won't let you move something that's still borrowed. Fixed by cloning the app handle before the spawn and extracting the state values I need into locals before the closure captures anything.
+### Errors I hit
+
+These are real compiler errors I ran into while building this. Documenting them because the fixes aren't obvious from the error messages.
+
+- **`tauri::Manager` trait** — `.state::<SyncState>()` on `AppHandle` gave `no method named state found`. Needed `use tauri::Manager` alongside `tauri::Emitter`. One missing import caused 13 cascading errors.
+
+- **HMAC `E0034` ambiguity** — `HmacSha256::new_from_slice()` matches both `Mac::new_from_slice` and `KeyInit::new_from_slice`. Fix: fully-qualified `<HmacSha256 as Mac>::new_from_slice(key)`.
+
+- **`AeadCore` for nonce generation** — `XChaCha20Poly1305::generate_nonce()` isn't on the struct, it's on the `AeadCore` trait. Error says "no function found" which is misleading. Fix: `use chacha20poly1305::aead::AeadCore`.
+
+- **`abort_handle()` missing on Tauri's JoinHandle** — Tauri wraps tokio's handle but doesn't expose `abort_handle()`. Fix: store the full `JoinHandle<()>` and call `.abort()` directly.
+
+- **Borrow-after-move on AppHandle** — `app.state()` borrows `app`, then moving `app` into an async block fails. Fix: clone the handle before the spawn, extract state values into locals before the closure.
 
 ### Security
 
-- **Zero-knowledge pairing** — SPAKE2 means the 6-digit code never goes over the network. Both sides prove they know it without revealing it. A passive eavesdropper sees random bytes. An active MITM gets caught at the HMAC confirmation step — wrong code means wrong key means wrong HMAC means instant abort.
-- **AEAD key exchange** — Noise public keys wrapped in XChaCha20Poly1305 during pairing. Authenticated encryption — if anyone tampers with the ciphertext, decryption fails. Not just confidentiality, integrity too.
-- **DPAPI at rest** — all crypto material encrypted with Windows DPAPI before hitting disk. I don't manage keys, Windows does. Tied to the user account, non-transferable.
-- **Rate limiting** — 3 attempts per device per 5 minutes. The HashMap cleans up expired entries on the next access so it doesn't leak memory.
+- **Zero-knowledge pairing** — the 6-digit code never goes over the network. SPAKE2 proves both sides know it without revealing it.
+- **AEAD key exchange** — Noise public keys encrypted with XChaCha20Poly1305 during pairing. Authenticated — tampering detected, not just eavesdropping.
+  <details>
+  <summary>Why XChaCha over regular ChaCha?</summary>
 
-### Dependencies
-
-- `spake2 = "0.4"` — SPAKE2 on Ed25519. Clean API, does one thing.
-- `chacha20poly1305 = "0.10"` — XChaCha20Poly1305. I picked XChaCha over regular ChaCha because the 24-byte nonce means I can generate it randomly without worrying about nonce reuse. Regular ChaCha's 12-byte nonce requires a counter or you risk catastrophic failure.
-- `hkdf = "0.12"` — HMAC-based Key Derivation. Not used directly in this release but I'll need it when I derive per-session keys from the stored pairing keys.
-- `hmac = "0.12"` — HMAC-SHA256 for the pairing confirmation step. Watch out for the `Mac` vs `KeyInit` trait ambiguity.
-- `snow = "0.10"` — Noise Protocol Framework. Already added in Phase A for keypair generation, now also used for the `NoiseStream` wrapper.
-- `mdns-sd` — mDNS service discovery. Already added in Phase A.
-- `tokio` — async TCP listener, oneshot channels for pairing coordination, timeouts on every recv.
+  Regular ChaCha20Poly1305 uses a 12-byte nonce. If you generate nonces randomly, you risk a collision after ~2^32 messages (birthday bound on 96 bits). A nonce collision is catastrophic — it leaks the XOR of two plaintexts. XChaCha20 uses a 24-byte nonce, which pushes the birthday bound to ~2^96. I can generate nonces with `OsRng` and never think about it. For a pairing flow that runs once per device pair, the 12-byte nonce would be fine statistically — but I'd rather not have to think about whether it's fine.
+  </details>
+- **DPAPI at rest** — all crypto material encrypted with Windows DPAPI before hitting disk. Tied to the user account, non-transferable.
+- **Rate limiting** — 3 attempts per device per 5 minutes. HashMap cleans up expired entries lazily.
 
 ---
 
