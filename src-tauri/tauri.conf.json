@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicoverbruggen/tauri-plugin-theme/main/.schema/config.schema.json",
   "productName": "Bushido",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "identifier": "com.bushido.browser",
   "build": {
     "frontendDist": "../dist",

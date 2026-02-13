@@ -1,5 +1,8 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { BushidoSettings } from "../types";
+import PairingWizard from "./PairingWizard";
 
 interface Props {
   settings: BushidoSettings;
@@ -80,8 +83,63 @@ const SECURITY_KEYS: (keyof BushidoSettings)[] = [
   "blockServiceWorkers", "blockFontEnumeration", "spoofHardwareConcurrency",
 ];
 
+interface SyncPeer {
+  device_id: string;
+  name: string;
+  fingerprint: string;
+  addresses: string[];
+  port: number;
+}
+
+interface SyncInfo {
+  enabled: boolean;
+  device_id: string;
+  device_name: string;
+  fingerprint: string;
+  status: string | { Error: { message: string } };
+  peers: SyncPeer[];
+  paired_devices: { device_id: string; name: string; fingerprint: string; paired_at: number }[];
+}
+
 export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange }: Props) {
   const [securityDirty, setSecurityDirty] = useState(false);
+  const [syncInfo, setSyncInfo] = useState<SyncInfo | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [pairingWizard, setPairingWizard] = useState<{
+    mode: "initiator" | "responder";
+    peerDeviceId: string;
+    peerDeviceName: string;
+    code?: string;
+  } | null>(null);
+  const [simulateCode, setSimulateCode] = useState<string | null>(null);
+
+  // Fetch sync status on mount and when syncEnabled changes
+  useEffect(() => {
+    invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+  }, [settings.syncEnabled]);
+
+  // Listen for peer discovery + pairing events
+  useEffect(() => {
+    const unsubs: Promise<() => void>[] = [];
+    unsubs.push(listen<SyncPeer>("peer-discovered", () => {
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+    }));
+    unsubs.push(listen<string>("peer-removed", () => {
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+    }));
+    unsubs.push(listen<{ device_id: string; device_name: string }>("pair-request-received", e => {
+      setPairingWizard({
+        mode: "responder",
+        peerDeviceId: e.payload.device_id,
+        peerDeviceName: e.payload.device_name,
+      });
+    }));
+    unsubs.push(listen("pair-complete", () => {
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+      setSimulateCode(null);
+    }));
+    return () => { unsubs.forEach(p => p.then(fn => fn())); };
+  }, []);
 
   const set = useCallback(<K extends keyof BushidoSettings>(key: K, value: BushidoSettings[K]) => {
     onUpdate({ [key]: value });
@@ -201,6 +259,168 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
             </div>
             <Toggle checked={settings.clearDataOnExit} onChange={v => set("clearDataOnExit", v)} />
           </div>
+        </section>
+
+        {/* Sync */}
+        <section className="settings-section">
+          <h2 className="settings-section-title">Sync</h2>
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Enable LAN sync</span>
+              <span className="settings-hint">Sync bookmarks, history, and settings between devices on your local network</span>
+            </div>
+            <Toggle checked={settings.syncEnabled} onChange={async v => {
+              if (syncLoading) return;
+              setSyncLoading(true);
+              try {
+                if (v) {
+                  const name = settings.syncDeviceName || (await invoke<SyncInfo>("get_sync_status").catch(() => null))?.device_name || "My PC";
+                  const info = await invoke<SyncInfo>("enable_sync", { deviceName: name });
+                  setSyncInfo(info);
+                  onUpdate({ syncEnabled: true, syncDeviceName: name });
+                } else {
+                  await invoke("disable_sync");
+                  onUpdate({ syncEnabled: false });
+                  setSyncInfo(null);
+                }
+              } catch (e) {
+                console.error("Sync toggle failed:", e);
+              }
+              setSyncLoading(false);
+            }} />
+          </div>
+          {settings.syncEnabled && syncInfo && (
+            <>
+              <div className="settings-row">
+                <div className="settings-label">
+                  <span>Device name</span>
+                  <span className="settings-hint">How this device appears to others</span>
+                </div>
+                <input
+                  className="settings-input"
+                  value={settings.syncDeviceName}
+                  onChange={e => {
+                    onUpdate({ syncDeviceName: e.target.value });
+                    invoke("set_device_name", { name: e.target.value }).catch(() => {});
+                  }}
+                  placeholder="My PC"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="settings-row">
+                <div className="settings-label">
+                  <span>Device fingerprint</span>
+                  <span className="settings-hint">Unique identifier for pairing verification</span>
+                </div>
+                <span className="settings-mono">{syncInfo.fingerprint || "—"}</span>
+              </div>
+              <div className="settings-row">
+                <div className="settings-label">
+                  <span>Status</span>
+                </div>
+                <span className="settings-sync-status">
+                  {typeof syncInfo.status === "string"
+                    ? syncInfo.status
+                    : syncInfo.status?.Error
+                      ? `Error: ${(syncInfo.status as any).Error.message}`
+                      : "Unknown"
+                  }
+                </span>
+              </div>
+              {syncInfo.peers.length > 0 && (
+                <div className="settings-subsection">
+                  <h3 className="settings-subsection-title">Discovered Devices</h3>
+                  {syncInfo.peers.map(p => (
+                    <div key={p.device_id} className="settings-peer-row">
+                      <div className="settings-peer-info">
+                        <span className="settings-peer-name">{p.name || "Unknown"}</span>
+                        <span className="settings-peer-fp">{p.fingerprint}</span>
+                        <span className="settings-peer-addr">{p.addresses[0]}:{p.port}</span>
+                      </div>
+                      <button className="settings-about-btn" onClick={async () => {
+                        try {
+                          const code = await invoke<string>("start_pairing", { peerId: p.device_id });
+                          setPairingWizard({
+                            mode: "initiator",
+                            peerDeviceId: p.device_id,
+                            peerDeviceName: p.name,
+                            code,
+                          });
+                        } catch (e) {
+                          console.error("Failed to start pairing:", e);
+                        }
+                      }}>
+                        Pair
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {syncInfo.peers.length === 0 && (
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span className="settings-hint" style={{ fontStyle: "italic" }}>
+                      {syncLoading ? "Starting sync service..." : "Searching for devices on your network..."}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {syncInfo.paired_devices.length > 0 && (
+                <div className="settings-subsection">
+                  <h3 className="settings-subsection-title">Paired Devices</h3>
+                  {syncInfo.paired_devices.map(d => (
+                    <div key={d.device_id} className="settings-peer-row">
+                      <div className="settings-peer-info">
+                        <span className="settings-peer-name">{d.name}</span>
+                        <span className="settings-peer-fp">{d.fingerprint}</span>
+                        <span className="settings-peer-addr">
+                          Paired {new Date(d.paired_at * 1000).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <button className="settings-remove-btn" onClick={async () => {
+                        try {
+                          await invoke("remove_device", { deviceId: d.device_id });
+                          invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+                        } catch (e) {
+                          console.error("Failed to remove device:", e);
+                        }
+                      }}>
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="settings-subsection">
+                <h3 className="settings-subsection-title">Debug</h3>
+                <div className="settings-row">
+                  <div className="settings-label">
+                    <span>Loopback pairing test</span>
+                    <span className="settings-hint">Spawn a fake device on localhost and run real SPAKE2 pairing</span>
+                  </div>
+                  <button className="settings-about-btn" onClick={async () => {
+                    try {
+                      setSimulateCode(null);
+                      const result = await invoke<{ device_id: string; device_name: string; code: string }>("simulate_pairing");
+                      setSimulateCode(result.code);
+                    } catch (e) {
+                      console.error("Simulate failed:", e);
+                    }
+                  }}>
+                    Simulate Peer
+                  </button>
+                </div>
+                {simulateCode && (
+                  <div className="settings-row">
+                    <div className="settings-label">
+                      <span>Enter this code when prompted</span>
+                    </div>
+                    <span className="settings-mono" style={{ color: "var(--accent)", fontSize: 18, letterSpacing: 4 }}>{simulateCode}</span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </section>
 
         {/* Security */}
@@ -334,11 +554,29 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
           <h2 className="settings-section-title">About</h2>
           <div className="settings-about">
             <div className="settings-about-name">Bushido Browser</div>
-            <div className="settings-about-version">v0.9.0</div>
+            <div className="settings-about-version">v0.10.0</div>
             <div className="settings-about-desc">A minimal, privacy-focused browser built with Tauri.</div>
+            <button
+              className="settings-about-btn"
+              style={{ marginTop: 12 }}
+              onClick={() => {
+                onUpdate({ onboardingComplete: false });
+                setTimeout(() => window.location.reload(), 600);
+              }}
+            >Replay Onboarding</button>
           </div>
         </section>
       </div>
+
+      {pairingWizard && (
+        <PairingWizard
+          mode={pairingWizard.mode}
+          peerDeviceId={pairingWizard.peerDeviceId}
+          peerDeviceName={pairingWizard.peerDeviceName}
+          code={pairingWizard.code}
+          onClose={() => setPairingWizard(null)}
+        />
+      )}
     </div>
   );
 });

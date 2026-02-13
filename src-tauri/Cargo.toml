@@ -1,6 +1,6 @@
 [package]
 name = "bushido-browser"
-version = "0.9.1"
+version = "0.10.0"
 description = "Bushido Browser"
 authors = [""]
 edition = "2021"
@@ -25,9 +25,31 @@ reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"
-tokio = { version = "1", features = ["fs", "macros"] }
+tokio = { version = "1", features = ["fs", "macros", "rt", "net", "io-util", "time", "sync"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+qrcode = "0.14"
+chrono = "0.4"
+
+# LAN Sync — Phase A: Discovery + Identity
+mdns-sd = "0.13"
+snow = "0.10"
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+rmp-serde = "1"
+zeroize = "1"
+hostname = "0.4"
+
+# LAN Sync — Phase B: Pairing + Encryption
+spake2 = "0.4"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading"] }
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
+arboard = { version = "3", features = ["image-data"] }

@@ -1,6 +1,9 @@
 mod blocker;
+mod crash_log;
 mod downloads;
 mod import;
+mod screenshot;
+mod sync;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
@@ -46,6 +49,7 @@ fn is_blocked_scheme(url: &str) -> bool {
 
 #[tauri::command]
 async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>) -> Result<(), String> {
+    crash_log::log_info("create_tab", &format!("id={} url={}", id, url));
     let disable_dev_tools = disable_dev_tools.unwrap_or(false);
     let disable_status_bar = disable_status_bar.unwrap_or(false);
     let disable_autofill = disable_autofill.unwrap_or(false);
@@ -121,13 +125,13 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     // build security hardening JS (only enabled features)
     let mut sec_parts: Vec<&str> = Vec::new();
     if block_service_workers {
-        sec_parts.push("try{Object.defineProperty(navigator,'serviceWorker',{get:function(){return{register:function(){return Promise.reject(new DOMException('Service workers are disabled','SecurityError'))},ready:Promise.reject(new DOMException('Service workers are disabled','SecurityError')),controller:null,getRegistrations:function(){return Promise.resolve([])}}}});}catch(e){}");
+        sec_parts.push("try{if(navigator.serviceWorker){Object.defineProperty(navigator,'serviceWorker',{get:function(){return{register:function(){return Promise.reject(new DOMException('blocked','SecurityError'))},getRegistration:function(){return Promise.resolve(undefined)},getRegistrations:function(){return Promise.resolve([])},ready:new Promise(function(){}),controller:null}},configurable:false});}}catch(e){}");
     }
     if block_font_enum {
-        sec_parts.push("try{if(document.fonts&&document.fonts.check){document.fonts.check=function(){return false};document.fonts.forEach=function(){};}}catch(e){}");
+        sec_parts.push("try{if(document.fonts){Object.defineProperty(document,'fonts',{get:function(){return{forEach:function(){},size:0,ready:Promise.resolve(),check:function(){return false},has:function(){return false}}},configurable:false});}}catch(e){}");
     }
     if spoof_hw_concurrency {
-        sec_parts.push("try{Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return 4},configurable:false});}catch(e){}");
+        sec_parts.push("try{var rc=navigator.hardwareConcurrency;var sc=(rc>=8)?8:4;Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return sc},configurable:false});}catch(e){}");
     }
     let security_js = if sec_parts.is_empty() { String::new() } else { format!("(function(){{{}}})();", sec_parts.join("")) };
     let inject_security = security_js.clone();
@@ -242,7 +246,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
         let block_enabled = ad_blocker && !site_whitelisted;
         let source_url = final_url.clone();
 
-        let _ = webview.with_webview(move |wv| {
+        let wv_tab_id = id.clone();
+        let with_result = webview.with_webview(move |wv| {
             use webview2_com::Microsoft::Web::WebView2::Win32::*;
             use windows::core::Interface;
 
@@ -250,7 +255,10 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let controller = wv.controller();
                 let core = match controller.CoreWebView2() {
                     Ok(c) => c,
-                    Err(_) => return,
+                    Err(e) => {
+                        crate::crash_log::log_error("with_webview", &format!("CoreWebView2() failed for {}: {}", wv_tab_id, e));
+                        return;
+                    }
                 };
                 let core4: ICoreWebView2_4 = match core.cast() {
                     Ok(c) => c,
@@ -536,6 +544,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                         let app_ref = AssertUnwindSafe(&app_crash);
                         let tab_ref = AssertUnwindSafe(&tab_id_crash);
                         let _ = catch_unwind(move || {
+                            crate::crash_log::log_error("ProcessFailed", &format!(
+                                "WebView2 renderer crashed for tab={}", *tab_ref
+                            ));
                             let _ = app_ref.emit_to("main", "tab-crashed", serde_json::json!({
                                 "id": *tab_ref
                             }));
@@ -547,8 +558,12 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = core.add_ProcessFailed(&crash_handler, &mut crash_token);
             }
         });
+        if let Err(e) = with_result {
+            crash_log::log_error("create_tab", &format!("with_webview failed for {}: {}", id, e));
+        }
     }
 
+    crash_log::log_info("create_tab", &format!("tab {} created successfully", id));
     Ok(())
 }
 
@@ -608,11 +623,16 @@ async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    crash_log::log_info("close_tab", &format!("id={}", id));
     // remove from state FIRST so layout_webviews won't try to position a dying webview
     let state = app.state::<WebviewState>();
     state.tabs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     if let Some(wv) = app.get_webview(&id) {
-        let _ = wv.close();
+        if let Err(e) = wv.close() {
+            crash_log::log_error("close_tab", &format!("wv.close() failed for {}: {}", id, e));
+        }
+    } else {
+        crash_log::log_warn("close_tab", &format!("webview not found: {}", id));
     }
     Ok(())
 }
@@ -1034,17 +1054,23 @@ pub fn run() {
              --disable-features=UserAgentClientHint");
     }
 
-    // init adblock-rust engine (cached binary or cold compile)
+    // init data dir and crash logging FIRST
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("com.bushido.browser");
     let _ = std::fs::create_dir_all(&data_dir);
+    crash_log::init(&data_dir);
+    crash_log::log_info("startup", &format!("Bushido Browser v0.9.2 starting, pid={}", std::process::id()));
+
+    // init adblock-rust engine (cached binary or cold compile)
     let engine = blocker::init_engine(&data_dir);
 
     let cosmetic_script = include_str!("content_blocker.js").to_string();
     let cookie_script = include_str!("cookie_blocker.js").to_string();
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
     let media_script = include_str!("media_listener.js").to_string();
+
+    let sync_data_dir = data_dir.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1066,6 +1092,7 @@ pub fn run() {
             .with_shortcuts([
                 "ctrl+shift+b",
                 "ctrl+k",
+                "ctrl+shift+s",
                 "ctrl+shift+r",
                 "ctrl+t",
                 "ctrl+w",
@@ -1083,6 +1110,7 @@ pub fn run() {
                 if event.state != ShortcutState::Pressed { return; }
                 let s = shortcut.to_string().to_lowercase();
                 let action = if s.contains("shift") && s.contains('b') { "toggle-compact" }
+                    else if s.contains("shift") && s.contains('s') { "screenshot" }
                     else if s.contains("shift") && s.contains('r') { "reader-mode" }
                     else if s.contains('k') { "command-palette" }
                     else if s.contains('t') { "new-tab" }
@@ -1111,6 +1139,50 @@ pub fn run() {
             app.manage(WhitelistState {
                 sites: Mutex::new(sites),
             });
+
+            // Initialize sync state
+            let sync_state = match sync::keys::load_identity(&sync_data_dir) {
+                Ok(Some(identity)) => {
+                    // Check if sync was enabled (settings.json has syncEnabled: true)
+                    let settings_p = sync_data_dir.join("settings.json");
+                    let sync_enabled = if settings_p.exists() {
+                        fs::read_to_string(&settings_p).ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| v.get("syncEnabled")?.as_bool())
+                            .unwrap_or(false)
+                    } else { false };
+
+                    if sync_enabled {
+                        let device_name = fs::read_to_string(&settings_p).ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| v.get("syncDeviceName")?.as_str().map(String::from))
+                            .unwrap_or_else(|| hostname::get()
+                                .map(|h| h.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| "My PC".into()));
+                        let state = sync::SyncState::from_identity(identity, device_name, sync_data_dir);
+                        // Start discovery automatically
+                        if let Ok(mut disc) = sync::discovery::DiscoveryService::new() {
+                            let _ = disc.register(&state.device_id, &state.device_name, &state.fingerprint);
+                            let _ = disc.start_browsing(app.handle().clone(), state.device_id.clone());
+                            *state.discovery.lock().unwrap_or_else(|e| e.into_inner()) = Some(disc);
+                            *state.status.lock().unwrap_or_else(|e| e.into_inner()) = sync::SyncStatus::Discovering;
+                        }
+                        state
+                    } else {
+                        sync::SyncState::new_disabled(sync_data_dir)
+                    }
+                }
+                _ => sync::SyncState::new_disabled(sync_data_dir),
+            };
+            app.manage(sync_state);
+
+            // Start TCP listener if sync is enabled
+            {
+                let ss = app.state::<sync::SyncState>();
+                if ss.enabled {
+                    sync::start_tcp_listener(app.handle().clone());
+                }
+            }
 
             // restore pending downloads from manifests
             let pending = downloads::load_pending(&app.handle());
@@ -1168,8 +1240,29 @@ pub fn run() {
             position_panel,
             import::detect_browsers,
             import::import_bookmarks,
-            import::import_history
+            import::import_history,
+            screenshot::capture_visible,
+            screenshot::capture_preview_for_select,
+            screenshot::capture_area,
+            screenshot::capture_fullpage,
+            screenshot::save_screenshot,
+            screenshot::copy_image_to_clipboard,
+            screenshot::generate_qr_code,
+            crash_log::read_crash_log,
+            crash_log::clear_crash_log,
+            sync::get_sync_status,
+            sync::enable_sync,
+            sync::disable_sync,
+            sync::get_discovered_peers,
+            sync::set_device_name,
+            sync::start_pairing,
+            sync::enter_pairing_code,
+            sync::remove_device,
+            sync::simulate_pairing
         ])
         .run(tauri::generate_context!())
-        .expect("error while running bushido");
+        .unwrap_or_else(|e| {
+            crash_log::log_error("startup", &format!("Tauri run() failed: {}", e));
+            eprintln!("FATAL: Bushido failed to start: {}", e);
+        });
 }

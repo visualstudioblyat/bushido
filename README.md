@@ -41,6 +41,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 - **Picture-in-Picture** — Video detection + one-click PiP. Shadow DOM button injection so sites can't block it.
 - **Web Panels** — Pin any site as a persistent sidebar webview. Spotify, Discord, WhatsApp — always one click away, stays open across tab switches. Mobile UA so sites render properly at narrow widths.
 - **Tab Suspender** — Inactive tabs auto-suspend after 5 minutes. Webview destroyed, memory freed, click to restore.
+- **LAN Sync** — Sync bookmarks, history, and settings between devices on your local network. No cloud, no accounts, no data leaving your house. Devices discover each other via mDNS and pair with a 6-digit code using SPAKE2 zero-knowledge authentication. All sync traffic encrypted end-to-end with the Noise Protocol (same primitives as WireGuard and Signal).
 - **Minimal UI** — No bloat, no crypto wallets, no AI assistants, no sponsored tiles.
 
 ## Tech Stack
@@ -53,6 +54,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 | Rendering | System WebView (WebView2 / WebKit) |
 | Ad Blocking | adblock-rust engine + WebView2 COM interception |
 | Downloads | Rust async + parallel chunked byte-range segments |
+| LAN Sync | mDNS discovery + SPAKE2 pairing + Noise Protocol (XChaCha20) |
 
 ## Building from Source
 
@@ -85,7 +87,9 @@ Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-
 - [x] ~~adblock-rust engine (EasyList + EasyPrivacy)~~ — shipped in v0.6.0
 - [x] ~~Split View~~ — shipped in v0.6.1
 - [x] ~~Web Panels~~ — shipped in v0.8.0
+- [x] ~~Smart Tab Lifecycle~~ — shipped in v0.9.1
+- [x] ~~LAN Sync (discovery + encrypted pairing)~~ — shipped in v0.10.0
+- [ ] LAN Sync (bookmark, history, settings sync via Loro CRDTs)
 - [ ] Boosts — per-site CSS/JS injection
-- [ ] Fingerprint protection
 - [ ] Custom themes
 - [ ] Cross-platform builds (macOS, Linux)

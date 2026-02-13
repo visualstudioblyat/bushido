@@ -90,6 +90,15 @@ Always-on via `content_blocker.js` (23 vectors):
 - **Mutex poisoning recovery** — all `.lock().unwrap()` replaced with `.unwrap_or_else(|e| e.into_inner())`.
 - **Env var injection prevention** — `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` cleared before setting to prevent pre-populated malicious flags.
 
+**LAN Sync Security**
+- **SPAKE2 zero-knowledge pairing** — 6-digit code authenticated via SPAKE2 on Ed25519. The code is never transmitted. Both sides derive a shared secret that only matches if the same code was entered. Passive eavesdroppers and active MITMs learn nothing.
+- **HMAC-SHA256 confirmation** — after SPAKE2 key derivation, both sides compute `HMAC-SHA256(shared_key, "bushido-pair-confirm")` and exchange results. Detects wrong codes and MITM attacks before any key material is exchanged.
+- **XChaCha20Poly1305 key exchange** — Noise public keys encrypted with AEAD during pairing. 24-byte random nonce, authenticated ciphertext. Tampering detected, not just eavesdropping.
+- **DPAPI key storage** — all sync keys (Noise private key, paired device public keys) encrypted at rest with Windows DPAPI (`CryptProtectData`). Tied to the Windows user account.
+- **Rate-limited pairing** — max 3 failed attempts per device per 5-minute window. Brute-force protection on the 6-digit code space.
+- **Noise Protocol ready** — `Noise_XX_25519_ChaChaPoly_BLAKE2s` transport built (same primitives as WireGuard). XX pattern provides mutual authentication and forward secrecy. Activates in the next release when data sync begins.
+- **TCP listener** — bound to port 22000, only accepts known message types. Unknown messages get `Close` with reason. 10-second timeout on initial message read.
+
 ### Known Limitations
 
 - **Shared cookie jar** — all tabs share a single WebView2 User Data Folder. Third-party cookies are partitioned via CHIPS, but first-party cookies are shared. Per-site UDF isolation requires significant architectural changes.

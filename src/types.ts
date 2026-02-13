@@ -125,6 +125,8 @@ export interface BushidoSettings {
   onboardingComplete: boolean;
   accentColor: string;
   themeMode: "dark" | "light";
+  syncEnabled: boolean;
+  syncDeviceName: string;
 }
 
 export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
@@ -169,4 +171,6 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   onboardingComplete: false,
   accentColor: "#6366f1",
   themeMode: "dark" as const,
+  syncEnabled: false,
+  syncDeviceName: "",
 };
