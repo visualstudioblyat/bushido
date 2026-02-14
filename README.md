@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/visualstudioblyat/bushido/releases">Download</a> •
+  <a href="https://discord.gg/wnXpZyju98">Discord</a> •
   <a href="https://github.com/visualstudioblyat/bushido/issues">Report Bug</a> •
   <a href="https://github.com/visualstudioblyat/bushido/discussions">Feature Request</a>
 </p>
