@@ -2,6 +2,18 @@
 
 —-
 
+## v0.10.1
+
+**2026-02-12**
+
+### Added
+
+- **Drag-to-Split** —drag any tab from the sidebar toward the content area to split. Preview zones show where the tab will land (left, right, top, bottom). Works with up to 4 panes. Mouse-based implementation —HTML5 drag events don't work over WebView2 native windows, so this uses the same `mousemove`/`mouseup` pattern as divider resizing.
+
+- **Mouse-based tab reordering** —tab reordering in the sidebar converted from HTML5 drag-and-drop to mouse events. Drag vertically to reorder, drag horizontally toward content to split. Direction detection at 5px movement threshold.
+
+—-
+
 ## v0.10.0
 
 **2026-02-12**

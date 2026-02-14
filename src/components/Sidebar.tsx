@@ -93,6 +93,7 @@ interface Props {
   onShareUrl: () => void;
   syncEnabled?: boolean;
   pairedDevices?: { device_id: string; name: string }[];
+  onTabSplitDrag?: (tabId: string) => void;
 }
 
 interface CtxMenu {
@@ -189,6 +190,7 @@ export default memo(function Sidebar({
   panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel,
   onScreenshot, onShareUrl,
   syncEnabled, pairedDevices,
+  onTabSplitDrag,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -197,7 +199,6 @@ export default memo(function Sidebar({
   const renameRef = useRef<HTMLInputElement>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
-  const dragCounter = useRef(0);
   const [peeking, setPeeking] = useState(false);
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // tab search is driven by the URL bar input when focused
@@ -438,34 +439,61 @@ export default memo(function Sidebar({
       style={!isPinned && depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined}
       onClick={() => onSelect(tab.id)}
       onContextMenu={e => handleCtx(e, tab.id, isPinned)}
-      draggable={!isPinned}
-      onDragStart={e => {
-        if (isPinned || idx === undefined) return;
-        setDragIdx(idx);
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", tab.id);
+      onMouseDown={e => {
+        if (isPinned || idx === undefined || e.button !== 0) return;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const fromIdx = idx;
+        let mode: "none" | "reorder" | "split" = "none";
+        let currentDropIdx = -1;
+
+        const onMove = (me: MouseEvent) => {
+          const dx = me.clientX - startX;
+          const dy = me.clientY - startY;
+          if (mode === "none" && dx * dx + dy * dy < 25) return; // 5px threshold
+
+          if (mode === "none") {
+            if (Math.abs(dx) > Math.abs(dy) && dx > 0) {
+              mode = "split";
+              setDragIdx(fromIdx);
+              onTabSplitDrag?.(tab.id);
+              document.removeEventListener("mousemove", onMove);
+              document.removeEventListener("mouseup", onUp);
+              return;
+            } else {
+              mode = "reorder";
+              setDragIdx(fromIdx);
+            }
+          }
+
+          if (mode === "reorder") {
+            const els = listRef.current?.querySelectorAll(".tab-item");
+            if (els) {
+              for (let i = 0; i < els.length; i++) {
+                const r = els[i].getBoundingClientRect();
+                if (me.clientY >= r.top && me.clientY < r.bottom) {
+                  currentDropIdx = i;
+                  setDropIdx(i);
+                  break;
+                }
+              }
+            }
+          }
+        };
+
+        const onUp = () => {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          if (mode === "reorder" && currentDropIdx >= 0 && fromIdx !== currentDropIdx) {
+            onReorder(fromIdx, currentDropIdx);
+          }
+          setDragIdx(null);
+          setDropIdx(null);
+        };
+
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
       }}
-      onDragEnter={() => {
-        if (isPinned || idx === undefined || dragIdx === null) return;
-        dragCounter.current++;
-        setDropIdx(idx);
-      }}
-      onDragLeave={() => {
-        if (isPinned || idx === undefined) return;
-        dragCounter.current--;
-        if (dragCounter.current === 0) setDropIdx(null);
-      }}
-      onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-      onDrop={e => {
-        e.preventDefault();
-        if (dragIdx !== null && idx !== undefined && dragIdx !== idx) {
-          onReorder(dragIdx, idx);
-        }
-        setDragIdx(null);
-        setDropIdx(null);
-        dragCounter.current = 0;
-      }}
-      onDragEnd={() => { setDragIdx(null); setDropIdx(null); dragCounter.current = 0; }}
     >
       {!isPinned && childCount > 0 && (
         <button
@@ -965,11 +993,11 @@ export default memo(function Sidebar({
 
             {syncEnabled && syncedTabs.length > 0 && (
               <div className="bookmark-section">
-                <div className="section-label section-label-clickable" onClick={() => setSyncedTabsOpen(p => !p)}>
-                  <span>synced tabs</span>
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: syncedTabsOpen ? "rotate(90deg)" : "", transition: "transform 0.15s" }}>
+                <div className="section-label section-label-clickable" onClick={() => setSyncedTabsOpen(p => !p)} style={{ justifyContent: "flex-start", gap: 6 }}>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: syncedTabsOpen ? "rotate(90deg)" : "", transition: "transform 0.15s", flexShrink: 0 }}>
                     <path d="M3 1L7 5L3 9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
+                  <span>synced tabs</span>
                 </div>
                 {syncedTabsOpen && (
                   <div className="bookmark-list">

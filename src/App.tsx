@@ -14,8 +14,8 @@ import ScreenshotOverlay from "./components/ScreenshotOverlay";
 import AnnotationEditor from "./components/AnnotationEditor";
 import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel } from "./types";
-import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf } from "./splitLayout";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone } from "./types";
+import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf, detectDropZone } from "./splitLayout";
 
 const NTP_URL = "bushido://newtab";
 const SETTINGS_URL = "bushido://settings";
@@ -974,6 +974,11 @@ export default function App() {
   const [draggingDiv, setDraggingDiv] = useState<number | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
 
+  // --- drag-to-split ---
+  const [dropZone, setDropZone] = useState<DropZone | null>(null);
+  const [dragOverContent, setDragOverContent] = useState(false);
+  const dropRaf = useRef(0);
+
   // compute dividers from current layout
   const dividers = useMemo((): DividerInfo[] => {
     if (!paneLayout) return [];
@@ -1033,8 +1038,71 @@ export default function App() {
     document.addEventListener("mouseup", onUp);
   }, [dividers, workspaces, activeWorkspaceId, layoutOffset, topOffset]);
 
-  // drag-to-split not feasible — WebView2 child windows are native OS windows that
-  // intercept all mouse/drag events. Use context menu "split with this tab" or Ctrl+\ instead.
+  // drag-to-split: mouse-based fake drag (HTML5 drag events don't work over WebView2 areas).
+  // Same pattern as divider drag: mousedown → mousemove on document → mouseup.
+  // Sidebar already applies 5px threshold before calling this.
+  const onTabSplitDrag = useCallback((tabId: string) => {
+    // immediately hide webviews and show overlay
+    invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffset, topOffset });
+    setDragOverContent(true);
+
+    const onMove = (e: MouseEvent) => {
+      // RAF-gated zone detection
+      if (dropRaf.current) return;
+      dropRaf.current = requestAnimationFrame(() => {
+        dropRaf.current = 0;
+        if (!mainRef.current) return;
+        const rect = mainRef.current.getBoundingClientRect();
+        if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
+          setDropZone(null);
+          return;
+        }
+        const ws = workspaces.find(w => w.id === activeWorkspaceId);
+        const zone = detectDropZone(
+          ws?.paneLayout || undefined,
+          ws?.activeTabId || "",
+          { x: 0, y: 0, w: rect.width, h: rect.height },
+          e.clientX - rect.left,
+          e.clientY - rect.top
+        );
+        setDropZone(zone);
+      });
+    };
+
+    const onUp = (e: MouseEvent) => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (dropRaf.current) { cancelAnimationFrame(dropRaf.current); dropRaf.current = 0; }
+
+      const currentDropZone = dropZoneRef.current;
+      setDragOverContent(false);
+      setDropZone(null);
+
+      const tab = tabs.find(t => t.id === tabId);
+      if (tab && !tab.url.startsWith("bushido://") && currentDropZone) {
+        const ws = workspaces.find(w => w.id === activeWorkspaceId);
+        if (ws) {
+          if (tabId === currentDropZone.anchorTabId) { syncLayout(); return; }
+          let base = ws.paneLayout || null;
+          if (base && hasLeaf(base, tabId)) base = removePane(base, tabId);
+          const newLayout = insertPane(base, currentDropZone.anchorTabId, tabId, currentDropZone.side);
+          if (newLayout) {
+            const updated = { ...ws, paneLayout: newLayout };
+            setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? updated : w));
+            syncLayout(updated);
+            return;
+          }
+        }
+      }
+      syncLayout();
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [layoutOffset, topOffset, workspaces, activeWorkspaceId, tabs, syncLayout]);
+
+  const dropZoneRef = useRef<DropZone | null>(null);
+  useEffect(() => { dropZoneRef.current = dropZone; }, [dropZone]);
 
   const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
   const showNtp = current?.url === NTP_URL;
@@ -1632,6 +1700,7 @@ export default function App() {
           onShareUrl={() => setShareOpen(true)}
           syncEnabled={settings.syncEnabled}
           pairedDevices={syncPairedDevices}
+          onTabSplitDrag={onTabSplitDrag}
         />
         {historyOpen && (
           <HistoryPanel
@@ -1656,7 +1725,8 @@ export default function App() {
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />
         {panelW > 0 && <div style={{ width: panelW, flexShrink: 0 }} />}
-        <div className="main" ref={mainRef}>
+        <div className="main" ref={mainRef}
+        >
           {findOpen && activeTab && !showInternalPage && (
             <FindBar tabId={activeTab} onClose={closeFindBar} />
           )}
@@ -1685,6 +1755,22 @@ export default function App() {
               onDividerDown={onDividerDown}
             />
           )}
+          <div
+            className="drop-zone-overlay"
+            style={{ pointerEvents: "none", opacity: dragOverContent ? 1 : 0 }}
+          >
+            {dropZone && (
+              <div
+                className="drop-zone-preview"
+                style={{
+                  left: dropZone.previewRect.x,
+                  top: dropZone.previewRect.y,
+                  width: dropZone.previewRect.w,
+                  height: dropZone.previewRect.h,
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

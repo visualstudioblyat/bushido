@@ -39,6 +39,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 - **Command Palette** (`Ctrl+K`) —Fuzzy search tabs, bookmarks, history, and actions from one input.
 - **Reader Mode** (`Ctrl+Shift+R`) —Strip pages to just text and images. Pick font, theme, line width.
 - **Picture-in-Picture** —Video detection + one-click PiP. Shadow DOM button injection so sites can't block it.
+- **Split View** —Drag a tab from the sidebar into the content area to split. Preview zones show where the tab lands. Up to 4 panes, resizable dividers, recursive horizontal/vertical splits. Layout persists across sessions.
 - **Web Panels** —Pin any site as a persistent sidebar webview. Spotify, Discord, WhatsApp —always one click away, stays open across tab switches. Mobile UA so sites render properly at narrow widths.
 - **Tab Suspender** —Inactive tabs auto-suspend after 5 minutes. Webview destroyed, memory freed, click to restore.
 - **LAN Sync** —Sync bookmarks, history, and settings between devices on your local network. No cloud, no accounts, no data leaving your house. Devices discover each other via mDNS and pair with a 6-digit code using SPAKE2 zero-knowledge authentication. All sync traffic encrypted end-to-end with the Noise Protocol (same primitives as WireGuard and Signal).

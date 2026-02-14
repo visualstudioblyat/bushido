@@ -423,6 +423,22 @@ html, body, #root {
   background: var(--accent);
 }
 
+.drop-zone-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.drop-zone-preview {
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.2;
+  border-radius: 8px;
+  border: 2px solid var(--accent);
+  transition: all 0.15s ease;
+}
+
 
 .tab-info {
   display: flex;
@@ -1144,7 +1160,7 @@ html, body, #root {
   flex-shrink: 0;
   padding: 0;
   transition: background-color var(--transition), color var(--transition);
-  margin-right: -4px;
+  margin-right: 2px;
 }
 
 .tab-collapse-btn:hover {
