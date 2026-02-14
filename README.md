@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  Bushido is a privacy-first browser built on Tauri with native ad blocking, cookie banner rejection, and HTTPS-only mode —no extensions needed.
+  Bushido is a privacy-first browser built on Tauri with native ad blocking, cookie banner rejection, and HTTPS-only mode no extensions needed.
 </p>
 
 <p align="center">
