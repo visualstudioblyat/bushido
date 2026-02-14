@@ -27,7 +27,7 @@
 
 —-
 
-## Why Bushido?
+## So Why Bushido?
 
 Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care —blocking is built into the browser core, not an extension that can be neutered.
 
@@ -47,7 +47,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 ## Tech Stack
 
 | Layer | Tech |
-|———-|———|
+
 | Binary Size | ~27MB (utilizing system native webview) |
 | Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | Frontend | React + TypeScript |
