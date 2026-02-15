@@ -93,6 +93,7 @@ Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-
 - [x] ~~LAN Sync (bookmark, history, settings sync via Loro CRDTs)~~ —shipped in v0.10.0
 - [x] ~~Permission Prompts (custom glass UI, per-site memory)~~ —shipped in v0.10.3
 - [x] ~~Download Enhancements (queue reorder, bandwidth throttle, MIME auto-sort)~~ —shipped in v0.10.3
+- [x] ~~Shortcut Runtime Rebinding~~ —shipped in v0.10.4
 - [ ] Boosts —per-site CSS/JS injection
 - [ ] Custom themes
 - [ ] Cross-platform builds (macOS, Linux)

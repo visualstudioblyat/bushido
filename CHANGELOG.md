@@ -2,6 +2,19 @@
 
 —-
 
+## v0.10.4
+
+**2026-02-15**
+
+The Settings > Shortcuts page already had a full rebinding UI —click any shortcut, press a new key combo, conflict detection, the works. But it was fake. The Rust command it called didn't exist, so your new binding saved to settings.json but did nothing until you restarted. Now it actually works. Rebind a shortcut and it takes effect immediately at the OS level.
+
+### Changed
+
+- **Runtime shortcut rebinding** —`rebind_shortcut` Rust command wired up. Unregisters old combo, registers new one via `tauri_plugin_global_shortcut`, updates the action map. No restart needed.
+- **Dynamic shortcut handler** —replaced the hardcoded 20-line match block with a `HashMap<String, String>` lookup. Shortcuts loaded from settings.json on startup instead of being compiled in. Same dispatch, just not static anymore.
+
+—-
+
 ## v0.10.3
 
 **2026-02-15**
