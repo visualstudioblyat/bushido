@@ -37,6 +37,93 @@ struct WhitelistState {
     sites: Mutex<HashSet<String>>,
 }
 
+struct KeybindingState {
+    map: Mutex<HashMap<String, String>>,  // normalized shortcut string → action
+}
+
+// Default keybindings: (action, combo in React format "Ctrl+T")
+// next-tab/prev-tab excluded — Ctrl+Tab not capturable as global shortcut on Windows
+const DEFAULT_KEYBINDINGS: &[(&str, &str)] = &[
+    ("new-tab", "Ctrl+T"),
+    ("close-tab", "Ctrl+W"),
+    ("reopen-tab", "Ctrl+Shift+T"),
+    ("focus-url", "Ctrl+L"),
+    ("find", "Ctrl+F"),
+    ("command-palette", "Ctrl+K"),
+    ("reload", "Ctrl+R"),
+    ("fullscreen", "F11"),
+    ("bookmark", "Ctrl+D"),
+    ("history", "Ctrl+H"),
+    ("downloads", "Ctrl+J"),
+    ("toggle-sidebar", "Ctrl+B"),
+    ("toggle-compact", "Ctrl+Shift+B"),
+    ("reader-mode", "Ctrl+Shift+R"),
+    ("devtools", "Ctrl+Shift+I"),
+    ("split-view", "Ctrl+\\"),
+    ("print", "Ctrl+P"),
+    ("screenshot", "Ctrl+Shift+S"),
+    ("zoom-in", "Ctrl+="),
+    ("zoom-out", "Ctrl+-"),
+    ("zoom-reset", "Ctrl+0"),
+];
+
+/// Convert a React-format combo like "Ctrl+Shift+T" into the normalized lowercase
+/// string that the global_hotkey crate produces from Shortcut::to_string().
+/// Shortcut::to_string() outputs modifiers in order: shift+control+alt+super+ then key code.
+/// e.g. "Ctrl+Shift+T" → "shift+control+keyt", "F11" → "f11", "Ctrl+=" → "control+equal"
+fn normalize_combo(combo: &str) -> String {
+    let mut has_shift = false;
+    let mut has_ctrl = false;
+    let mut has_alt = false;
+    let mut key_part = "";
+
+    for part in combo.split('+') {
+        let trimmed = part.trim();
+        match trimmed.to_uppercase().as_str() {
+            "CTRL" | "CONTROL" => has_ctrl = true,
+            "SHIFT" => has_shift = true,
+            "ALT" | "OPTION" => has_alt = true,
+            _ => key_part = trimmed,
+        }
+    }
+
+    // Convert React key name to global_hotkey Code name
+    let key_code = match key_part.to_uppercase().as_str() {
+        s if s.len() == 1 && s.chars().next().unwrap().is_ascii_alphabetic() =>
+            format!("key{}", s.to_lowercase()),
+        "=" => "equal".into(),
+        "-" => "minus".into(),
+        "\\" => "backslash".into(),
+        "0" => "digit0".into(),
+        "1" => "digit1".into(),
+        "2" => "digit2".into(),
+        "3" => "digit3".into(),
+        "4" => "digit4".into(),
+        "5" => "digit5".into(),
+        "6" => "digit6".into(),
+        "7" => "digit7".into(),
+        "8" => "digit8".into(),
+        "9" => "digit9".into(),
+        "/" => "slash".into(),
+        "." => "period".into(),
+        "," => "comma".into(),
+        ";" => "semicolon".into(),
+        "'" => "quote".into(),
+        "`" => "backquote".into(),
+        "[" => "bracketleft".into(),
+        "]" => "bracketright".into(),
+        other => other.to_lowercase(),
+    };
+
+    // Build in the same order as HotKey::into_string: shift, control, alt, super
+    let mut result = String::new();
+    if has_shift { result.push_str("shift+"); }
+    if has_ctrl { result.push_str("control+"); }
+    if has_alt { result.push_str("alt+"); }
+    result.push_str(&key_code);
+    result
+}
+
 #[cfg(windows)]
 struct PendingPermission {
     deferral: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral,
@@ -1277,6 +1364,31 @@ async fn revoke_permission(app: tauri::AppHandle, domain: String, permission: St
 }
 
 #[tauri::command]
+fn rebind_shortcut(app: tauri::AppHandle, action: String, old_combo: String, new_combo: String) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+
+    // Unregister old (ignore error if it wasn't registered)
+    if !old_combo.is_empty() {
+        let _ = gs.unregister(old_combo.as_str());
+    }
+
+    // Register new
+    gs.register(new_combo.as_str())
+        .map_err(|e| format!("Failed to register {}: {}", new_combo, e))?;
+
+    // Update the keybinding map
+    let kb = app.state::<KeybindingState>();
+    let mut map = kb.map.lock().unwrap_or_else(|e| e.into_inner());
+    let old_normalized = normalize_combo(&old_combo);
+    let new_normalized = normalize_combo(&new_combo);
+    map.remove(&old_normalized);
+    map.insert(new_normalized, action);
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn save_session(app: tauri::AppHandle, tabs: String) -> Result<(), String> {
     let path = session_path(&app);
     fs::write(&path, tabs).map_err(|e| e.to_string())
@@ -1453,6 +1565,43 @@ pub fn run() {
 
     let sync_data_dir = data_dir.clone();
 
+    // Load keybindings from settings.json (or use defaults)
+    let mut keybinding_map: HashMap<String, String> = HashMap::new();
+    let mut shortcut_combos: Vec<String> = Vec::new();
+    {
+        let settings_p = data_dir.join("settings.json");
+        let user_bindings: Option<HashMap<String, String>> = if settings_p.exists() {
+            fs::read_to_string(&settings_p).ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get("keybindings").cloned())
+                .and_then(|kb| serde_json::from_value(kb).ok())
+        } else {
+            None
+        };
+
+        // Build action→combo from user settings or defaults
+        let mut action_to_combo: Vec<(String, String)> = Vec::new();
+        if let Some(ref ub) = user_bindings {
+            for (action, combo) in DEFAULT_KEYBINDINGS {
+                let combo_str = ub.get(*action).map(|s| s.as_str()).unwrap_or(combo);
+                action_to_combo.push((action.to_string(), combo_str.to_string()));
+            }
+        } else {
+            for (action, combo) in DEFAULT_KEYBINDINGS {
+                action_to_combo.push((action.to_string(), combo.to_string()));
+            }
+        }
+
+        for (action, combo) in &action_to_combo {
+            let normalized = normalize_combo(combo);
+            keybinding_map.insert(normalized, action.clone());
+            shortcut_combos.push(combo.clone());
+        }
+    }
+    let keybinding_state = KeybindingState {
+        map: Mutex::new(keybinding_map),
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(WebviewState {
@@ -1463,6 +1612,7 @@ pub fn run() {
         })
         .manage(downloads::DownloadManager::new())
         .manage(std::sync::Arc::new(downloads::RateLimiter::new(0)))
+        .manage(keybinding_state)
         .manage(BlockerState {
             engine,
             cosmetic_script,
@@ -1471,53 +1621,31 @@ pub fn run() {
             media_script,
             fingerprint_script,
         })
-        .plugin(tauri_plugin_global_shortcut::Builder::new()
-            .with_shortcuts([
-                "ctrl+shift+b", "ctrl+k", "ctrl+shift+s", "ctrl+shift+r",
-                "ctrl+shift+t", "ctrl+shift+i",
-                "ctrl+t", "ctrl+w", "ctrl+l", "ctrl+f", "ctrl+d", "ctrl+h",
-                "ctrl+p", "ctrl+j", "ctrl+r",
-                "ctrl+=", "ctrl+-", "ctrl+0",
-                "ctrl+\\", "f11",
-            ]).unwrap_or_else(|e| {
+        .plugin({
+            tauri_plugin_global_shortcut::Builder::new()
+            .with_shortcuts(shortcut_combos.iter().map(|s| s.as_str()))
+            .unwrap_or_else(|e| {
                 eprintln!("Warning: failed to register global shortcuts: {}", e);
                 tauri_plugin_global_shortcut::Builder::new()
             })
             .with_handler(|app, shortcut, event| {
                 use tauri_plugin_global_shortcut::ShortcutState;
                 if event.state != ShortcutState::Pressed { return; }
-                let s = shortcut.to_string().to_lowercase();
-                let has_shift = s.contains("shift");
-                let key = s.split('+').last().unwrap_or("");
-                let action = match (has_shift, key) {
-                    (true, "keyb") => "toggle-compact",
-                    (true, "keys") => "screenshot",
-                    (true, "keyr") => "reader-mode",
-                    (true, "keyt") => "reopen-tab",
-                    (true, "keyi") => "devtools",
-                    (false, "keyk") => "command-palette",
-                    (false, "keyt") => "new-tab",
-                    (false, "keyw") => "close-tab",
-                    (false, "keyl") => "focus-url",
-                    (false, "keyf") => "find",
-                    (false, "keyd") => "bookmark",
-                    (false, "keyh") => "history",
-                    (false, "keyp") => "print",
-                    (false, "keyj") => "downloads",
-                    (false, "keyr") => "reload",
-                    (false, "equal") | (false, "=") => "zoom-in",
-                    (false, "minus") | (false, "-") => "zoom-out",
-                    (false, "digit0") | (false, "0") => "zoom-reset",
-                    (false, "backslash") | (false, "\\") => "split-view",
-                    (_, "f11") => "fullscreen",
-                    _ => return,
+                let normalized = shortcut.to_string().to_lowercase();
+                let kb_state = app.state::<KeybindingState>();
+                let action = {
+                    let map = kb_state.map.lock().unwrap_or_else(|e| e.into_inner());
+                    map.get(&normalized).cloned()
                 };
-                if let Some(win) = app.get_webview("main") {
-                    let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);
-                    let _ = win.eval(&js);
+                if let Some(action) = action {
+                    if let Some(win) = app.get_webview("main") {
+                        let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);
+                        let _ = win.eval(&js);
+                    }
                 }
             })
-            .build())
+            .build()
+        })
         .setup(|app| {
             // boost process priority for UI responsiveness during heavy filtering
             #[cfg(windows)]
@@ -1653,6 +1781,7 @@ pub fn run() {
             respond_permission,
             get_permissions,
             revoke_permission,
+            rebind_shortcut,
             start_download,
             pause_download,
             resume_download,
