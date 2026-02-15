@@ -2,6 +2,28 @@
 
 —-
 
+## v0.10.3
+
+**2026-02-15**
+
+Sites kept throwing Chromium's ugly default permission dialogs for camera, mic, location —totally broke the Bushido look. Now there's a glass banner that slides in from the top. Allow or deny, optionally remember per-site. Settings > Permissions shows everything you've saved and lets you revoke.
+
+Also built out the download manager: drag-to-reorder queue priority, global bandwidth throttle (so a big download doesn't eat your whole connection), and MIME-based auto-sort so images go to Pictures, PDFs go to Documents, etc. All configurable in Settings > Downloads.
+
+### Added
+
+- **Permission prompts** —WebView2 `PermissionRequested` COM handler with deferral pattern. Intercepts camera, microphone, geolocation, notifications, clipboard, MIDI, window management requests. Custom glass UI slides in below the titlebar. "Remember" checkbox saves per-site decisions to disk. LocalFonts auto-denied (fingerprint risk), MultipleDownloads auto-allowed.
+- **Permissions in Settings** —Settings > Permissions shows all saved per-site permission decisions in a table. Domain, permission type, allowed/denied, revoke button. Revoking means the site gets prompted again next time.
+- **Download queue priority** —drag-to-reorder in the download panel. Higher priority downloads get served first. Mousedown-based drag (same pattern as tab reorder), not HTML5 drag API.
+- **Bandwidth throttle** —global rate limiter across all active downloads. Token-bucket algorithm with `AtomicU64`, shared via `Arc`. Options: Unlimited, 512KB/s, 1MB/s, 2MB/s, 5MB/s, 10MB/s. Set in Settings > Downloads, takes effect immediately.
+- **MIME auto-sort** —downloads check Content-Type from the HEAD response and route to user-configured folders. Default rules for `image/`, `video/`, `audio/`, `application/pdf`. Falls back to extension-based detection if Content-Type is missing. Empty folder = use default download location.
+
+### Changed
+
+- **`.cargo/config.toml`** —`jobs = 2` to prevent LLVM OOM on large `lib.rs` compilation. Single-threaded LLVM (`-j 1`) works but is slow; 2 jobs is the sweet spot for machines with limited paging.
+
+—-
+
 ## v0.10.2
 
 **2026-02-14**
