@@ -141,6 +141,25 @@ export interface BushidoSettings {
   showMediaControls: boolean;
   showDomainOnly: boolean;
   keybindings: Record<string, string>;
+  bandwidthLimit: number;
+  mimeRouting: MimeRoute[];
+}
+
+export type PermissionKindType = "microphone" | "camera" | "geolocation" | "notifications" | "othersensors" | "clipboardread" | "filereadwrite" | "autoplay" | "localfonts" | "midi" | "windowmanagement" | "unknown";
+
+export interface PermissionRequest {
+  requestId: string;
+  tabId: string;
+  uri: string;
+  domain: string;
+  permission: PermissionKindType;
+  isUserInitiated: boolean;
+}
+
+export interface SavedPermission {
+  domain: string;
+  permission: string;
+  allowed: boolean;
 }
 
 export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
@@ -158,6 +177,12 @@ export interface DownloadItem {
   createdAt: number;
   supportsRange: boolean;
   segments: number; // 0 = single-stream, >1 = parallel connections
+  priority: number;
+}
+
+export interface MimeRoute {
+  mimePrefix: string;
+  folder: string;
 }
 
 // sync types (Phase D)
@@ -221,6 +246,13 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   autoplayPolicy: "block-audio",
   showMediaControls: true,
   showDomainOnly: false,
+  bandwidthLimit: 0,
+  mimeRouting: [
+    { mimePrefix: "image/", folder: "" },
+    { mimePrefix: "video/", folder: "" },
+    { mimePrefix: "audio/", folder: "" },
+    { mimePrefix: "application/pdf", folder: "" },
+  ],
   keybindings: {
     "new-tab": "Ctrl+T",
     "close-tab": "Ctrl+W",

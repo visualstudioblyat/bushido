@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Manager, Emitter};
@@ -37,6 +38,7 @@ pub struct DlItem {
     pub created_at: u64,
     pub supports_range: bool,
     pub segments: u32, // active connection count (0 = single-stream)
+    pub priority: u32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -64,6 +66,8 @@ struct Manifest {
     segments: Vec<Segment>,
     #[serde(default)]
     cookies: Option<String>,
+    #[serde(default)]
+    priority: u32,
 }
 
 pub struct DownloadManager {
@@ -78,6 +82,56 @@ impl DownloadManager {
             cancel_tx: Mutex::new(HashMap::new()),
         }
     }
+}
+
+pub struct RateLimiter {
+    pub limit_bps: AtomicU64, // 0 = unlimited
+    tokens: AtomicU64,
+    last_refill: Mutex<Instant>,
+}
+
+impl RateLimiter {
+    pub fn new(limit_bps: u64) -> Self {
+        Self {
+            limit_bps: AtomicU64::new(limit_bps),
+            tokens: AtomicU64::new(limit_bps),
+            last_refill: Mutex::new(Instant::now()),
+        }
+    }
+
+    pub async fn acquire(&self, bytes: u64) {
+        let limit = self.limit_bps.load(Ordering::Relaxed);
+        if limit == 0 { return; } // unlimited
+
+        loop {
+            // refill tokens based on elapsed time
+            {
+                let mut last = self.last_refill.lock().unwrap();
+                let elapsed = last.elapsed().as_secs_f64();
+                if elapsed > 0.01 {
+                    let refill = (elapsed * limit as f64) as u64;
+                    let current = self.tokens.load(Ordering::Relaxed);
+                    self.tokens.store(current.saturating_add(refill).min(limit), Ordering::Relaxed);
+                    *last = Instant::now();
+                }
+            }
+
+            let current = self.tokens.load(Ordering::Relaxed);
+            if current >= bytes {
+                self.tokens.store(current - bytes, Ordering::Relaxed);
+                return;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MimeRoute {
+    pub mime_prefix: String,
+    pub folder: String,
 }
 
 fn now_epoch() -> u64 {
@@ -138,6 +192,7 @@ pub fn load_pending(app: &AppHandle) -> Vec<DlItem> {
                             created_at: m.created_at,
                             supports_range: m.supports_range,
                             segments: seg_count,
+                            priority: m.priority,
                         });
                     }
                 }
@@ -203,30 +258,88 @@ pub fn parse_filename(url: &str, disposition: &str) -> String {
     "download".to_string()
 }
 
-pub async fn start(app: AppHandle, url: String, file_name: String, download_dir: String, cookies: Option<String>) -> Result<String, String> {
+pub async fn start(app: AppHandle, url: String, file_name: String, download_dir: String, cookies: Option<String>, mime_routing: Vec<MimeRoute>, rate_limiter: Arc<RateLimiter>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     // strip path traversal — keep only the basename
     let safe_name = Path::new(&file_name).file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download")
         .to_string();
-    let final_name = dedup_filename(&download_dir, &safe_name);
-    let file_path = Path::new(&download_dir).join(&final_name).to_string_lossy().to_string();
+
+    // HEAD request first to get Content-Type for MIME routing
+    let client = reqwest::Client::new();
+    let mut head_req = client.head(&url);
+    if let Some(ref c) = cookies {
+        head_req = head_req.header("Cookie", c.as_str());
+    }
+    let mut mime_type = String::new();
+    let mut head_total: Option<u64> = None;
+    let mut head_supports_range = false;
+    if let Ok(head) = head_req.send().await {
+        if let Some(ct) = head.headers().get("content-type") {
+            mime_type = ct.to_str().unwrap_or("").split(';').next().unwrap_or("").trim().to_lowercase();
+        }
+        if let Some(cl) = head.headers().get("content-length") {
+            if let Ok(len) = cl.to_str().unwrap_or("0").parse::<u64>() {
+                head_total = Some(len);
+            }
+        }
+        if let Some(ar) = head.headers().get("accept-ranges") {
+            if ar.to_str().unwrap_or("") == "bytes" {
+                head_supports_range = true;
+            }
+        }
+    }
+    // if no MIME from HEAD, infer from extension
+    if mime_type.is_empty() {
+        let ext = Path::new(&safe_name).extension().and_then(|e| e.to_str()).unwrap_or("");
+        mime_type = match ext {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "mp4" => "video/mp4",
+            "webm" => "video/webm",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "ogg" => "audio/ogg",
+            "pdf" => "application/pdf",
+            "zip" => "application/zip",
+            _ => "",
+        }.to_string();
+    }
+
+    // MIME auto-sort: override download dir if a route matches
+    let mut target_dir = download_dir.clone();
+    if !mime_type.is_empty() {
+        for route in &mime_routing {
+            if !route.folder.is_empty() && mime_type.starts_with(&route.mime_prefix) {
+                let _ = std::fs::create_dir_all(&route.folder);
+                target_dir = route.folder.clone();
+                break;
+            }
+        }
+    }
+
+    let final_name = dedup_filename(&target_dir, &safe_name);
+    let file_path = Path::new(&target_dir).join(&final_name).to_string_lossy().to_string();
 
     let item = DlItem {
         id: id.clone(),
         url: url.clone(),
         file_path: file_path.clone(),
         file_name: final_name.clone(),
-        mime_type: String::new(),
-        total_bytes: None,
+        mime_type: mime_type.clone(),
+        total_bytes: head_total,
         received_bytes: 0,
         state: DlState::Downloading,
         speed: 0,
         error: None,
         created_at: now_epoch(),
-        supports_range: false,
+        supports_range: head_supports_range,
         segments: 0,
+        priority: 0,
     };
 
     {
@@ -245,38 +358,11 @@ pub async fn start(app: AppHandle, url: String, file_name: String, download_dir:
     let app2 = app.clone();
     let id2 = id.clone();
     let cookies2 = cookies.clone();
+    let rl = rate_limiter;
     tokio::spawn(async move {
-        // HEAD to check range support + total size
-        let client = reqwest::Client::new();
-        let mut total_bytes: Option<u64> = None;
-        let mut supports_range = false;
-
-        let mut head_req = client.head(&url);
-        if let Some(ref c) = cookies2 {
-            head_req = head_req.header("Cookie", c.as_str());
-        }
-        if let Ok(head) = head_req.send().await {
-            if let Some(cl) = head.headers().get("content-length") {
-                if let Ok(len) = cl.to_str().unwrap_or("0").parse::<u64>() {
-                    total_bytes = Some(len);
-                }
-            }
-            if let Some(ar) = head.headers().get("accept-ranges") {
-                if ar.to_str().unwrap_or("") == "bytes" {
-                    supports_range = true;
-                }
-            }
-        }
-
-        // update item with size info
-        {
-            let dm = app2.state::<DownloadManager>();
-            let mut downloads = dm.downloads.lock().unwrap();
-            if let Some(item) = downloads.get_mut(&id2) {
-                item.total_bytes = total_bytes;
-                item.supports_range = supports_range;
-            }
-        }
+        // HEAD already done above — use cached values
+        let total_bytes = head_total;
+        let supports_range = head_supports_range;
 
         // decide: chunked or single-stream
         let use_chunked = supports_range
@@ -284,16 +370,16 @@ pub async fn start(app: AppHandle, url: String, file_name: String, download_dir:
 
         if use_chunked {
             let total = total_bytes.unwrap();
-            dl_task_chunked(app2, id2, url, file_path, total, cookies2, None, rx).await;
+            dl_task_chunked(app2, id2, url, file_path, total, cookies2, None, rx, rl).await;
         } else {
-            dl_task(app2, id2, url, file_path, cookies2, 0, rx).await;
+            dl_task(app2, id2, url, file_path, cookies2, 0, rx, rl).await;
         }
     });
 
     Ok(id)
 }
 
-pub async fn resume(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn resume(app: AppHandle, id: String, rate_limiter: Arc<RateLimiter>) -> Result<(), String> {
     let manifest_data = {
         let manifest_p = manifest_path(&app, &id);
         load_manifest(&manifest_p)
@@ -327,14 +413,16 @@ pub async fn resume(app: AppHandle, id: String) -> Result<(), String> {
         let total = m.total_bytes.unwrap_or(0);
         let cookies = m.cookies.clone();
         let segments = m.segments.clone();
+        let rl = rate_limiter;
         tokio::spawn(async move {
-            dl_task_chunked(app2, id2, url, file_path, total, cookies, Some(segments), rx).await;
+            dl_task_chunked(app2, id2, url, file_path, total, cookies, Some(segments), rx, rl).await;
         });
     } else {
         // single-stream resume
         let cookies = manifest_data.and_then(|m| m.cookies.clone());
+        let rl = rate_limiter;
         tokio::spawn(async move {
-            dl_task(app2, id2, url, file_path, cookies, offset, rx).await;
+            dl_task(app2, id2, url, file_path, cookies, offset, rx, rl).await;
         });
     }
 
@@ -368,6 +456,7 @@ pub fn pause(app: &AppHandle, id: &str) -> Result<(), String> {
         created_at: item.created_at,
         segments: Vec::new(),
         cookies: None,
+        priority: item.priority,
     };
     // only save if no manifest exists yet (chunked task saves its own with segments)
     let mpath = manifest_path(app, id);
@@ -410,6 +499,7 @@ async fn dl_task(
     cookies: Option<String>,
     resume_offset: u64,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+    rate_limiter: Arc<RateLimiter>,
 ) {
     let client = reqwest::Client::new();
 
@@ -507,8 +597,10 @@ async fn dl_task(
                             fail(&app, &id, "write error");
                             return;
                         }
-                        received += bytes.len() as u64;
-                        speed_bytes += bytes.len() as u64;
+                        let chunk_len = bytes.len() as u64;
+                        received += chunk_len;
+                        speed_bytes += chunk_len;
+                        rate_limiter.acquire(chunk_len).await;
 
                         // calc speed
                         let elapsed = speed_start.elapsed().as_secs_f64();
@@ -553,6 +645,7 @@ async fn dl_task(
                                     created_at: item.created_at,
                                     segments: Vec::new(),
                                     cookies: cookies.clone(),
+                                    priority: item.priority,
                                 };
                                 save_manifest(&app, &m);
                             }
@@ -602,6 +695,7 @@ async fn dl_task_chunked(
     cookies: Option<String>,
     resume_segments: Option<Vec<Segment>>,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+    rate_limiter: Arc<RateLimiter>,
 ) {
     // pre-allocate file if fresh download
     if resume_segments.is_none() {
@@ -666,6 +760,7 @@ async fn dl_task_chunked(
                 seg_state.clone(),
                 done_tx.clone(),
                 cancel_rx.clone(),
+                rate_limiter.clone(),
             );
         }
     }
@@ -704,6 +799,7 @@ async fn dl_task_chunked(
                                 seg_state.clone(),
                                 done_tx.clone(),
                                 cancel_rx.clone(),
+                                rate_limiter.clone(),
                             );
                             active_workers += 1;
                         }
@@ -772,6 +868,7 @@ async fn dl_task_chunked(
                             created_at: item.created_at,
                             segments: segs,
                             cookies: cookies.clone(),
+                            priority: item.priority,
                         };
                         save_manifest(&app, &m);
                     }
@@ -796,6 +893,7 @@ async fn dl_task_chunked(
                         created_at: item.created_at,
                         segments: segs,
                         cookies: cookies.clone(),
+                        priority: item.priority,
                     };
                     save_manifest(&app, &m);
                 }
@@ -836,9 +934,10 @@ async fn dl_task_chunked(
     cookies: Option<String>,
     _resume_segments: Option<Vec<Segment>>,
     cancel_rx: tokio::sync::watch::Receiver<bool>,
+    rate_limiter: Arc<RateLimiter>,
 ) {
     // non-windows fallback: single-stream
-    dl_task(app, id, url, file_path, cookies, 0, cancel_rx).await;
+    dl_task(app, id, url, file_path, cookies, 0, cancel_rx, rate_limiter).await;
 }
 
 #[cfg(windows)]
@@ -852,6 +951,7 @@ fn spawn_segment_worker(
     seg_state: Arc<Mutex<Vec<Segment>>>,
     done_tx: tokio::sync::mpsc::UnboundedSender<u32>,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+    rate_limiter: Arc<RateLimiter>,
 ) {
     let _ = tokio::spawn(async move {
         use std::os::windows::fs::FileExt;
@@ -902,6 +1002,7 @@ fn spawn_segment_worker(
                                 break;
                             }
                             offset += len;
+                            rate_limiter.acquire(len).await;
 
                             // update shared segment state
                             let current_end = {
@@ -982,6 +1083,15 @@ fn try_split(seg_state: &Arc<Mutex<Vec<Segment>>>) -> Option<(u32, u64, u64)> {
     });
 
     Some((new_idx, midpoint + 1, new_end))
+}
+
+pub fn set_priority(app: &AppHandle, id: &str, priority: u32) -> Result<(), String> {
+    let dm = app.state::<DownloadManager>();
+    let mut downloads = dm.downloads.lock().unwrap();
+    let item = downloads.get_mut(id).ok_or("not found")?;
+    item.priority = priority;
+    let _ = app.emit_to("main", "download-progress", item.clone());
+    Ok(())
 }
 
 fn fail(app: &AppHandle, id: &str, error: &str) {

@@ -54,6 +54,7 @@ lz4_flex = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+windows-core = "0.61"
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage"] }
 windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
 arboard = { version = "3", features = ["image-data"] }

@@ -19,6 +19,15 @@ const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[
   { value: "custom", label: "Custom" },
 ];
 
+const BANDWIDTH_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Unlimited" },
+  { value: 512 * 1024, label: "512 KB/s" },
+  { value: 1024 * 1024, label: "1 MB/s" },
+  { value: 2 * 1024 * 1024, label: "2 MB/s" },
+  { value: 5 * 1024 * 1024, label: "5 MB/s" },
+  { value: 10 * 1024 * 1024, label: "10 MB/s" },
+];
+
 const SUSPEND_OPTIONS: { value: number; label: string }[] = [
   { value: 5, label: "5 minutes" },
   { value: 10, label: "10 minutes" },
@@ -398,6 +407,40 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         <div className="settings-label"><span>Ask where to save</span></div>
         <Toggle checked={settings.askDownloadLocation} onChange={v => set("askDownloadLocation", v)} />
       </div>
+      <div className="settings-row">
+        <div className="settings-label">
+          <span>Bandwidth limit</span>
+          <span className="settings-hint">Limit total download speed across all active downloads</span>
+        </div>
+        <Select
+          value={settings.bandwidthLimit}
+          options={BANDWIDTH_OPTIONS}
+          onChange={(v: number) => {
+            set("bandwidthLimit", v);
+            invoke("set_bandwidth_limit", { limit: v });
+          }}
+        />
+      </div>
+      <h3 className="settings-subsection-title" style={{ marginTop: 16 }}>MIME auto-sort</h3>
+      <p className="settings-info-text" style={{ marginBottom: 8 }}>
+        Route downloads to different folders based on file type. Leave folder empty to use the default location.
+      </p>
+      {(settings.mimeRouting || []).map((route, i) => (
+        <div key={i} className="settings-row" style={{ gap: 8 }}>
+          <span className="settings-mime-prefix">{route.mimePrefix}</span>
+          <input
+            className="settings-input"
+            value={route.folder}
+            onChange={e => {
+              const updated = [...(settings.mimeRouting || [])];
+              updated[i] = { ...updated[i], folder: e.target.value };
+              set("mimeRouting", updated);
+            }}
+            placeholder="Default location"
+            spellCheck={false}
+          />
+        </div>
+      ))}
     </section>
   );
 
@@ -559,12 +602,53 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     </section>
   );
 
+  const [savedPerms, setSavedPerms] = useState<{ domain: string; permission: string; allowed: boolean }[]>([]);
+  const [permsLoaded, setPermsLoaded] = useState(false);
+
+  const loadPerms = useCallback(() => {
+    invoke<{ domain: string; permission: string; allowed: boolean }[]>("get_permissions").then(p => {
+      setSavedPerms(p);
+      setPermsLoaded(true);
+    }).catch(() => setPermsLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "permissions" && !permsLoaded) loadPerms();
+  }, [activeTab, permsLoaded, loadPerms]);
+
+  const revokePermission = useCallback((domain: string, permission: string) => {
+    invoke("revoke_permission", { domain, permission }).then(() => {
+      setSavedPerms(prev => prev.filter(p => !(p.domain === domain && p.permission === permission)));
+    });
+  }, []);
+
   const renderPermissions = () => (
     <section className="settings-section">
       <h2 className="settings-section-title">Permissions</h2>
-      <p className="settings-info-text">
-        Permission prompts for camera, microphone, location, and notifications coming in a future update.
+      <p className="settings-info-text" style={{ marginBottom: 12 }}>
+        Sites that have been granted or denied access to device features. Click revoke to reset a permission — the site will ask again on next visit.
       </p>
+      {savedPerms.length === 0 ? (
+        <p className="settings-info-text" style={{ opacity: 0.5 }}>No saved permissions yet.</p>
+      ) : (
+        <div className="settings-perm-table">
+          <div className="settings-perm-header">
+            <span>Site</span><span>Permission</span><span>Decision</span><span></span>
+          </div>
+          {savedPerms.map((p, i) => (
+            <div key={i} className="settings-perm-row">
+              <span className="settings-perm-domain">{p.domain}</span>
+              <span className="settings-perm-kind">{p.permission}</span>
+              <span className={`settings-perm-state ${p.allowed ? "allowed" : "denied"}`}>
+                {p.allowed ? "Allowed" : "Denied"}
+              </span>
+              <button className="settings-perm-revoke" onClick={() => revokePermission(p.domain, p.permission)}>
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 

@@ -14,8 +14,38 @@ import ScreenshotOverlay from "./components/ScreenshotOverlay";
 import AnnotationEditor from "./components/AnnotationEditor";
 import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone } from "./types";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone, PermissionRequest } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf, detectDropZone } from "./splitLayout";
+
+// blocked URL schemes — defense-in-depth (Rust side also blocks these)
+const BLOCKED_SCHEMES = ["javascript:", "data:", "file:", "vbscript:", "blob:", "ms-msdt:", "search-ms:", "ms-officecmd:"];
+const isSafeUrl = (url: string) => !BLOCKED_SCHEMES.some(s => url.toLowerCase().startsWith(s));
+
+// clamp a popup menu to viewport edges
+function useClampedMenu(menuRef: React.RefObject<HTMLDivElement | null>, anchor: { x: number; y: number } | null) {
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  useEffect(() => {
+    if (!anchor) return;
+    setPos({ top: -9999, left: -9999 });
+    requestAnimationFrame(() => {
+      const el = menuRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const pad = 8;
+      const left = Math.max(pad, Math.min(anchor.x, window.innerWidth - rect.width - pad));
+      const top = Math.max(pad, Math.min(anchor.y, window.innerHeight - rect.height - pad));
+      setPos({ top, left });
+    });
+  }, [anchor, menuRef]);
+  return pos;
+}
+
+interface PageCtxMenu {
+  x: number; y: number;
+  kind: "page" | "image" | "selection" | "audio" | "video";
+  linkUri: string; sourceUri: string; selectionText: string;
+  pageUri: string; isEditable: boolean; tabId: string;
+}
 
 const NTP_URL = "bushido://newtab";
 const SETTINGS_URL = "bushido://settings";
@@ -30,6 +60,13 @@ const genId = (prefix = "tab") => `${prefix}-${++tabCounter}`;
 
 let wsCounter = 0;
 const genWsId = () => `ws-${++wsCounter}`;
+
+const PERM_LABELS: Record<string, string> = {
+  microphone: "microphone", camera: "camera", geolocation: "location",
+  notifications: "notifications", othersensors: "sensors", clipboardread: "clipboard",
+  filereadwrite: "file access", autoplay: "autoplay", midi: "MIDI devices",
+  windowmanagement: "window management", unknown: "a permission",
+};
 
 function sanitizePanelUrl(input: string): string | null {
   const trimmed = input.trim().replace(/[\x00-\x1f\x7f]/g, "");
@@ -80,6 +117,8 @@ export default function App() {
   const [syncToast, setSyncToast] = useState<"syncing" | "success" | "error" | null>(null);
   const [syncTabReceived, setSyncTabReceived] = useState<{ from_device: string; url: string; title: string } | null>(null);
   const [syncPairedDevices, setSyncPairedDevices] = useState<{ device_id: string; name: string }[]>([]);
+  const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
+  const [permRemember, setPermRemember] = useState(true);
   const syncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
@@ -91,6 +130,15 @@ export default function App() {
   const prevSettingsRef = useRef<BushidoSettings | null>(null);
   const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
   const zoomRef = useRef<Record<string, number>>({});
+  const [pageCtx, setPageCtx] = useState<PageCtxMenu | null>(null);
+  const pageCtxRef = useRef<HTMLDivElement>(null);
+  const pageCtxPos = useClampedMenu(pageCtxRef, pageCtx);
+  useEffect(() => {
+    if (!pageCtx) return;
+    requestAnimationFrame(() => {
+      pageCtxRef.current?.querySelector<HTMLElement>(".ctx-item")?.focus();
+    });
+  }, [pageCtx]);
 
   settingsRef.current = settings;
 
@@ -127,6 +175,8 @@ export default function App() {
   const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
   const panelW = activePanelId && !compactMode ? PANEL_W : 0;
   const layoutOffset = sidebarW + panelW;
+  const layoutOffsetRef = useRef(layoutOffset);
+  layoutOffsetRef.current = layoutOffset;
   const topOffset = 40;
   const pinnedTabs = useMemo(() => currentWsTabs.filter(t => t.pinned), [currentWsTabs]);
   const regularTabs = useMemo(() => currentWsTabs.filter(t => !t.pinned), [currentWsTabs]);
@@ -183,6 +233,11 @@ export default function App() {
 
       // apply saved theme
       applyTheme(s.accentColor || "#6366f1", s.themeMode || "dark");
+
+      // apply bandwidth limit from settings
+      if (s.bandwidthLimit) {
+        invoke("set_bandwidth_limit", { limit: s.bandwidthLimit });
+      }
 
       // if onboarding hasn't been completed, show it and skip session restore
       if (!s.onboardingComplete) {
@@ -520,7 +575,8 @@ export default function App() {
       // download events
       listen<{ url: string; suggestedFilename: string; cookies?: string }>("download-intercepted", (e) => {
         const dir = settingsRef.current.downloadLocation || "";
-        invoke("start_download", { url: e.payload.url, filename: e.payload.suggestedFilename, downloadDir: dir, cookies: e.payload.cookies || null });
+        const routing = settingsRef.current.mimeRouting || [];
+        invoke("start_download", { url: e.payload.url, filename: e.payload.suggestedFilename, downloadDir: dir, cookies: e.payload.cookies || null, mimeRouting: routing });
         setDownloadsOpen(true);
       }),
       listen<DownloadItem>("download-started", (e) => {
@@ -587,6 +643,26 @@ export default function App() {
       listen<{ from_device: string; url: string; title: string }>("tab-received", (e) => {
         setSyncTabReceived(e.payload);
         setTimeout(() => setSyncTabReceived(null), 8000);
+      }),
+      // page context menu (right-click on web content)
+      listen<any>("webview-context-menu", (e) => {
+        const p = e.payload;
+        setPageCtx({
+          x: p.x + layoutOffsetRef.current,
+          y: p.y + topOffset,
+          kind: p.kind,
+          linkUri: p.linkUri || "",
+          sourceUri: p.sourceUri || "",
+          selectionText: p.selectionText || "",
+          pageUri: p.pageUri || "",
+          isEditable: !!p.isEditable,
+          tabId: p.id,
+        });
+      }),
+      // permission prompt from webview
+      listen<PermissionRequest>("permission-requested", (e) => {
+        setPermReq(e.payload);
+        setPermRemember(true);
       }),
     ];
 
@@ -1874,6 +1950,114 @@ export default function App() {
         </svg>
         <span>Tab from {syncTabReceived.from_device}: {syncTabReceived.title.substring(0, 40)}</span>
         <span style={{ opacity: 0.6, fontSize: 11 }}>click to open</span>
+      </div>
+    )}
+    {permReq && (
+      <div className="permission-prompt" style={{ left: layoutOffset + 16 }}>
+        <div className="permission-prompt-icon">
+          {permReq.permission === "camera" ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="2" y="5" width="15" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M17 9.5l5-3v11l-5-3z" stroke="currentColor" strokeWidth="1.5"/></svg>
+          ) : permReq.permission === "microphone" ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="8" y="2" width="8" height="12" rx="4" stroke="currentColor" strokeWidth="1.5"/><path d="M5 11a7 7 0 0014 0M12 18v4" stroke="currentColor" strokeWidth="1.5"/></svg>
+          ) : permReq.permission === "geolocation" ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="10" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M12 2a8 8 0 00-8 8c0 6 8 12 8 12s8-6 8-12a8 8 0 00-8-8z" stroke="currentColor" strokeWidth="1.5"/></svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5"/><path d="M12 8v4l3 3" stroke="currentColor" strokeWidth="1.5"/></svg>
+          )}
+        </div>
+        <div className="permission-prompt-body">
+          <span className="permission-prompt-domain">{permReq.domain}</span>
+          <span className="permission-prompt-text">wants to use your {PERM_LABELS[permReq.permission] || permReq.permission}</span>
+        </div>
+        <label className="permission-prompt-remember">
+          <input type="checkbox" checked={permRemember} onChange={e => setPermRemember(e.target.checked)} />
+          Remember
+        </label>
+        <button className="permission-btn deny" onClick={() => {
+          invoke("respond_permission", { requestId: permReq.requestId, allow: false, remember: permRemember });
+          setPermReq(null);
+        }}>Deny</button>
+        <button className="permission-btn allow" onClick={() => {
+          invoke("respond_permission", { requestId: permReq.requestId, allow: true, remember: permRemember });
+          setPermReq(null);
+        }}>Allow</button>
+      </div>
+    )}
+    {pageCtx && (
+      <div className="ctx-overlay" onClick={() => setPageCtx(null)} onKeyDown={(e) => {
+        if (e.key === "Escape") { setPageCtx(null); return; }
+        const menu = pageCtxRef.current;
+        if (!menu) return;
+        const items = Array.from(menu.querySelectorAll<HTMLElement>(".ctx-item"));
+        const focused = document.activeElement as HTMLElement;
+        const idx = items.indexOf(focused);
+        if (e.key === "ArrowDown") { e.preventDefault(); items[(idx + 1) % items.length]?.focus(); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); items[(idx - 1 + items.length) % items.length]?.focus(); }
+        else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); items[idx].click(); }
+      }}>
+        <div ref={pageCtxRef} className="ctx-menu page-ctx" style={{ top: pageCtxPos.top, left: pageCtxPos.left }}>
+          {pageCtx.linkUri && (
+            <>
+              <div className="ctx-item" tabIndex={0} onClick={() => { if (isSafeUrl(pageCtx.linkUri)) addTab(pageCtx.linkUri); setPageCtx(null); }}>
+                Open link in new tab
+              </div>
+              <div className="ctx-item" tabIndex={0} onClick={() => { invoke("copy_text_to_clipboard", { text: pageCtx.linkUri }); setPageCtx(null); }}>
+                Copy link address
+              </div>
+              <div className="ctx-divider" />
+            </>
+          )}
+          {pageCtx.kind === "image" && pageCtx.sourceUri && (
+            <>
+              <div className="ctx-item" tabIndex={0} onClick={() => { if (isSafeUrl(pageCtx.sourceUri)) addTab(pageCtx.sourceUri); setPageCtx(null); }}>
+                Open image in new tab
+              </div>
+              <div className="ctx-item" tabIndex={0} onClick={() => { invoke("copy_text_to_clipboard", { text: pageCtx.sourceUri }); setPageCtx(null); }}>
+                Copy image URL
+              </div>
+              <div className="ctx-divider" />
+            </>
+          )}
+          {(pageCtx.kind === "video" || pageCtx.kind === "audio") && pageCtx.sourceUri && (
+            <>
+              <div className="ctx-item" tabIndex={0} onClick={() => { if (isSafeUrl(pageCtx.sourceUri)) addTab(pageCtx.sourceUri); setPageCtx(null); }}>
+                Open media in new tab
+              </div>
+              <div className="ctx-item" tabIndex={0} onClick={() => { invoke("copy_text_to_clipboard", { text: pageCtx.sourceUri }); setPageCtx(null); }}>
+                Copy media URL
+              </div>
+              <div className="ctx-divider" />
+            </>
+          )}
+          {pageCtx.selectionText && (
+            <>
+              <div className="ctx-item" tabIndex={0} onClick={() => { invoke("copy_text_to_clipboard", { text: pageCtx.selectionText }); setPageCtx(null); }}>
+                Copy
+              </div>
+              <div className="ctx-item" tabIndex={0} onClick={() => {
+                const q = pageCtx.selectionText.slice(0, 200);
+                addTab(getSearchUrl(q));
+                setPageCtx(null);
+              }}>
+                Search "{pageCtx.selectionText.length > 30 ? pageCtx.selectionText.slice(0, 30) + "..." : pageCtx.selectionText}"
+              </div>
+              <div className="ctx-divider" />
+            </>
+          )}
+          <div className="ctx-item" tabIndex={0} onClick={() => { invoke("go_back", { id: pageCtx.tabId }); setPageCtx(null); }}>
+            Back
+          </div>
+          <div className="ctx-item" tabIndex={0} onClick={() => { invoke("go_forward", { id: pageCtx.tabId }); setPageCtx(null); }}>
+            Forward
+          </div>
+          <div className="ctx-item" tabIndex={0} onClick={() => { invoke("reload_tab", { id: pageCtx.tabId }); setPageCtx(null); }}>
+            Reload
+          </div>
+          <div className="ctx-divider" />
+          <div className="ctx-item" tabIndex={0} onClick={() => { invoke("toggle_devtools", { id: pageCtx.tabId }); setPageCtx(null); }}>
+            Inspect
+          </div>
+        </div>
       </div>
     )}
     </>

@@ -1,4 +1,5 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { DownloadItem } from "../types";
 
 interface Props {
@@ -38,11 +39,59 @@ export default memo(function DownloadPanel({
   downloads, onPause, onResume, onCancel, onOpen, onOpenFolder, onClearCompleted, onClose, onRetry,
 }: Props) {
   const hasCompleted = downloads.some(d => d.state === "completed");
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const dragStartY = useRef(0);
+  const dragActive = useRef(false);
+
+  // sort by priority asc, then newest first
+  const sorted = [...downloads].sort((a, b) => (a.priority || 0) - (b.priority || 0) || b.createdAt - a.createdAt);
 
   const progress = useCallback((d: DownloadItem) => {
     if (!d.totalBytes) return 0;
     return Math.min(100, (d.receivedBytes / d.totalBytes) * 100);
   }, []);
+
+  const onDragStart = useCallback((e: React.MouseEvent, idx: number) => {
+    dragStartY.current = e.clientY;
+    dragActive.current = false;
+    setDragIdx(idx);
+
+    const onMove = (me: MouseEvent) => {
+      if (!dragActive.current && Math.abs(me.clientY - dragStartY.current) < 5) return;
+      dragActive.current = true;
+      const items = document.querySelectorAll<HTMLElement>(".download-item");
+      let target = -1;
+      for (let i = 0; i < items.length; i++) {
+        const rect = items[i].getBoundingClientRect();
+        if (me.clientY >= rect.top && me.clientY < rect.bottom) { target = i; break; }
+      }
+      setDropIdx(target >= 0 ? target : null);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (dragActive.current && dropIdx !== null && dragIdx !== null && dropIdx !== dragIdx) {
+        // reorder: reassign priorities based on new order
+        const reordered = [...sorted];
+        const [moved] = reordered.splice(dragIdx, 1);
+        reordered.splice(dropIdx, 0, moved);
+        reordered.forEach((d, i) => {
+          const newPri = i * 10;
+          if (d.priority !== newPri) {
+            invoke("reorder_download", { id: d.id, priority: newPri });
+          }
+        });
+      }
+      setDragIdx(null);
+      setDropIdx(null);
+      dragActive.current = false;
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [sorted, dragIdx, dropIdx]);
 
   return (
     <div className="download-panel">
@@ -59,11 +108,15 @@ export default memo(function DownloadPanel({
       </div>
 
       <div className="download-list">
-        {downloads.length === 0 && (
+        {sorted.length === 0 && (
           <div className="history-empty">no downloads</div>
         )}
-        {downloads.map(d => (
-          <div key={d.id} className="download-item">
+        {sorted.map((d, i) => (
+          <div
+            key={d.id}
+            className={`download-item${dragIdx === i ? " dragging" : ""}${dropIdx === i ? " drop-target" : ""}`}
+            onMouseDown={(e) => { if (e.button === 0) onDragStart(e, i); }}
+          >
             <div className="download-item-info">
               <span className="download-item-name" title={d.fileName}>{d.fileName}</span>
               <div className="download-item-meta">

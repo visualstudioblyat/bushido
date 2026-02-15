@@ -37,6 +37,23 @@ struct WhitelistState {
     sites: Mutex<HashSet<String>>,
 }
 
+#[cfg(windows)]
+struct PendingPermission {
+    deferral: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral,
+    args: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2PermissionRequestedEventArgs,
+    _tab_id: String,
+}
+#[cfg(windows)]
+unsafe impl Send for PendingPermission {}
+#[cfg(windows)]
+unsafe impl Sync for PendingPermission {}
+
+struct PermissionState {
+    saved: Mutex<HashMap<String, bool>>,
+    #[cfg(windows)]
+    pending: Arc<Mutex<HashMap<String, PendingPermission>>>,
+}
+
 fn is_blocked_scheme(url: &str) -> bool {
     let lower = url.trim().to_lowercase();
     lower.starts_with("javascript:") || lower.starts_with("data:")
@@ -567,6 +584,168 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 ));
                 let mut crash_token: i64 = 0;
                 let _ = core.add_ProcessFailed(&crash_handler, &mut crash_token);
+
+                // context menu — suppress default Chromium menu, emit target info to React
+                if let Ok(core11) = core.cast::<ICoreWebView2_11>() {
+                    let app_ctx = app_for_block.clone();
+                    let tab_id_ctx = tab_id_block.clone();
+
+                    let ctx_handler = webview2_com::ContextMenuRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let args_ref = AssertUnwindSafe(&args);
+                            let app_ref = AssertUnwindSafe(&app_ctx);
+                            let tab_ref = AssertUnwindSafe(&tab_id_ctx);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let _ = args.SetHandled(true);
+
+                                    #[repr(C)]
+                                    struct RawPoint { x: i32, y: i32 }
+                                    let mut point = RawPoint { x: 0, y: 0 };
+                                    let _ = args.Location(&mut point as *mut RawPoint as *mut _);
+
+                                    if let Ok(target) = args.ContextMenuTarget() {
+                                        let mut kind_val = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND(0);
+                                        let _ = target.Kind(&mut kind_val);
+                                        let kind = match kind_val.0 {
+                                            1 => "image", 2 => "selection", 3 => "audio", 4 => "video",
+                                            _ => "page",
+                                        };
+
+                                        let read_pw = |pw: windows::core::PWSTR| -> String {
+                                            if !pw.is_null() { pw.to_string().unwrap_or_default() } else { String::new() }
+                                        };
+
+                                        let mut has_link = windows_core::BOOL::default();
+                                        let _ = target.HasLinkUri(&mut has_link);
+                                        let link_uri = if has_link == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.LinkUri(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut has_source = windows_core::BOOL::default();
+                                        let _ = target.HasSourceUri(&mut has_source);
+                                        let source_uri = if has_source == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.SourceUri(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut has_sel = windows_core::BOOL::default();
+                                        let _ = target.HasSelection(&mut has_sel);
+                                        let selection = if has_sel == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.SelectionText(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut page_pw = windows::core::PWSTR::null();
+                                        let _ = target.PageUri(&mut page_pw);
+                                        let page_uri = read_pw(page_pw);
+
+                                        let mut is_edit = windows_core::BOOL::default();
+                                        let _ = target.IsEditable(&mut is_edit);
+
+                                        let _ = app_ref.emit_to("main", "webview-context-menu", serde_json::json!({
+                                            "id": *tab_ref,
+                                            "x": point.x,
+                                            "y": point.y,
+                                            "kind": kind,
+                                            "linkUri": link_uri,
+                                            "sourceUri": source_uri,
+                                            "selectionText": selection,
+                                            "pageUri": page_uri,
+                                            "isEditable": is_edit == true,
+                                        }));
+                                    }
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut ctx_token: i64 = 0;
+                    let _ = core11.add_ContextMenuRequested(&ctx_handler, &mut ctx_token);
+                }
+
+                // permission request handler — custom prompt instead of Chromium default
+                {
+                    let app_perm = app_for_block.clone();
+                    let tab_id_perm = tab_id_block.clone();
+                    let perm_state = app_perm.state::<PermissionState>();
+                    let perm_pending = perm_state.pending.clone();
+                    let perm_saved = perm_state.saved.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+                    let perm_handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let args_ref = AssertUnwindSafe(&args);
+                            let app_ref = AssertUnwindSafe(&app_perm);
+                            let tab_ref = AssertUnwindSafe(&tab_id_perm);
+                            let pending_ref = AssertUnwindSafe(&perm_pending);
+                            let saved_ref = AssertUnwindSafe(&perm_saved);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let mut uri_pw = windows::core::PWSTR::null();
+                                    let _ = args.Uri(&mut uri_pw);
+                                    let uri = if !uri_pw.is_null() { uri_pw.to_string().unwrap_or_default() } else { return; };
+
+                                    let domain = url::Url::parse(&uri)
+                                        .ok()
+                                        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                                        .unwrap_or_default();
+
+                                    let mut kind_val = COREWEBVIEW2_PERMISSION_KIND(0);
+                                    let _ = args.PermissionKind(&mut kind_val);
+                                    let kind_str = match kind_val.0 {
+                                        1 => "microphone", 2 => "camera", 3 => "geolocation",
+                                        4 => "notifications", 5 => "othersensors", 6 => "clipboardread",
+                                        7 => "multipledownloads", 8 => "filereadwrite", 9 => "autoplay",
+                                        10 => "localfonts", 11 => "midi", 12 => "windowmanagement",
+                                        _ => "unknown",
+                                    };
+
+                                    let kind_key = format!("{}:{}", domain, kind_str);
+
+                                    if let Some(&allowed) = saved_ref.get(&kind_key) {
+                                        let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(if allowed { 1 } else { 2 }));
+                                        return;
+                                    }
+
+                                    // auto-deny local fonts (fingerprint risk), auto-allow multiple downloads
+                                    if kind_val.0 == 10 { let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(2)); return; }
+                                    if kind_val.0 == 7 { let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(1)); return; }
+
+                                    let deferral = match args.GetDeferral() {
+                                        Ok(d) => d,
+                                        Err(_) => return,
+                                    };
+
+                                    let request_id = uuid::Uuid::new_v4().to_string();
+
+                                    let mut user_initiated = windows_core::BOOL::default();
+                                    let _ = args.IsUserInitiated(&mut user_initiated);
+
+                                    pending_ref.lock().unwrap_or_else(|e| e.into_inner())
+                                        .insert(request_id.clone(), PendingPermission {
+                                            deferral, args: args.clone(), _tab_id: tab_ref.clone(),
+                                        });
+
+                                    let _ = app_ref.emit_to("main", "permission-requested", serde_json::json!({
+                                        "requestId": request_id,
+                                        "tabId": *tab_ref,
+                                        "uri": uri,
+                                        "domain": domain,
+                                        "permission": kind_str,
+                                        "isUserInitiated": user_initiated == true,
+                                    }));
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut perm_token: i64 = 0;
+                    let _ = core.add_PermissionRequested(&perm_handler, &mut perm_token);
+                }
             }
         });
         if let Err(e) = with_result {
@@ -798,13 +977,21 @@ async fn print_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
         wv.with_webview(|webview| {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                 let core = webview.controller().CoreWebView2().unwrap();
                 let _ = core.OpenDevToolsWindow();
             }));
         }).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let mut cb = arboard::Clipboard::new().map_err(|e| format!("{}", e))?;
+        cb.set_text(text).map_err(|e| format!("{}", e))
+    }).join().unwrap_or(Err("thread panicked".into()))
 }
 
 #[tauri::command]
@@ -955,6 +1142,29 @@ fn save_whitelist(app: &tauri::AppHandle, sites: &HashSet<String>) {
     }
 }
 
+fn permissions_path(app: &tauri::AppHandle) -> PathBuf {
+    data_dir(app).join("permissions.json")
+}
+
+fn load_permissions(app: &tauri::AppHandle) -> HashMap<String, bool> {
+    let path = permissions_path(app);
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, bool>>(&data) {
+                return map;
+            }
+        }
+    }
+    HashMap::new()
+}
+
+fn save_permissions(app: &tauri::AppHandle, perms: &HashMap<String, bool>) {
+    let path = permissions_path(app);
+    if let Ok(json) = serde_json::to_string(perms) {
+        let _ = fs::write(&path, json);
+    }
+}
+
 #[tauri::command]
 async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
     let ws = app.state::<WhitelistState>();
@@ -985,6 +1195,85 @@ async fn is_whitelisted(app: tauri::AppHandle, domain: String) -> Result<bool, S
     let ws = app.state::<WhitelistState>();
     let sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
     Ok(sites.contains(&domain))
+}
+
+#[tauri::command]
+async fn respond_permission(app: tauri::AppHandle, request_id: String, allow: bool, remember: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+
+        let perm_state = app.state::<PermissionState>();
+        let pending = perm_state.pending.lock().unwrap_or_else(|e| e.into_inner())
+            .remove(&request_id);
+        let pending = pending.ok_or("Permission request not found")?;
+
+        let state_val = COREWEBVIEW2_PERMISSION_STATE(if allow { 1 } else { 2 });
+        unsafe {
+            let _ = pending.args.SetState(state_val);
+            let _ = pending.deferral.Complete();
+        }
+
+        if remember {
+            let mut uri_pw = windows::core::PWSTR::null();
+            unsafe { let _ = pending.args.Uri(&mut uri_pw); }
+            let uri = if !uri_pw.is_null() { unsafe { uri_pw.to_string().unwrap_or_default() } } else { String::new() };
+            let domain = url::Url::parse(&uri)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                .unwrap_or_default();
+
+            let mut kind_val = COREWEBVIEW2_PERMISSION_KIND(0);
+            unsafe { let _ = pending.args.PermissionKind(&mut kind_val); }
+            let kind_str = match kind_val.0 {
+                1 => "microphone", 2 => "camera", 3 => "geolocation",
+                4 => "notifications", 5 => "othersensors", 6 => "clipboardread",
+                7 => "multipledownloads", 8 => "filereadwrite", 9 => "autoplay",
+                10 => "localfonts", 11 => "midi", 12 => "windowmanagement",
+                _ => "unknown",
+            };
+            let kind_key = format!("{}:{}", domain, kind_str);
+
+            let mut saved = perm_state.saved.lock().unwrap_or_else(|e| e.into_inner());
+            saved.insert(kind_key, allow);
+            save_permissions(&app, &saved);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPermissionEntry {
+    domain: String,
+    permission: String,
+    allowed: bool,
+}
+
+#[tauri::command]
+async fn get_permissions(app: tauri::AppHandle) -> Result<Vec<SavedPermissionEntry>, String> {
+    let ps = app.state::<PermissionState>();
+    let saved = ps.saved.lock().unwrap_or_else(|e| e.into_inner());
+    let result: Vec<SavedPermissionEntry> = saved.iter().map(|(key, &allowed)| {
+        let parts: Vec<&str> = key.splitn(2, ':').collect();
+        SavedPermissionEntry {
+            domain: parts.first().unwrap_or(&"").to_string(),
+            permission: parts.get(1).unwrap_or(&"unknown").to_string(),
+            allowed,
+        }
+    }).collect();
+    Ok(result)
+}
+
+#[tauri::command]
+async fn revoke_permission(app: tauri::AppHandle, domain: String, permission: String) -> Result<(), String> {
+    let ps = app.state::<PermissionState>();
+    let mut saved = ps.saved.lock().unwrap_or_else(|e| e.into_inner());
+    let key = format!("{}:{}", domain, permission);
+    saved.remove(&key);
+    save_permissions(&app, &saved);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1063,13 +1352,14 @@ async fn load_bookmarks(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn start_download(app: tauri::AppHandle, url: String, filename: String, download_dir: String, cookies: Option<String>) -> Result<String, String> {
+async fn start_download(app: tauri::AppHandle, url: String, filename: String, download_dir: String, cookies: Option<String>, mime_routing: Option<Vec<downloads::MimeRoute>>) -> Result<String, String> {
     let dir = if download_dir.is_empty() {
         dirs::download_dir().unwrap_or_else(|| PathBuf::from(".")).to_string_lossy().to_string()
     } else {
         download_dir
     };
-    downloads::start(app, url, filename, dir, cookies).await
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    downloads::start(app.clone(), url, filename, dir, cookies, mime_routing.unwrap_or_default(), rl.inner().clone()).await
 }
 
 #[tauri::command]
@@ -1079,7 +1369,20 @@ async fn pause_download(app: tauri::AppHandle, id: String) -> Result<(), String>
 
 #[tauri::command]
 async fn resume_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    downloads::resume(app, id).await
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    downloads::resume(app.clone(), id, rl.inner().clone()).await
+}
+
+#[tauri::command]
+async fn reorder_download(app: tauri::AppHandle, id: String, priority: u32) -> Result<(), String> {
+    downloads::set_priority(&app, &id, priority)
+}
+
+#[tauri::command]
+async fn set_bandwidth_limit(app: tauri::AppHandle, limit: u64) -> Result<(), String> {
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    rl.limit_bps.store(limit, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1159,6 +1462,7 @@ pub fn run() {
             ids: Mutex::new(HashSet::new()),
         })
         .manage(downloads::DownloadManager::new())
+        .manage(std::sync::Arc::new(downloads::RateLimiter::new(0)))
         .manage(BlockerState {
             engine,
             cosmetic_script,
@@ -1227,6 +1531,12 @@ pub fn run() {
                 sites: Mutex::new(sites),
             });
 
+            let saved_perms = load_permissions(&app.handle());
+            app.manage(PermissionState {
+                saved: Mutex::new(saved_perms),
+                #[cfg(windows)]
+                pending: Arc::new(Mutex::new(HashMap::new())),
+            });
 
             // Initialize sync state
             let sync_state = match sync::keys::load_identity(&sync_data_dir) {
@@ -1328,6 +1638,7 @@ pub fn run() {
             zoom_tab,
             print_tab,
             toggle_devtools,
+            copy_text_to_clipboard,
             save_session,
             load_session,
             save_settings,
@@ -1339,6 +1650,9 @@ pub fn run() {
             toggle_whitelist,
             get_whitelist,
             is_whitelisted,
+            respond_permission,
+            get_permissions,
+            revoke_permission,
             start_download,
             pause_download,
             resume_download,
@@ -1346,6 +1660,8 @@ pub fn run() {
             get_downloads,
             open_download,
             open_download_folder,
+            reorder_download,
+            set_bandwidth_limit,
             register_panel,
             unregister_panel,
             position_panel,
