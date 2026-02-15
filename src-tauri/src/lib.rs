@@ -797,7 +797,12 @@ async fn print_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        if wv.is_devtools_open() { wv.close_devtools(); } else { wv.open_devtools(); }
+        wv.with_webview(|webview| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let core = webview.controller().CoreWebView2().unwrap();
+                let _ = core.OpenDevToolsWindow();
+            }));
+        }).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
