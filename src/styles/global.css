@@ -32,6 +32,12 @@
   --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-bounce: linear(
+    0, 0.004, 0.016, 0.035, 0.063, 0.098, 0.141 13.6%,
+    0.25, 0.391, 0.563, 0.765, 1, 1.031 40.9%,
+    1.035, 1.022 45.5%, 0.996 50%, 0.988, 1.001 59.1%,
+    1.006 63.6%, 1.002 68.2%, 0.998 72.7%, 1 86.4%, 1
+  );
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.15);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.25), 0 2px 4px rgba(0,0,0,0.15);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.2);
@@ -49,6 +55,10 @@ html, body, #root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1;
+  letter-spacing: -0.02em;
   user-select: none;
 }
 
@@ -157,7 +167,13 @@ html, body, #root {
   left: 0;
   bottom: 0;
   width: var(--sidebar-width);
-  background: var(--bg-secondary);
+  background:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23n)' opacity='0.015'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 15% 10%, var(--accent-mesh-1, rgba(99,102,241,0.06)) 0%, transparent 50%),
+    radial-gradient(circle at 85% 85%, var(--accent-mesh-2, rgba(99,102,241,0.04)) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 50%, var(--accent-mesh-3, rgba(99,102,241,0.03)) 0%, transparent 70%),
+    radial-gradient(circle at 90% 15%, var(--accent-mesh-2, rgba(99,102,241,0.04)) 0%, transparent 55%),
+    var(--bg-secondary);
   border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
@@ -260,11 +276,17 @@ html, body, #root {
   border-color: rgba(255, 255, 255, 0.1);
   transform: translateY(-3px);
   box-shadow: var(--shadow-md);
-  transition: background-color 200ms var(--spring), border-color 200ms var(--spring), transform 200ms var(--spring), box-shadow 200ms var(--spring);
+  transition: background-color 150ms ease-out,
+              border-color 150ms ease-out,
+              transform 400ms var(--spring-bounce),
+              box-shadow 300ms ease-out;
+  will-change: transform;
 }
 
 .tab-item.pinned .tab-info {
   gap: 0;
+  flex: unset;
+  justify-content: center;
 }
 
 /* tab list */
@@ -323,6 +345,11 @@ html, body, #root {
   background: var(--glass-hover);
   transform: translateX(2px);
   box-shadow: var(--shadow-sm);
+  transition: background-color 150ms ease-out,
+              transform 350ms var(--spring-bounce),
+              box-shadow 250ms ease-out,
+              opacity var(--transition);
+  will-change: transform;
 }
 
 .tab-item.dragging {
@@ -341,8 +368,9 @@ html, body, #root {
 }
 
 .tab-item.active {
-  background: rgba(99, 102, 241, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.06);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.06),
+              0 0 12px var(--accent-glow);
 }
 
 .tab-item.active::after {
@@ -355,7 +383,8 @@ html, body, #root {
   height: 18px;
   background: var(--accent);
   border-radius: 0 3px 3px 0;
-  box-shadow: 0 0 8px var(--accent-glow);
+  box-shadow: 0 0 8px var(--accent-glow),
+              0 0 20px var(--accent-glow);
 }
 
 .tab-item.split-active {
@@ -486,6 +515,10 @@ html, body, #root {
 
 .tab-item:hover .tab-title {
   color: var(--text-primary);
+}
+
+.tab-info:has(.tab-spinner) .tab-title {
+  color: var(--text-dim);
 }
 
 .tab-close {
@@ -649,14 +682,17 @@ html, body, #root {
   height: 38px;
   background: transparent;
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius);
-  padding: 0 12px;
-  transition: border-color var(--transition), background-color var(--transition);
+  border-radius: 20px;
+  padding: 0 16px;
+  transition: border-color var(--transition), background-color var(--transition), box-shadow var(--transition), transform var(--transition);
 }
 
 .sidebar-url-bar.focused {
   border-color: rgba(255, 255, 255, 0.15);
   background: var(--bg-primary);
+  box-shadow: 0 0 0 3px var(--accent-soft),
+              inset 0 0 0 1px rgba(255,255,255,0.04);
+  transform: scaleX(1.02);
 }
 
 .url-search-icon {
@@ -811,7 +847,12 @@ html, body, #root {
   background: var(--glass-hover);
   color: var(--text-primary);
 }
-
+.find-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 0 6px;
+}
 
 .webview-container {
   flex: 1;
@@ -845,8 +886,8 @@ html, body, #root {
   border-radius: var(--radius);
   padding: 5px;
   min-width: 180px;
-  box-shadow: var(--shadow-xl);
-  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: var(--shadow-xl), inset 0 0 0 1px rgba(255,255,255,0.06);
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.1);
   animation: ctxIn 120ms ease-out;
 }
 
@@ -966,14 +1007,20 @@ html, body, #root {
   border-color: color-mix(in srgb, var(--ws-color) 40%, transparent);
   color: var(--text-primary);
   transform: scale(1.12);
-  transition: background-color 200ms var(--spring), border-color 200ms var(--spring), color 200ms var(--spring), transform 200ms var(--spring), box-shadow 200ms var(--spring);
+  transition: background-color 150ms ease-out,
+              border-color 200ms var(--spring-bounce),
+              color 150ms ease-out,
+              transform 350ms var(--spring-bounce),
+              box-shadow 250ms ease-out;
+  will-change: transform;
 }
 
 .ws-dot.active {
   border-color: var(--ws-color);
   background: color-mix(in srgb, var(--ws-color) 15%, transparent);
   color: var(--text-primary);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--ws-color) 25%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--ws-color) 25%, transparent),
+              0 0 20px color-mix(in srgb, var(--ws-color) 12%, transparent);
 }
 
 .ws-dot.ws-add {
@@ -1070,8 +1117,8 @@ html, body, #root {
   background: rgba(26, 26, 32, 0.92);
   border: 1px solid var(--edge-light);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-xl);
-  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: var(--shadow-xl), inset 0 0 0 1px rgba(255,255,255,0.06);
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.1);
   z-index: 100;
   overflow: hidden;
   animation: ctxIn 120ms ease-out;
@@ -1213,6 +1260,8 @@ html, body, #root {
   transform: translateX(0);
   box-shadow: var(--shadow-xl);
   border-right: 1px solid var(--glass-border);
+  transition: transform 450ms var(--spring-bounce),
+              box-shadow 300ms ease-out;
 }
 
 .sidebar.compact.peeking::after {
@@ -1287,6 +1336,10 @@ html, body, #root {
   background: var(--glass-hover);
   transform: translateX(2px);
 }
+
+.bookmark-item.bm-dragging, .bm-folder-row.bm-dragging { opacity: 0.4; }
+.bookmark-item.bm-drop-target { background: var(--glass-hover); box-shadow: inset 0 -2px 0 var(--accent); }
+.bm-folder-row.bm-drop-target { background: color-mix(in srgb, var(--accent) 15%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
 
 .bookmark-item .tab-title {
   white-space: nowrap;
@@ -1612,8 +1665,8 @@ html, body, #root {
   border-radius: var(--radius);
   padding: 5px;
   min-width: 120px;
-  box-shadow: var(--shadow-xl);
-  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: var(--shadow-xl), inset 0 0 0 1px rgba(255,255,255,0.06);
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.1);
   z-index: 30;
   animation: ctxIn 120ms ease-out;
 }
@@ -1823,8 +1876,8 @@ html, body, #root {
   border: 1px solid var(--edge-light);
   border-radius: var(--radius);
   padding: 5px;
-  box-shadow: var(--shadow-xl);
-  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: var(--shadow-xl), inset 0 0 0 1px rgba(255,255,255,0.06);
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.1);
   z-index: 100;
   max-height: 360px;
   overflow-y: auto;
@@ -2515,35 +2568,87 @@ html, body, #root {
 
 .settings-page {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-primary);
-  padding: 48px 32px;
 }
 
-.settings-page::-webkit-scrollbar {
-  width: 6px;
-}
-
-.settings-page::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.settings-page::-webkit-scrollbar-thumb {
-  background: var(--glass-active);
-  border-radius: 3px;
-}
-
-.settings-container {
-  max-width: 680px;
-  margin: 0 auto;
+.settings-header {
+  padding: 32px 32px 0 48px;
+  flex-shrink: 0;
 }
 
 .settings-title {
   font-size: 24px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 32px;
+  margin-bottom: 24px;
   letter-spacing: -0.3px;
+}
+
+.settings-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 32px;
+  padding: 0 32px 32px 48px;
+}
+
+.settings-nav {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+}
+
+.settings-nav-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-nav-item:hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.settings-content {
+  flex: 1;
+  max-width: 780px;
+  overflow-y: auto;
+  padding-right: 16px;
+}
+
+.settings-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-content::-webkit-scrollbar-thumb {
+  background: var(--glass-active);
+  border-radius: 3px;
 }
 
 .settings-section {
@@ -2683,6 +2788,52 @@ html, body, #root {
   color: var(--text-dim);
 }
 
+.settings-textarea {
+  min-width: 200px;
+  max-width: 300px;
+  min-height: 64px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color var(--transition);
+  flex-shrink: 0;
+  resize: vertical;
+}
+
+.settings-textarea:focus {
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.settings-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+.settings-info-text {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 12px 0;
+}
+
+.settings-shortcut-group {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-dim);
+  margin-top: 16px;
+  margin-bottom: 4px;
+}
+
+.settings-shortcut-group:first-child {
+  margin-top: 0;
+}
+
 /* Shortcuts list */
 .settings-shortcuts {
   display: flex;
@@ -2693,8 +2844,25 @@ html, body, #root {
 .settings-shortcut-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   padding: 7px 0;
+}
+
+.settings-shortcut-rebindable {
+  cursor: pointer;
+  padding: 7px 12px;
+  margin: 0;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.settings-shortcut-rebindable:hover {
+  background: var(--glass-hover);
+}
+
+.settings-shortcut-rebindable.recording {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .settings-kbd {
@@ -2708,6 +2876,13 @@ html, body, #root {
   padding: 4px 8px;
   text-align: center;
   display: inline-block;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.settings-kbd.recording {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .settings-shortcut-desc {
@@ -3850,10 +4025,22 @@ html.light {
   --shadow-xl: 0 16px 48px rgba(0,0,0,0.12), 0 8px 24px rgba(0,0,0,0.08);
 }
 
+html.light .sidebar {
+  background:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23n)' opacity='0.008'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 15% 10%, var(--accent-mesh-1) 0%, transparent 50%),
+    radial-gradient(circle at 85% 85%, var(--accent-mesh-2) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 50%, var(--accent-mesh-3) 0%, transparent 70%),
+    radial-gradient(circle at 90% 15%, var(--accent-mesh-2) 0%, transparent 55%),
+    var(--bg-secondary);
+}
+
 html.light .ctx-menu,
 html.light .url-suggestions {
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.88);
   border-color: rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(20px) saturate(180%) brightness(0.98);
+  box-shadow: var(--shadow-xl), inset 0 0 0 1px rgba(0, 0, 0, 0.04);
 }
 
 html.light .webview {
@@ -3879,6 +4066,7 @@ html.light .webview {
 
 .settings-color-dot:hover {
   transform: scale(1.15);
+  transition: transform 350ms var(--spring-bounce), border-color var(--transition);
 }
 
 .settings-color-dot.active {

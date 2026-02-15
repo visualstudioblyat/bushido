@@ -31,7 +31,7 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onPin: (id: string) => void;
-  onNew: () => void;
+  onNew: (url?: string) => void;
   onToggle: () => void;
   onReorder: (from: number, to: number) => void;
   workspaces: Workspace[];
@@ -52,6 +52,8 @@ interface Props {
   onRenameBookmarkFolder: (folderId: string, name: string) => void;
   onDeleteBookmarkFolder: (folderId: string) => void;
   onMoveBookmarkToFolder: (bookmarkId: string, folderId: string) => void;
+  onReorderBookmarks: (bookmarkId: string, targetId: string, position: "before" | "after") => void;
+  onReorderFolders: (folderId: string, targetFolderId: string, position: "before" | "after") => void;
   onToggleHistory: () => void;
   onBack: () => void;
   onForward: () => void;
@@ -175,6 +177,7 @@ export default memo(function Sidebar({
   onToggleCollapse, onAddChildTab, onMoveTabToWorkspace,
   bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark,
   onAddBookmarkFolder, onRenameBookmarkFolder, onDeleteBookmarkFolder, onMoveBookmarkToFolder,
+  onReorderBookmarks, onReorderFolders,
   onToggleHistory,
   onBack, onForward, onReload,
   url, onNavigate, loading, inputRef,
@@ -213,6 +216,10 @@ export default memo(function Sidebar({
   const [folderCtx, setFolderCtx] = useState<{ x: number; y: number; folderId: string } | null>(null);
   const folderCtxMenuRef = useRef<HTMLDivElement>(null);
   const folderCtxPos = useClampedMenu(folderCtxMenuRef, folderCtx);
+  const [bmDragId, setBmDragId] = useState<string | null>(null);
+  const [bmDropId, setBmDropId] = useState<string | null>(null);
+  const [bmDragType, setBmDragType] = useState<"bookmark" | "folder" | null>(null);
+  const bmListRef = useRef<HTMLDivElement>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [renameFolderValue, setRenameFolderValue] = useState("");
   const renameFolderRef = useRef<HTMLInputElement>(null);
@@ -907,17 +914,53 @@ export default memo(function Sidebar({
                       <span>Press Ctrl+D to bookmark a page</span>
                     </div>
                   ) : (
-                    <>
+                    <div ref={bmListRef}>
                       {/* Folders */}
-                      {bookmarkFolders.map(folder => {
-                        const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id);
+                      {[...bookmarkFolders].sort((a, b) => a.order - b.order).map(folder => {
+                        const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id).sort((a, b) => a.order - b.order);
                         const isExpanded = expandedFolders.has(folder.id);
                         return (
                           <div key={folder.id}>
                             <div
-                              className="bm-folder-row"
+                              className={`bm-folder-row ${bmDragId === folder.id && bmDragType === "folder" ? "bm-dragging" : ""} ${bmDropId === folder.id ? "bm-drop-target" : ""}`}
+                              data-bm-folder={folder.id}
                               onClick={() => toggleFolderExpand(folder.id)}
                               onContextMenu={e => { e.preventDefault(); setFolderCtx({ x: e.clientX, y: e.clientY, folderId: folder.id }); }}
+                              onMouseDown={e => {
+                                if (e.button !== 0 || renamingFolder === folder.id) return;
+                                const startY = e.clientY;
+                                let dragging = false;
+                                let currentDrop: string | null = null;
+                                const onMove = (me: MouseEvent) => {
+                                  if (!dragging && Math.abs(me.clientY - startY) < 5) return;
+                                  if (!dragging) { dragging = true; setBmDragId(folder.id); setBmDragType("folder"); }
+                                  const els = bmListRef.current?.querySelectorAll("[data-bm-folder]");
+                                  let found: string | null = null;
+                                  if (els) for (let i = 0; i < els.length; i++) {
+                                    const r = els[i].getBoundingClientRect();
+                                    if (me.clientY >= r.top && me.clientY < r.bottom && els[i].getAttribute("data-bm-folder") !== folder.id) {
+                                      found = els[i].getAttribute("data-bm-folder"); break;
+                                    }
+                                  }
+                                  currentDrop = found;
+                                  setBmDropId(found);
+                                };
+                                const onUp = (me: MouseEvent) => {
+                                  document.removeEventListener("mousemove", onMove);
+                                  document.removeEventListener("mouseup", onUp);
+                                  if (dragging && currentDrop) {
+                                    const targetEl = bmListRef.current?.querySelector(`[data-bm-folder="${currentDrop}"]`);
+                                    if (targetEl) {
+                                      const r = targetEl.getBoundingClientRect();
+                                      const pos = me.clientY < r.top + r.height / 2 ? "before" : "after";
+                                      onReorderFolders(folder.id, currentDrop, pos);
+                                    }
+                                  }
+                                  setBmDragId(null); setBmDropId(null); setBmDragType(null);
+                                };
+                                document.addEventListener("mousemove", onMove);
+                                document.addEventListener("mouseup", onUp);
+                              }}
                             >
                               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 150ms ease" }}>
                                 <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -944,9 +987,52 @@ export default memo(function Sidebar({
                             {isExpanded && folderBookmarks.map(b => (
                               <div
                                 key={b.id}
-                                className="bookmark-item bm-indented"
+                                className={`bookmark-item bm-indented ${bmDragId === b.id ? "bm-dragging" : ""} ${bmDropId === b.id ? "bm-drop-target" : ""}`}
+                                data-bm-id={b.id}
                                 onClick={() => onSelectBookmark(b.url)}
                                 onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                                onMouseDown={e => {
+                                  if (e.button !== 0) return;
+                                  e.stopPropagation();
+                                  const startY = e.clientY;
+                                  let dragging = false;
+                                  let currentDrop: string | null = null;
+                                  const onMove = (me: MouseEvent) => {
+                                    if (!dragging && Math.abs(me.clientY - startY) < 5) return;
+                                    if (!dragging) { dragging = true; setBmDragId(b.id); setBmDragType("bookmark"); }
+                                    const els = bmListRef.current?.querySelectorAll("[data-bm-id], [data-bm-folder]");
+                                    let found: string | null = null;
+                                    if (els) for (let i = 0; i < els.length; i++) {
+                                      const r = els[i].getBoundingClientRect();
+                                      if (me.clientY >= r.top && me.clientY < r.bottom) {
+                                        const id = els[i].getAttribute("data-bm-id") || els[i].getAttribute("data-bm-folder");
+                                        if (id && id !== b.id) { found = id; break; }
+                                      }
+                                    }
+                                    currentDrop = found;
+                                    setBmDropId(found);
+                                  };
+                                  const onUp = (me: MouseEvent) => {
+                                    document.removeEventListener("mousemove", onMove);
+                                    document.removeEventListener("mouseup", onUp);
+                                    if (dragging && currentDrop) {
+                                      const isFolder = bookmarkFolders.some(f => f.id === currentDrop);
+                                      if (isFolder) {
+                                        onMoveBookmarkToFolder(b.id, currentDrop!);
+                                      } else {
+                                        const targetEl = bmListRef.current?.querySelector(`[data-bm-id="${currentDrop}"]`);
+                                        if (targetEl) {
+                                          const r = targetEl.getBoundingClientRect();
+                                          const pos = me.clientY < r.top + r.height / 2 ? "before" : "after";
+                                          onReorderBookmarks(b.id, currentDrop!, pos);
+                                        }
+                                      }
+                                    }
+                                    setBmDragId(null); setBmDropId(null); setBmDragType(null);
+                                  };
+                                  document.addEventListener("mousemove", onMove);
+                                  document.addEventListener("mouseup", onUp);
+                                }}
                               >
                                 <div className="tab-favicon">
                                   {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
@@ -958,12 +1044,55 @@ export default memo(function Sidebar({
                         );
                       })}
                       {/* Unfiled bookmarks (no folder) */}
-                      {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).map(b => (
+                      {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).sort((a, b) => a.order - b.order).map(b => (
                         <div
                           key={b.id}
-                          className="bookmark-item"
+                          className={`bookmark-item ${bmDragId === b.id ? "bm-dragging" : ""} ${bmDropId === b.id ? "bm-drop-target" : ""}`}
+                          data-bm-id={b.id}
                           onClick={() => onSelectBookmark(b.url)}
                           onContextMenu={e => { e.preventDefault(); setBmCtx({ x: e.clientX, y: e.clientY, id: b.id }); }}
+                          onMouseDown={e => {
+                            if (e.button !== 0) return;
+                            e.stopPropagation();
+                            const startY = e.clientY;
+                            let dragging = false;
+                            let currentDrop: string | null = null;
+                            const onMove = (me: MouseEvent) => {
+                              if (!dragging && Math.abs(me.clientY - startY) < 5) return;
+                              if (!dragging) { dragging = true; setBmDragId(b.id); setBmDragType("bookmark"); }
+                              const els = bmListRef.current?.querySelectorAll("[data-bm-id], [data-bm-folder]");
+                              let found: string | null = null;
+                              if (els) for (let i = 0; i < els.length; i++) {
+                                const r = els[i].getBoundingClientRect();
+                                if (me.clientY >= r.top && me.clientY < r.bottom) {
+                                  const id = els[i].getAttribute("data-bm-id") || els[i].getAttribute("data-bm-folder");
+                                  if (id && id !== b.id) { found = id; break; }
+                                }
+                              }
+                              currentDrop = found;
+                              setBmDropId(found);
+                            };
+                            const onUp = (me: MouseEvent) => {
+                              document.removeEventListener("mousemove", onMove);
+                              document.removeEventListener("mouseup", onUp);
+                              if (dragging && currentDrop) {
+                                const isFolder = bookmarkFolders.some(f => f.id === currentDrop);
+                                if (isFolder) {
+                                  onMoveBookmarkToFolder(b.id, currentDrop!);
+                                } else {
+                                  const targetEl = bmListRef.current?.querySelector(`[data-bm-id="${currentDrop}"]`);
+                                  if (targetEl) {
+                                    const r = targetEl.getBoundingClientRect();
+                                    const pos = me.clientY < r.top + r.height / 2 ? "before" : "after";
+                                    onReorderBookmarks(b.id, currentDrop!, pos);
+                                  }
+                                }
+                              }
+                              setBmDragId(null); setBmDropId(null); setBmDragType(null);
+                            };
+                            document.addEventListener("mousemove", onMove);
+                            document.addEventListener("mouseup", onUp);
+                          }}
                         >
                           <div className="tab-favicon">
                             {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
@@ -985,7 +1114,7 @@ export default memo(function Sidebar({
                         </svg>
                         <span>new folder</span>
                       </div>
-                    </>
+                    </div>
                   )}
                 </div>
               )}
@@ -1128,12 +1257,26 @@ export default memo(function Sidebar({
                 </>
               ) : null;
             })()}
+            <button className="ctx-item" onClick={() => {
+              const tab = [...tabs, ...pinnedTabs].find(t => t.id === ctx.tabId);
+              if (tab) onNew(tab.url);
+              closeCtx();
+            }}>
+              duplicate tab
+            </button>
             <div className="ctx-divider" />
             <button className="ctx-item" onClick={() => {
               tabs.filter(t => t.id !== ctx.tabId).forEach(t => onClose(t.id));
               closeCtx();
             }}>
               close other tabs
+            </button>
+            <button className="ctx-item" onClick={() => {
+              const idx = tabs.findIndex(t => t.id === ctx.tabId);
+              if (idx >= 0) tabs.slice(idx + 1).forEach(t => onClose(t.id));
+              closeCtx();
+            }}>
+              close tabs below
             </button>
           </div>
         </div>

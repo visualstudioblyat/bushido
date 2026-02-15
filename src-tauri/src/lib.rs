@@ -23,12 +23,14 @@ struct PanelState {
     ids: Mutex<HashSet<String>>,
 }
 
+
 struct BlockerState {
     engine: Arc<Engine>,
     cosmetic_script: String,
     cookie_script: String,
     shortcut_script: String,
     media_script: String,
+    fingerprint_script: String,
 }
 
 struct WhitelistState {
@@ -99,6 +101,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let cookie_script = bs.cookie_script.clone();
     let shortcut_script = bs.shortcut_script.clone();
     let media_script = bs.media_script.clone();
+    let fingerprint_script = bs.fingerprint_script.clone();
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
@@ -121,6 +124,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_cookie = cookie_script.clone();
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
+    let inject_fingerprint = fingerprint_script.clone();
 
     // build security hardening JS (only enabled features)
     let mut sec_parts: Vec<&str> = Vec::new();
@@ -146,9 +150,10 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let mut builder = WebviewBuilder::new(&id, webview_url)
         .auto_resize();
 
-    // set mobile UA for panel webviews so sites serve narrow-friendly layouts
     if is_panel {
         builder = builder.user_agent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36");
+    } else {
+        builder = builder.user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
     }
 
     builder = builder.on_navigation(move |url| {
@@ -196,9 +201,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             }));
             // re-inject on every page load
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                // shortcut bridge + media listener always injected
                 let _ = wv.eval(&inject_shortcut);
                 let _ = wv.eval(&inject_media);
+                let _ = wv.eval(&inject_fingerprint);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
@@ -212,11 +217,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             }
         });
 
-    // shortcut bridge + media listener always injected
     builder = builder.initialization_script(&shortcut_script);
     builder = builder.initialization_script(&media_script);
+    builder = builder.initialization_script(&fingerprint_script);
 
-    // only inject cosmetic + privacy scripts if enabled and not whitelisted
+    // only inject cosmetic scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
         builder = builder.initialization_script(&cosmetic_script);
     }
@@ -525,6 +530,12 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                             "id": *tab_ref, "hasVideo": has
                                         }));
                                     }
+                                    Some("match-count") => {
+                                        let count = msg.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let _ = app_ref.emit_to("main", "match-count", serde_json::json!({
+                                            "id": *tab_ref, "count": count
+                                        }));
+                                    }
                                     _ => {}
                                 }
                             }
@@ -758,18 +769,57 @@ async fn close_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn toggle_fullscreen(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_window("main").ok_or("no window")?;
+    let fs = win.is_fullscreen().map_err(|e| e.to_string())?;
+    win.set_fullscreen(!fs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn zoom_tab(app: tauri::AppHandle, id: String, factor: f64) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let _ = wv.with_webview(move |wv| {
+            #[cfg(windows)]
+            unsafe { let _ = wv.controller().SetZoomFactor(factor); }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn print_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval("window.print()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        if wv.is_devtools_open() { wv.close_devtools(); } else { wv.open_devtools(); }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward: bool) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
         if query.is_empty() {
             wv.eval("window.getSelection().removeAllRanges()").map_err(|e| e.to_string())?;
         } else {
             let dir = if forward { "false" } else { "true" };
+            let escaped = query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r");
             let js = format!(
                 "window.find('{}', false, {}, true, false, false, false)",
-                query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r"),
-                dir
+                escaped, dir
             );
             wv.eval(&js).map_err(|e| e.to_string())?;
+            let count_js = format!(
+                "(function(){{var q='{}';var t=(document.body.innerText||'').toLowerCase();var c=t.split(q.toLowerCase()).length-1;window.chrome.webview.postMessage(JSON.stringify({{__bushido:'match-count',count:c}}))}})()",
+                escaped
+            );
+            let _ = wv.eval(&count_js);
         }
     }
     Ok(())
@@ -1091,6 +1141,7 @@ pub fn run() {
     let cookie_script = include_str!("cookie_blocker.js").to_string();
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
     let media_script = include_str!("media_listener.js").to_string();
+    let fingerprint_script = include_str!("fingerprint.js").to_string();
 
     let sync_data_dir = data_dir.clone();
 
@@ -1109,20 +1160,16 @@ pub fn run() {
             cookie_script,
             shortcut_script,
             media_script,
+            fingerprint_script,
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new()
             .with_shortcuts([
-                "ctrl+shift+b",
-                "ctrl+k",
-                "ctrl+shift+s",
-                "ctrl+shift+r",
-                "ctrl+t",
-                "ctrl+w",
-                "ctrl+l",
-                "ctrl+f",
-                "ctrl+d",
-                "ctrl+h",
-                "ctrl+\\",
+                "ctrl+shift+b", "ctrl+k", "ctrl+shift+s", "ctrl+shift+r",
+                "ctrl+shift+t", "ctrl+shift+i",
+                "ctrl+t", "ctrl+w", "ctrl+l", "ctrl+f", "ctrl+d", "ctrl+h",
+                "ctrl+p", "ctrl+j", "ctrl+r",
+                "ctrl+=", "ctrl+-", "ctrl+0",
+                "ctrl+\\", "f11",
             ]).unwrap_or_else(|e| {
                 eprintln!("Warning: failed to register global shortcuts: {}", e);
                 tauri_plugin_global_shortcut::Builder::new()
@@ -1131,18 +1178,31 @@ pub fn run() {
                 use tauri_plugin_global_shortcut::ShortcutState;
                 if event.state != ShortcutState::Pressed { return; }
                 let s = shortcut.to_string().to_lowercase();
-                let action = if s.contains("shift") && s.contains('b') { "toggle-compact" }
-                    else if s.contains("shift") && s.contains('s') { "screenshot" }
-                    else if s.contains("shift") && s.contains('r') { "reader-mode" }
-                    else if s.contains('k') { "command-palette" }
-                    else if s.contains('t') { "new-tab" }
-                    else if s.contains('w') { "close-tab" }
-                    else if s.contains('l') { "focus-url" }
-                    else if s.contains('f') { "find" }
-                    else if s.contains('d') { "bookmark" }
-                    else if s.contains('h') { "history" }
-                    else if s.contains('\\') { "split-view" }
-                    else { return; };
+                let has_shift = s.contains("shift");
+                let key = s.split('+').last().unwrap_or("");
+                let action = match (has_shift, key) {
+                    (true, "keyb") => "toggle-compact",
+                    (true, "keys") => "screenshot",
+                    (true, "keyr") => "reader-mode",
+                    (true, "keyt") => "reopen-tab",
+                    (true, "keyi") => "devtools",
+                    (false, "keyk") => "command-palette",
+                    (false, "keyt") => "new-tab",
+                    (false, "keyw") => "close-tab",
+                    (false, "keyl") => "focus-url",
+                    (false, "keyf") => "find",
+                    (false, "keyd") => "bookmark",
+                    (false, "keyh") => "history",
+                    (false, "keyp") => "print",
+                    (false, "keyj") => "downloads",
+                    (false, "keyr") => "reload",
+                    (false, "equal") | (false, "=") => "zoom-in",
+                    (false, "minus") | (false, "-") => "zoom-out",
+                    (false, "digit0") | (false, "0") => "zoom-reset",
+                    (false, "backslash") | (false, "\\") => "split-view",
+                    (_, "f11") => "fullscreen",
+                    _ => return,
+                };
                 if let Some(win) = app.get_webview("main") {
                     let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);
                     let _ = win.eval(&js);
@@ -1161,6 +1221,7 @@ pub fn run() {
             app.manage(WhitelistState {
                 sites: Mutex::new(sites),
             });
+
 
             // Initialize sync state
             let sync_state = match sync::keys::load_identity(&sync_data_dir) {
@@ -1258,6 +1319,10 @@ pub fn run() {
             minimize_window,
             maximize_window,
             close_window,
+            toggle_fullscreen,
+            zoom_tab,
+            print_tab,
+            toggle_devtools,
             save_session,
             load_session,
             save_settings,

@@ -89,6 +89,8 @@ export default function App() {
   const bookmarksLoaded = useRef(false);
   const bookmarkBulkRef = useRef(false);
   const prevSettingsRef = useRef<BushidoSettings | null>(null);
+  const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
+  const zoomRef = useRef<Record<string, number>>({});
 
   settingsRef.current = settings;
 
@@ -108,6 +110,9 @@ export default function App() {
     if (!isNaN(r)) {
       root.style.setProperty("--accent-soft", `rgba(${r}, ${g}, ${b}, 0.1)`);
       root.style.setProperty("--accent-glow", `rgba(${r}, ${g}, ${b}, 0.15)`);
+      root.style.setProperty("--accent-mesh-1", `rgba(${r}, ${g}, ${b}, 0.06)`);
+      root.style.setProperty("--accent-mesh-2", `rgba(${r}, ${g}, ${b}, 0.04)`);
+      root.style.setProperty("--accent-mesh-3", `rgba(${r}, ${g}, ${b}, 0.03)`);
     }
     if (mode === "light") root.classList.add("light");
     else root.classList.remove("light");
@@ -358,7 +363,15 @@ export default function App() {
 
   useEffect(() => {
     invoke<string>("load_bookmarks").then(json => {
-      try { const p = JSON.parse(json); if (p?.bookmarks) setBookmarkData(p); } catch {}
+      try {
+        const p = JSON.parse(json);
+        if (p?.bookmarks) {
+          // backfill order field for existing bookmarks that don't have it
+          p.bookmarks = p.bookmarks.map((b: any, i: number) => ({ ...b, order: b.order ?? i }));
+          if (p.folders) p.folders = p.folders.map((f: any, i: number) => ({ ...f, order: f.order ?? i }));
+          setBookmarkData(p);
+        }
+      } catch {}
       bookmarksLoaded.current = true;
     });
   }, []);
@@ -781,6 +794,10 @@ export default function App() {
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
       if (!tab) return prev;
+      if (!tab.url.startsWith("bushido://")) {
+        closedTabsRef.current.push({ url: tab.url, title: tab.title, workspaceId: tab.workspaceId });
+        if (closedTabsRef.current.length > 20) closedTabsRef.current.shift();
+      }
       const wsId = tab.workspaceId;
       const wsTabs = prev.filter(t => t.workspaceId === wsId);
       const next = prev.filter(t => t.id !== id).map(t =>
@@ -1127,10 +1144,10 @@ export default function App() {
   const addBookmark = useCallback((url: string, title: string, favicon?: string, folderId = "") => {
     const id = `bm-${Date.now()}`;
     const createdAt = Date.now();
-    setBookmarkData(prev => ({
-      ...prev,
-      bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt }],
-    }));
+    setBookmarkData(prev => {
+      const order = prev.bookmarks.filter(b => b.folderId === folderId).length;
+      return { ...prev, bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt, order }] };
+    });
     invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(() => {});
   }, []);
 
@@ -1175,6 +1192,36 @@ export default function App() {
       bookmarks: prev.bookmarks.map(b => b.id === bookmarkId ? { ...b, folderId } : b),
     }));
     invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(() => {});
+  }, []);
+
+  const reorderBookmarks = useCallback((bookmarkId: string, targetId: string, position: "before" | "after") => {
+    setBookmarkData(prev => {
+      const bm = prev.bookmarks.find(b => b.id === bookmarkId);
+      const target = prev.bookmarks.find(b => b.id === targetId);
+      if (!bm || !target) return prev;
+      const targetFolder = target.folderId;
+      const inFolder = prev.bookmarks
+        .filter(b => b.folderId === targetFolder && b.id !== bookmarkId)
+        .sort((a, b) => a.order - b.order);
+      const targetIdx = inFolder.findIndex(b => b.id === targetId);
+      const insertIdx = position === "before" ? targetIdx : targetIdx + 1;
+      inFolder.splice(insertIdx, 0, { ...bm, folderId: targetFolder });
+      const reordered = inFolder.map((b, i) => ({ ...b, order: i }));
+      const others = prev.bookmarks.filter(b => b.folderId !== targetFolder && b.id !== bookmarkId);
+      return { ...prev, bookmarks: [...others, ...reordered] };
+    });
+  }, []);
+
+  const reorderFolders = useCallback((folderId: string, targetFolderId: string, position: "before" | "after") => {
+    setBookmarkData(prev => {
+      const folder = prev.folders.find(f => f.id === folderId);
+      if (!folder) return prev;
+      const folders = prev.folders.filter(f => f.id !== folderId).sort((a, b) => a.order - b.order);
+      const targetIdx = folders.findIndex(f => f.id === targetFolderId);
+      const insertIdx = position === "before" ? targetIdx : targetIdx + 1;
+      folders.splice(insertIdx, 0, folder);
+      return { ...prev, folders: folders.map((f, i) => ({ ...f, order: i })) };
+    });
   }, []);
 
   const bookmarkedUrls = useMemo(() => new Set(bookmarkData.bookmarks.map(b => b.url)), [bookmarkData.bookmarks]);
@@ -1364,8 +1411,18 @@ export default function App() {
       if (ctrl && e.key === "f") { e.preventDefault(); setFindOpen(true); }
       if (ctrl && e.key === "k") { e.preventDefault(); setCmdOpen(p => !p); }
       if (ctrl && e.shiftKey && e.key === "R") { e.preventDefault(); toggleReader(); }
+      if (ctrl && e.shiftKey && e.key === "T") { e.preventDefault(); const c = closedTabsRef.current.pop(); if (c) addTab(c.url); }
+      if (ctrl && e.shiftKey && e.key === "I") { e.preventDefault(); invoke("toggle_devtools", { id: activeTab }); }
       if (ctrl && e.key === "d" && !e.shiftKey) { e.preventDefault(); toggleBookmark(); }
       if (ctrl && e.key === "h" && !e.shiftKey) { e.preventDefault(); setHistoryOpen(p => !p); }
+      if (ctrl && e.key === "p" && !e.shiftKey) { e.preventDefault(); invoke("print_tab", { id: activeTab }); }
+      if (ctrl && e.key === "j" && !e.shiftKey) { e.preventDefault(); setDownloadsOpen(p => !p); }
+      if (ctrl && e.key === "r" && !e.shiftKey) { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
+      if (ctrl && e.key === "=") { e.preventDefault(); const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); }
+      if (ctrl && e.key === "-") { e.preventDefault(); const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); }
+      if (ctrl && e.key === "0") { e.preventDefault(); zoomRef.current[activeTab] = 1; invoke("zoom_tab", { id: activeTab, factor: 1 }); }
+      if (e.key === "F11") { e.preventDefault(); invoke("toggle_fullscreen"); }
+      if (e.key === "F5") { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
       // Ctrl+Tab cycles tabs within current workspace
       if (ctrl && e.key === "Tab") {
         e.preventDefault();
@@ -1405,6 +1462,15 @@ export default function App() {
         case "screenshot": openScreenshot(); break;
         case "reader-mode": toggleReader(); break;
         case "split-view": toggleSplit(); break;
+        case "print": invoke("print_tab", { id: activeTab }); break;
+        case "reload": invoke("reload_tab", { id: activeTab }); break;
+        case "fullscreen": invoke("toggle_fullscreen"); break;
+        case "downloads": setDownloadsOpen(p => !p); break;
+        case "devtools": invoke("toggle_devtools", { id: activeTab }); break;
+        case "reopen-tab": { const c = closedTabsRef.current.pop(); if (c) addTab(c.url); break; }
+        case "zoom-in": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+        case "zoom-out": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+        case "zoom-reset": { zoomRef.current[activeTab] = 1; invoke("zoom_tab", { id: activeTab, factor: 1 }); break; }
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
@@ -1498,12 +1564,13 @@ export default function App() {
       const existing = new Set(prev.bookmarks.map(b => b.url));
       const newBookmarks = imported
         .filter(b => b.url && !existing.has(b.url))
-        .map(b => ({
+        .map((b, i) => ({
           id: genId("bm"),
           url: b.url,
           title: b.title || b.url,
           folderId: "imported",
           createdAt: Date.now(),
+          order: prev.bookmarks.filter(bm => bm.folderId === "imported").length + i,
         }));
       const hasImportedFolder = prev.folders.some(f => f.id === "imported");
       const folders = hasImportedFolder ? prev.folders : [...prev.folders, { id: "imported", name: "Imported", parentId: "root", order: prev.folders.length }];
@@ -1659,6 +1726,8 @@ export default function App() {
           onRenameBookmarkFolder={renameBookmarkFolder}
           onDeleteBookmarkFolder={deleteBookmarkFolder}
           onMoveBookmarkToFolder={moveBookmarkToFolder}
+          onReorderBookmarks={reorderBookmarks}
+          onReorderFolders={reorderFolders}
           onToggleHistory={toggleHistory}
           onBack={goBack}
           onForward={goForward}

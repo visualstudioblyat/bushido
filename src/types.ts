@@ -78,6 +78,7 @@ export interface Bookmark {
   favicon?: string;
   folderId: string;
   createdAt: number;
+  order: number;
 }
 
 export interface BookmarkFolder {
@@ -103,7 +104,7 @@ export interface FrecencyResult {
 export interface BushidoSettings {
   searchEngine: "google" | "duckduckgo" | "brave" | "bing" | "custom";
   customSearchUrl: string;
-  onStartup: "restore" | "newtab";
+  onStartup: "restore" | "newtab" | "custom";
   showTopSites: boolean;
   showClock: boolean;
   showGreeting: boolean;
@@ -127,6 +128,19 @@ export interface BushidoSettings {
   themeMode: "dark" | "light";
   syncEnabled: boolean;
   syncDeviceName: string;
+  topSiteRows: number;
+  suspendExcludedUrls: string;
+  selectRecentTabOnClose: boolean;
+  confirmCloseMultiple: boolean;
+  customHomepageUrl: string;
+  defaultZoom: number;
+  confirmBeforeQuit: boolean;
+  searchSuggestions: boolean;
+  blockPopups: boolean;
+  autoplayPolicy: "block-all" | "block-audio" | "allow";
+  showMediaControls: boolean;
+  showDomainOnly: boolean;
+  keybindings: Record<string, string>;
 }
 
 export type DownloadState = 'downloading' | 'paused' | 'completed' | 'failed';
@@ -195,4 +209,41 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   themeMode: "dark" as const,
   syncEnabled: false,
   syncDeviceName: "",
+  topSiteRows: 2,
+  suspendExcludedUrls: "",
+  selectRecentTabOnClose: false,
+  confirmCloseMultiple: true,
+  customHomepageUrl: "",
+  defaultZoom: 100,
+  confirmBeforeQuit: false,
+  searchSuggestions: true,
+  blockPopups: true,
+  autoplayPolicy: "block-audio",
+  showMediaControls: true,
+  showDomainOnly: false,
+  keybindings: {
+    "new-tab": "Ctrl+T",
+    "close-tab": "Ctrl+W",
+    "reopen-tab": "Ctrl+Shift+T",
+    "next-tab": "Ctrl+Tab",
+    "prev-tab": "Ctrl+Shift+Tab",
+    "focus-url": "Ctrl+L",
+    "find": "Ctrl+F",
+    "command-palette": "Ctrl+K",
+    "reload": "Ctrl+R",
+    "fullscreen": "F11",
+    "bookmark": "Ctrl+D",
+    "history": "Ctrl+H",
+    "downloads": "Ctrl+J",
+    "toggle-sidebar": "Ctrl+B",
+    "toggle-compact": "Ctrl+Shift+B",
+    "reader-mode": "Ctrl+Shift+R",
+    "devtools": "Ctrl+Shift+I",
+    "split-view": "Ctrl+\\",
+    "print": "Ctrl+P",
+    "screenshot": "Ctrl+Shift+S",
+    "zoom-in": "Ctrl+=",
+    "zoom-out": "Ctrl+-",
+    "zoom-reset": "Ctrl+0",
+  },
 };

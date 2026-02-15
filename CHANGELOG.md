@@ -2,6 +2,38 @@
 
 —-
 
+## v0.10.2
+
+**2026-02-14**
+
+Whitelisting a site for ads also killed fingerprint protection. Both lived in the same script. Ripped all fingerprint spoofs into their own `fingerprint.js` that injects unconditionally, rewrote the weak spots while I was in there.
+
+Also: settings got a real layout (11 tabbed sections instead of one scroll), every shortcut you'd expect from Chrome is wired up, and the UI got a visual pass.
+
+### Added
+
+- **Fingerprint protection decoupled from ad blocker** —moved from `content_blocker.js` into `fingerprint.js`. Whitelisting a site for ads no longer strips fingerprint resistance.
+
+- **New fingerprint spoofs** —`deviceMemory`, `maxTouchPoints`, `pdfViewerEnabled`, `cookieEnabled`, `devicePixelRatio`, screen normalized to 1920x1080, `getShaderPrecisionFormat` stripped.
+
+- **Improved existing spoofs** —canvas PRNG replaced (LCG → xorshift128+, the old one had a detectable pattern). WebGL vendor/renderer now randomized per-session from a pool of 4 Intel iGPU strings instead of one hardcoded value. Audio fingerprint hooks expanded from just `getFloatFrequencyData` to also cover `getFloatTimeDomainData`, `getChannelData`, and `startRendering`. toString hardening on everything.
+
+- **Desktop UA spoof** —tabs report as Chrome 131 instead of leaking `Edg/` and `WebView2/` in the user agent string.
+
+- **Daily driver shortcuts** —zoom (Ctrl+=/-/0), print (Ctrl+P), reopen closed tab (Ctrl+Shift+T), fullscreen (F11), reload (Ctrl+R), downloads (Ctrl+J), devtools (Ctrl+Shift+I). Global shortcuts, work even when a webpage has focus.
+
+- **Tab context menu** —duplicate tab, close tabs below.
+
+- **Find bar match count**.
+
+- **Tabbed settings page** —11 sections with a left sidebar nav instead of one long scroll. New sections: New Tab, Tabs, Permissions (stub). Bunch of new settings (search suggestions, homepage URL, default zoom, confirm quit, autoplay policy, etc.).
+
+- **Keyboard shortcuts in Settings** —grouped by category, click-to-record UI, conflict detection, persists to `settings.json`. Runtime rebinding on the Rust side isn't wired yet so you need a restart.
+
+- **Visual polish** —studied what makes Arc and Zen feel premium, applied it. `letter-spacing: -0.02em` globally, mesh gradient sidebar (accent-tinted radial gradients + SVG noise texture), glass panels bumped to `blur(20px) saturate(180%) brightness(1.1)` with hairline inset borders, spring physics via CSS `linear()` on hover states, active tab/workspace glows, URL bar pill shape with accent focus ring.
+
+---
+
 ## v0.10.1
 
 **2026-02-12**

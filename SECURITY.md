@@ -54,15 +54,21 @@ These settings are toggleable in Settings → Security. All default to OFF (powe
 
 **Fingerprinting Resistance**
 
-Always-on via `content_blocker.js` (23 vectors):
+Always-on via dedicated `fingerprint.js` (30+ vectors). Decoupled from the ad blocker in v0.10.2 —disabling ad blocking or whitelisting a site does NOT remove fingerprint protection. The two systems are completely independent.
 
 - `navigator.plugins`, `mimeTypes`, `getBattery` —blocked
 - `navigator.language` → en-US, `platform` → Win32
 - `navigator.hardwareConcurrency` —spoofed (4 default, 8 if real >= 8, per Firefox RFP)
-- `screen.availWidth/Height/colorDepth/pixelDepth` —normalized
-- Canvas —per-session PRNG noise on `toDataURL`/`toBlob` (deterministic within session, unique across)
-- WebGL —vendor/renderer spoofed to generic Intel UHD
-- AudioContext —±0.01 noise on `getFloatFrequencyData`
+- `navigator.deviceMemory` → 8 (most common value)
+- `navigator.maxTouchPoints` → 0 (desktop, no touch)
+- `navigator.pdfViewerEnabled` → true (Chrome default)
+- `navigator.cookieEnabled` → true (standard)
+- `screen.width/height` → 1920×1080, `availHeight` → 1040, `colorDepth`/`pixelDepth` → 24
+- `window.devicePixelRatio` → 1 (no HiDPI scaling)
+- Canvas —per-session xorshift128+ PRNG noise on `toDataURL`/`toBlob` (deterministic within session, unique across)
+- WebGL —vendor/renderer randomized per-session from pool of 4 common Intel iGPU strings
+- WebGL `getShaderPrecisionFormat` —normalized to plain object (prevents prototype fingerprinting)
+- AudioContext —hooks `getFloatFrequencyData`, `getFloatTimeDomainData`, `AudioBuffer.getChannelData`, `OfflineAudioContext.startRendering` (±0.005 per-session noise constant)
 - `performance.now()` —clamped to 16.67ms intervals + random jitter (anti-Spectre)
 - `navigator.connection` —blocked
 - WebRTC STUN/TURN —blocked
@@ -71,7 +77,8 @@ Always-on via `content_blocker.js` (23 vectors):
 - `navigator.storage.estimate()` —returns fixed values (prevents disk usage fingerprinting)
 - `navigator.webdriver` —returns false (anti-automation detection)
 - `performance.memory` —returns fixed values (Chrome-only heap size fingerprint)
-- `Accept-Language` header —normalized to `en-US,en;q=0.9` at COM level
+- User-Agent —Chrome 131 on Windows 10 (hides WebView2 identity)
+- `Accept-Language` header —normalized to `en-US,en;q=0.9` at COM level (matches JS spoof)
 - Spoofed function `.toString()` —returns `[native code]` (anti-detection hardening)
 
 **Input Sanitization**
