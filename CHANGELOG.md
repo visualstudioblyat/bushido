@@ -2,6 +2,42 @@
 
 —-
 
+## v0.10.5
+
+**2026-02-16**
+
+The built-in password manager was technically there but didn't actually work. The autofill script couldn't detect forms on JS-heavy sites like Google, the save prompt was invisible behind native webviews, the vault unlock flow was broken, and Chromium's native autofill was competing with it. Ripped all of that out and rebuilt the flow from scratch.
+
+### Fixed
+
+- **Vault autofill actually works now** —save prompt appears as a full-width bar below the titlebar after login. Webview pushes down to make room so it's never hidden behind native windows. Save, dismiss, or let it auto-dismiss after 30 seconds.
+
+- **Vault unlock flow** —visiting a login page with a locked vault now automatically shows the unlock modal. After unlocking, all open tabs with login forms get their credentials filled without a page refresh. `vault_retry_autofill` Rust command iterates every tab and re-triggers `checkDomain()`.
+
+- **Save-after-unlock race condition** —clicking Save on a locked vault opens the unlock modal but the save prompt used to auto-dismiss after 10 seconds while you were typing your master password. Timer now pauses during unlock and resumes if you cancel.
+
+- **Multi-step login detection** —Google-style email-then-password flows now captured. Email field watched via `input` events as the user types (not just on submit), stored in `sessionStorage` to survive page navigation. MutationObserver debounced and also scans for email fields, not just password fields.
+
+- **Form detection expanded** —added `autocomplete="current-password"`, `autocomplete="new-password"`, `autocomplete="username"`, `autocomplete="email"`, and `placeholder` text to heuristics. Skips truly invisible fields. 2-second retry for JS-heavy sites that render forms late.
+
+### Changed
+
+- **Chromium native autofill disabled by default** —`disableAutofill` and `disablePasswordSave` now default to `true`. Bushido's vault is the sole password manager. No more competing save prompts.
+
+- **Save banner redesign** —full-width bar across content area below titlebar instead of a floating centered pill. Hard white text (`#e2e8f0`) instead of theme variable that was barely visible. Buttons have `flex-shrink: 0` so they never crush the text.
+
+### Added
+
+- **`vault_retry_autofill` command** —Rust command that evals `__bushidoVaultRetry()` on every open tab. Called after vault unlock to fill credentials without page refresh.
+
+- **`vault-unlock-needed` event** —emitted from Rust when a page has a login form but the vault is locked. React listens and auto-shows the unlock modal. Uses `vaultUnlockedRef` to avoid stale closure issues.
+
+- **`has_master_password_sync` helper** —sync check in vault.rs so the Rust message handler can decide whether to emit the unlock prompt without async.
+
+- **`window.__bushidoVaultRetry`** —exposed from the autofill IIFE so Rust can trigger a re-check externally after vault unlock.
+
+—-
+
 ## v0.10.4
 
 **2026-02-15**

@@ -143,6 +143,8 @@ export interface BushidoSettings {
   keybindings: Record<string, string>;
   bandwidthLimit: number;
   mimeRouting: MimeRoute[];
+  vaultAutoLock: boolean;
+  vaultLockTimeout: number;
 }
 
 export type PermissionKindType = "microphone" | "camera" | "geolocation" | "notifications" | "othersensors" | "clipboardread" | "filereadwrite" | "autoplay" | "localfonts" | "midi" | "windowmanagement" | "unknown";
@@ -185,6 +187,16 @@ export interface MimeRoute {
   folder: string;
 }
 
+export interface VaultEntry {
+  id: string;
+  domain: string;
+  username: string;
+  password: string;
+  notes: string;
+  created_at: number;
+  updated_at: number;
+}
+
 // sync types (Phase D)
 export interface SyncTab {
   id: string;
@@ -224,8 +236,8 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   suspendTimeout: 5,
   disableDevTools: false,
   disableStatusBar: false,
-  disableAutofill: false,
-  disablePasswordSave: false,
+  disableAutofill: true,
+  disablePasswordSave: true,
   blockServiceWorkers: false,
   blockFontEnumeration: false,
   spoofHardwareConcurrency: false,
@@ -253,6 +265,8 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
     { mimePrefix: "audio/", folder: "" },
     { mimePrefix: "application/pdf", folder: "" },
   ],
+  vaultAutoLock: true,
+  vaultLockTimeout: 0,
   keybindings: {
     "new-tab": "Ctrl+T",
     "close-tab": "Ctrl+W",

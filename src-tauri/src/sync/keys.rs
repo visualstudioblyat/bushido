@@ -139,7 +139,7 @@ pub fn load_identity(app_data: &Path) -> Result<Option<DeviceIdentity>, String> 
 // --- DPAPI wrappers ---
 
 #[cfg(windows)]
-fn dpapi_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn dpapi_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CRYPT_INTEGER_BLOB,
     };
@@ -180,7 +180,7 @@ fn dpapi_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
-fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPT_INTEGER_BLOB,
     };
@@ -221,11 +221,11 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(windows))]
-fn dpapi_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn dpapi_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     Ok(plaintext.to_vec())
 }
 
 #[cfg(not(windows))]
-fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     Ok(encrypted.to_vec())
 }

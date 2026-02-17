@@ -119,6 +119,11 @@ export default function App() {
   const [syncPairedDevices, setSyncPairedDevices] = useState<{ device_id: string; name: string }[]>([]);
   const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
   const [permRemember, setPermRemember] = useState(true);
+  const [vaultSavePrompt, setVaultSavePrompt] = useState<{ domain: string; username: string; password: string } | null>(null);
+  const [vaultMasterModal, setVaultMasterModal] = useState<"setup" | "unlock" | null>(null);
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const vaultUnlockedRef = useRef(false);
+  const vaultSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
@@ -141,6 +146,7 @@ export default function App() {
   }, [pageCtx]);
 
   settingsRef.current = settings;
+  vaultUnlockedRef.current = vaultUnlocked;
 
   const secArgs = useCallback((sr: BushidoSettings) => ({
     disableDevTools: sr.disableDevTools, disableStatusBar: sr.disableStatusBar,
@@ -664,12 +670,27 @@ export default function App() {
         setPermReq(e.payload);
         setPermRemember(true);
       }),
+      // vault save prompt from autofill script
+      listen<{ domain: string; username: string; password: string }>("vault-save-prompt", (e) => {
+        setVaultSavePrompt(e.payload);
+        if (vaultSaveTimer.current) clearTimeout(vaultSaveTimer.current);
+        vaultSaveTimer.current = setTimeout(() => setVaultSavePrompt(null), 30000);
+      }),
+      // vault unlock needed — page has login form but vault is locked
+      listen<{ domain: string; tabId: string }>("vault-unlock-needed", () => {
+        if (!vaultUnlockedRef.current) {
+          setVaultMasterModal("unlock");
+        }
+      }),
     ];
 
     // load existing downloads on init
     invoke<DownloadItem[]>("get_downloads").then(items => {
       if (items.length > 0) setDownloads(items);
     }).catch(() => {});
+
+    // check vault lock state
+    invoke<boolean>("vault_is_unlocked").then(setVaultUnlocked).catch(() => {});
 
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
@@ -700,6 +721,27 @@ export default function App() {
   useEffect(() => {
     positionActivePanel();
   }, [positionActivePanel]);
+
+  // hide webviews when vault unlock modal is showing (native windows cover React overlays)
+  // push webviews down when save banner is showing
+  useEffect(() => {
+    if (vaultMasterModal) {
+      invoke("layout_webviews", { panes: [], focusedTabId: activeTab || "__none__", sidebarW: 0, topOffset: 0 });
+    } else if (vaultSavePrompt) {
+      // push webview down 30px to reveal save banner below titlebar
+      const ws = workspaces.find(w => w.id === activeWorkspaceId);
+      if (!ws?.activeTabId) return;
+      const t = tabs.find(tab => tab.id === ws.activeTabId);
+      if (!t || t.url.startsWith("bushido://")) return;
+      const bannerH = 36;
+      const cw = window.innerWidth - layoutOffset;
+      const ch = window.innerHeight - topOffset - bannerH;
+      const panes = [{ tabId: ws.activeTabId, x: 0, y: bannerH, w: cw, h: ch }];
+      invoke("layout_webviews", { panes, focusedTabId: ws.activeTabId, sidebarW: layoutOffset, topOffset });
+    } else {
+      syncLayout();
+    }
+  }, [vaultMasterModal, vaultSavePrompt]);
 
   // hide panel webview when entering compact mode
   useEffect(() => {
@@ -1950,6 +1992,69 @@ export default function App() {
         </svg>
         <span>Tab from {syncTabReceived.from_device}: {syncTabReceived.title.substring(0, 40)}</span>
         <span style={{ opacity: 0.6, fontSize: 11 }}>click to open</span>
+      </div>
+    )}
+    {vaultSavePrompt && (
+      <div className="vault-save-banner" style={{ left: layoutOffset, right: 0 }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+        <span>Save password for <b>{vaultSavePrompt.domain}</b>?</span>
+        <span style={{ opacity: 0.85, fontSize: 11 }}>{vaultSavePrompt.username}</span>
+        <button className="vault-save-btn save" onClick={async () => {
+          const unlocked = await invoke<boolean>("vault_is_unlocked").catch(() => false);
+          if (!unlocked) {
+            const hasMaster = await invoke<boolean>("vault_has_master_password").catch(() => false);
+            if (vaultSaveTimer.current) { clearTimeout(vaultSaveTimer.current); vaultSaveTimer.current = null; }
+            setVaultMasterModal(hasMaster ? "unlock" : "setup");
+            return;
+          }
+          await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => {});
+          setVaultSavePrompt(null);
+        }}>Save</button>
+        <button className="vault-save-btn dismiss" onClick={() => setVaultSavePrompt(null)}>Dismiss</button>
+      </div>
+    )}
+    {vaultMasterModal && (
+      <div className="vault-master-overlay" onClick={() => {
+        setVaultMasterModal(null);
+        if (vaultSavePrompt && !vaultSaveTimer.current) {
+          vaultSaveTimer.current = setTimeout(() => setVaultSavePrompt(null), 30000);
+        }
+      }}>
+        <div className="vault-master-modal" onClick={e => e.stopPropagation()}>
+          <h3>{vaultMasterModal === "setup" ? "Set Master Password" : "Unlock Vault"}</h3>
+          <p style={{ opacity: 0.6, fontSize: 12, margin: "4px 0 12px" }}>
+            {vaultMasterModal === "setup" ? "This encrypts all saved passwords." : "Enter your master password to continue."}
+          </p>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            const form = e.target as HTMLFormElement;
+            const pw = (form.elements.namedItem("vaultpw") as HTMLInputElement).value;
+            if (vaultMasterModal === "setup") {
+              const confirm = (form.elements.namedItem("vaultpw2") as HTMLInputElement).value;
+              if (pw !== confirm) { alert("Passwords don't match"); return; }
+              await invoke("vault_setup", { masterPassword: pw }).catch((err: any) => { alert(err); return; });
+            } else {
+              await invoke("vault_unlock", { masterPassword: pw }).catch((err: any) => { alert(String(err)); return; });
+            }
+            setVaultUnlocked(true);
+            setVaultMasterModal(null);
+            // retry autofill on all tabs now that vault is unlocked
+            invoke("vault_retry_autofill").catch(() => {});
+            // retry save if pending
+            if (vaultSavePrompt) {
+              await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => {});
+              setVaultSavePrompt(null);
+            }
+          }}>
+            <input name="vaultpw" type="password" placeholder="Master password" autoFocus minLength={8} required />
+            {vaultMasterModal === "setup" && (
+              <input name="vaultpw2" type="password" placeholder="Confirm password" minLength={8} required style={{ marginTop: 8 }} />
+            )}
+            <button type="submit" className="vault-save-btn save" style={{ marginTop: 12, width: "100%" }}>
+              {vaultMasterModal === "setup" ? "Set Password" : "Unlock"}
+            </button>
+          </form>
+        </div>
       </div>
     )}
     {permReq && (

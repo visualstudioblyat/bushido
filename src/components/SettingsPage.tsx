@@ -1,7 +1,7 @@
 import { memo, useCallback, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { BushidoSettings, DEFAULT_SETTINGS } from "../types";
+import { BushidoSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
 import PairingWizard from "./PairingWizard";
 
 interface Props {
@@ -119,6 +119,7 @@ const TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "sync", label: "Sync" },
   { id: "shortcuts", label: "Shortcuts" },
+  { id: "passwords", label: "Passwords" },
   { id: "about", label: "About" },
 ] as const;
 
@@ -196,6 +197,13 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
   const [simulateCode, setSimulateCode] = useState<string | null>(null);
   const [syncTypes, setSyncTypes] = useState({ bookmarks: true, history: true, settings: true, tabs: true });
   const [recordingAction, setRecordingAction] = useState<string | null>(null);
+  const [vaultEntries, setVaultEntries] = useState<VaultEntry[]>([]);
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [vaultSearch, setVaultSearch] = useState("");
+  const [vaultRevealId, setVaultRevealId] = useState<string | null>(null);
+  const [vaultGenLen, setVaultGenLen] = useState(20);
+  const [vaultGenResult, setVaultGenResult] = useState("");
+  const [vaultHasMaster, setVaultHasMaster] = useState(false);
 
   useEffect(() => {
     invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
@@ -616,6 +624,16 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     if (activeTab === "permissions" && !permsLoaded) loadPerms();
   }, [activeTab, permsLoaded, loadPerms]);
 
+  useEffect(() => {
+    if (activeTab === "passwords") {
+      invoke<boolean>("vault_has_master_password").then(setVaultHasMaster).catch(() => {});
+      invoke<boolean>("vault_is_unlocked").then(u => {
+        setVaultUnlocked(u);
+        if (u) invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(() => {});
+      }).catch(() => {});
+    }
+  }, [activeTab]);
+
   const revokePermission = useCallback((domain: string, permission: string) => {
     invoke("revoke_permission", { domain, permission }).then(() => {
       setSavedPerms(prev => prev.filter(p => !(p.domain === domain && p.permission === permission)));
@@ -1002,6 +1020,108 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     );
   };
 
+  const vaultUnlock = async (pw: string) => {
+    try {
+      await invoke("vault_unlock", { masterPassword: pw });
+      setVaultUnlocked(true);
+      invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(() => {});
+    } catch (e) { alert(String(e)); }
+  };
+
+  const vaultSetup = async (pw: string) => {
+    try {
+      await invoke("vault_setup", { masterPassword: pw });
+      setVaultUnlocked(true);
+      setVaultHasMaster(true);
+    } catch (e) { alert(String(e)); }
+  };
+
+  const renderPasswords = () => {
+    const filtered = vaultEntries.filter(e =>
+      e.domain.includes(vaultSearch.toLowerCase()) || e.username.toLowerCase().includes(vaultSearch.toLowerCase())
+    );
+
+    return (
+      <section className="settings-section">
+        <h2 className="settings-section-title">Passwords</h2>
+
+        {!vaultHasMaster ? (
+          <div className="settings-row" style={{ flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+            <p style={{ opacity: 0.6, fontSize: 13 }}>Set a master password to enable the vault.</p>
+            <form onSubmit={e => { e.preventDefault(); const f = e.target as HTMLFormElement; const pw = (f.elements.namedItem("pw") as HTMLInputElement).value; const pw2 = (f.elements.namedItem("pw2") as HTMLInputElement).value; if (pw !== pw2) { alert("Passwords don't match"); return; } vaultSetup(pw); }} style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 300 }}>
+              <input name="pw" type="password" placeholder="Master password" minLength={8} required className="settings-input" />
+              <input name="pw2" type="password" placeholder="Confirm" minLength={8} required className="settings-input" />
+              <button type="submit" className="settings-about-btn">Set Master Password</button>
+            </form>
+          </div>
+        ) : !vaultUnlocked ? (
+          <div className="settings-row" style={{ flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+            <p style={{ opacity: 0.6, fontSize: 13 }}>Vault is locked. Enter your master password.</p>
+            <form onSubmit={e => { e.preventDefault(); const pw = ((e.target as HTMLFormElement).elements.namedItem("pw") as HTMLInputElement).value; vaultUnlock(pw); }} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input name="pw" type="password" placeholder="Master password" required className="settings-input" />
+              <button type="submit" className="settings-about-btn">Unlock</button>
+            </form>
+          </div>
+        ) : (
+          <>
+            <div className="settings-row" style={{ justifyContent: "space-between" }}>
+              <input
+                type="text"
+                placeholder="Search passwords..."
+                value={vaultSearch}
+                onChange={e => setVaultSearch(e.target.value)}
+                className="settings-input"
+                style={{ maxWidth: 300 }}
+              />
+              <button className="settings-about-btn" onClick={() => { invoke("vault_lock"); setVaultUnlocked(false); setVaultEntries([]); }}>
+                Lock Vault
+              </button>
+            </div>
+
+            <div className="vault-entries">
+              {filtered.length === 0 && <p style={{ opacity: 0.5, fontSize: 13, padding: "12px 0" }}>No saved passwords{vaultSearch ? " matching search" : ""}.</p>}
+              {filtered.map(entry => (
+                <div key={entry.id} className="vault-entry">
+                  <div className="vault-entry-domain">{entry.domain}</div>
+                  <div className="vault-entry-user">{entry.username}</div>
+                  <div className="vault-entry-pass">
+                    <span>{vaultRevealId === entry.id ? entry.password : "\u2022".repeat(12)}</span>
+                    <button className="vault-entry-btn" onClick={() => setVaultRevealId(vaultRevealId === entry.id ? null : entry.id)}>
+                      {vaultRevealId === entry.id ? "Hide" : "Show"}
+                    </button>
+                    <button className="vault-entry-btn" onClick={() => navigator.clipboard.writeText(entry.password)}>Copy</button>
+                  </div>
+                  <button className="vault-entry-btn danger" onClick={async () => {
+                    await invoke("vault_delete_entry", { id: entry.id });
+                    setVaultEntries(prev => prev.filter(e => e.id !== entry.id));
+                  }}>Delete</button>
+                </div>
+              ))}
+            </div>
+
+            <h2 className="settings-section-title" style={{ marginTop: 24 }}>Password Generator</h2>
+            <div className="settings-row" style={{ gap: 12, flexWrap: "wrap" }}>
+              <label style={{ fontSize: 13 }}>
+                Length: {vaultGenLen}
+                <input type="range" min={8} max={64} value={vaultGenLen} onChange={e => setVaultGenLen(+e.target.value)} style={{ marginLeft: 8, verticalAlign: "middle" }} />
+              </label>
+              <button className="settings-about-btn" onClick={async () => {
+                const pw = await invoke<string>("vault_generate_password", { length: vaultGenLen });
+                setVaultGenResult(pw);
+              }}>Generate</button>
+            </div>
+            {vaultGenResult && (
+              <div className="settings-row" style={{ gap: 8, marginTop: 8 }}>
+                <code className="vault-gen-result">{vaultGenResult}</code>
+                <button className="vault-entry-btn" onClick={() => navigator.clipboard.writeText(vaultGenResult)}>Copy</button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    );
+  };
+
   const renderAbout = () => (
     <section className="settings-section">
       <h2 className="settings-section-title">About</h2>
@@ -1033,6 +1153,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       case "appearance": return renderAppearance();
       case "sync": return renderSync();
       case "shortcuts": return renderShortcuts();
+      case "passwords": return renderPasswords();
       case "about": return renderAbout();
     }
   };

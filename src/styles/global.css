@@ -4873,3 +4873,162 @@ html.light .webview {
   color: var(--text-primary);
   margin-bottom: 4px;
 }
+
+/* vault save banner */
+.vault-save-banner {
+  position: fixed;
+  top: var(--titlebar-height);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(30, 30, 50, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  color: #e2e8f0;
+  font-size: 13px;
+  animation: vault-slide-in 0.25s ease-out;
+  white-space: nowrap;
+}
+@keyframes vault-slide-in {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.vault-save-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.vault-save-btn.save {
+  background: var(--accent);
+  color: #fff;
+}
+.vault-save-btn.save:hover { filter: brightness(1.15); }
+.vault-save-btn.dismiss {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+.vault-save-btn.dismiss:hover { background: rgba(255, 255, 255, 0.1); }
+
+/* master password overlay */
+.vault-master-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: vault-fade-in 0.2s ease-out;
+}
+@keyframes vault-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.vault-master-modal {
+  background: rgba(20, 20, 35, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 24px;
+  width: 320px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+}
+.vault-master-modal h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.vault-master-modal input {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.vault-master-modal input:focus {
+  border-color: var(--accent);
+}
+
+/* settings > passwords */
+.vault-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+.vault-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.vault-entry:hover { background: rgba(255, 255, 255, 0.05); }
+.vault-entry-domain {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  min-width: 140px;
+}
+.vault-entry-user {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+.vault-entry-pass {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  font-family: monospace;
+}
+.vault-entry-btn {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  transition: background 0.15s;
+}
+.vault-entry-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.vault-entry-btn.danger { color: #f43f5e; }
+.vault-entry-btn.danger:hover { background: rgba(244, 63, 94, 0.15); }
+.vault-gen-result {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--accent);
+  word-break: break-all;
+  user-select: all;
+}
+.settings-input {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+.settings-input:focus { border-color: var(--accent); }

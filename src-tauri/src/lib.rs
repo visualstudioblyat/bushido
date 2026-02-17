@@ -4,6 +4,7 @@ mod downloads;
 mod import;
 mod screenshot;
 mod sync;
+mod vault;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
@@ -31,6 +32,7 @@ struct BlockerState {
     shortcut_script: String,
     media_script: String,
     fingerprint_script: String,
+    vault_script: String,
 }
 
 struct WhitelistState {
@@ -206,6 +208,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let shortcut_script = bs.shortcut_script.clone();
     let media_script = bs.media_script.clone();
     let fingerprint_script = bs.fingerprint_script.clone();
+    let vault_script = bs.vault_script.clone();
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
@@ -229,6 +232,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
     let inject_fingerprint = fingerprint_script.clone();
+    let inject_vault = vault_script.clone();
 
     // build security hardening JS (only enabled features)
     let mut sec_parts: Vec<&str> = Vec::new();
@@ -308,6 +312,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = wv.eval(&inject_shortcut);
                 let _ = wv.eval(&inject_media);
                 let _ = wv.eval(&inject_fingerprint);
+                let _ = wv.eval(&inject_vault);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
@@ -324,6 +329,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     builder = builder.initialization_script(&shortcut_script);
     builder = builder.initialization_script(&media_script);
     builder = builder.initialization_script(&fingerprint_script);
+    builder = builder.initialization_script(&vault_script);
 
     // only inject cosmetic scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
@@ -380,11 +386,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     // conditional security settings (toggled via Settings → Security)
                     if disable_dev_tools { let _ = settings.SetAreDevToolsEnabled(false); }
                     if disable_status_bar { let _ = settings.SetIsStatusBarEnabled(false); }
-                    if disable_autofill || disable_password_save {
-                        if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
-                            if disable_autofill { let _ = s4.SetIsGeneralAutofillEnabled(false); }
-                            if disable_password_save { let _ = s4.SetIsPasswordAutosaveEnabled(false); }
-                        }
+                    if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                        let _ = s4.SetIsGeneralAutofillEnabled(!disable_autofill);
+                        let _ = s4.SetIsPasswordAutosaveEnabled(!disable_password_save);
                     }
                 }
 
@@ -638,6 +642,44 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let count = msg.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                                         let _ = app_ref.emit_to("main", "match-count", serde_json::json!({
                                             "id": *tab_ref, "count": count
+                                        }));
+                                    }
+                                    Some("vault-check") => {
+                                        let domain = msg.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let tab_id = tab_ref.to_string();
+                                        let app_clone = (*app_ref).clone();
+                                        std::thread::spawn(move || {
+                                            let vs = app_clone.state::<crate::vault::VaultState>();
+                                            let is_locked = vs.derived_key.lock().unwrap_or_else(|e| e.into_inner()).is_none();
+                                            if is_locked {
+                                                // vault locked but page has login form — tell React to show unlock prompt
+                                                let has_master = crate::vault::has_master_password_sync(&vs);
+                                                if has_master {
+                                                    let _ = app_clone.emit_to("main", "vault-unlock-needed", serde_json::json!({
+                                                        "domain": domain, "tabId": tab_id
+                                                    }));
+                                                }
+                                                return;
+                                            }
+                                            if let Ok(entries) = crate::vault::get_entries_for_domain(&vs, &domain) {
+                                                if entries.is_empty() { return; }
+                                                if let Some(wv) = app_clone.get_webview(&tab_id) {
+                                                    let data = serde_json::json!({
+                                                        "__bushidoVaultFill": true,
+                                                        "entries": entries,
+                                                    });
+                                                    let js = format!("window.postMessage({}, '*')", data);
+                                                    let _ = wv.eval(&js);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Some("vault-save-prompt") => {
+                                        let domain = msg.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let username = msg.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let _ = app_ref.emit_to("main", "vault-save-prompt", serde_json::json!({
+                                            "domain": domain, "username": username, "password": password
                                         }));
                                     }
                                     _ => {}
@@ -923,6 +965,18 @@ struct PaneRectArg {
     y: f64,
     w: f64,
     h: f64,
+}
+
+#[tauri::command]
+async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<WebviewState>();
+    let tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for (tab_id, _) in &tabs {
+        if let Some(wv) = app.get_webview(tab_id) {
+            let _ = wv.eval("if(window.__bushidoVaultRetry)window.__bushidoVaultRetry()");
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1562,6 +1616,7 @@ pub fn run() {
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
     let media_script = include_str!("media_listener.js").to_string();
     let fingerprint_script = include_str!("fingerprint.js").to_string();
+    let vault_script = include_str!("vault_autofill.js").to_string();
 
     let sync_data_dir = data_dir.clone();
 
@@ -1620,6 +1675,7 @@ pub fn run() {
             shortcut_script,
             media_script,
             fingerprint_script,
+            vault_script,
         })
         .plugin({
             tauri_plugin_global_shortcut::Builder::new()
@@ -1665,6 +1721,12 @@ pub fn run() {
                 #[cfg(windows)]
                 pending: Arc::new(Mutex::new(HashMap::new())),
             });
+
+            // init vault
+            let vault_path = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("vault.db");
+            let vault_state = vault::VaultState::new(vault_path);
+            let _ = vault_state.init_db();
+            app.manage(vault_state);
 
             // Initialize sync state
             let sync_state = match sync::keys::load_identity(&sync_data_dir) {
@@ -1829,7 +1891,18 @@ pub fn run() {
             sync::sync_get_all_tabs,
             sync::sync_set_data_types,
             sync::send_tab_to_device,
-            sync::reset_sync_data
+            sync::reset_sync_data,
+            vault::vault_has_master_password,
+            vault::vault_setup,
+            vault::vault_unlock,
+            vault::vault_lock,
+            vault::vault_is_unlocked,
+            vault::vault_save_entry,
+            vault::vault_get_entries,
+            vault::vault_delete_entry,
+            vault::vault_update_entry,
+            vault::vault_generate_password,
+            vault_retry_autofill
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

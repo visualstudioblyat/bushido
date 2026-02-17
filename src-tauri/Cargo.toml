@@ -1,6 +1,6 @@
 [package]
 name = "bushido-browser"
-version = "0.10.1"
+version = "0.10.5"
 description = "Bushido Browser"
 authors = [""]
 edition = "2021"
@@ -40,6 +40,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 rmp-serde = "1"
 zeroize = "1"
+argon2 = "0.5"
 hostname = "0.4"
 
 # LAN Sync — Phase B: Pairing + Encryption
