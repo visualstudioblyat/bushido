@@ -2,6 +2,40 @@
 
 —-
 
+## v0.10.6
+
+**2026-02-18**
+
+Performance pass across the entire stack. Every optimization backed by the research docs — WebView2 memory management, Rust build tuning, React state architecture, and build-time auto-memoization. Also added Glance, an ephemeral link preview system inspired by Arc's Peek.
+
+### Added
+
+- **Glance (link preview)** — Alt+click any link to preview it in an overlay without leaving the current page. Top bar shows URL with three actions: expand to full tab (reuses the webview, no reload), open in split view, or close. ESC and backdrop click dismiss. Pinned tabs automatically glance external links without needing Alt.
+
+- **`open_glance` / `close_glance` / `promote_glance` commands** — Rust-side glance lifecycle. `promote_glance` moves the webview from panel registry to tab registry without destroying it, so the page state is preserved.
+
+- **`set_tab_pinned` command** — evals `window.__bushidoPinned = true/false` on webviews so the glance listener script knows to intercept external links on pinned tabs.
+
+- **`glance_listener.js`** — injected JS that intercepts Alt+clicks and external link clicks on pinned tabs, forwards them to Rust via `postMessage`.
+
+### Changed
+
+- **Zustand state management** — replaced all 39 `useState` calls in App.tsx with 6 Zustand stores (`tabStore`, `uiStore`, `dataStore`, `featureStore`, `vaultStore`, `syncStore`). Components can subscribe to specific state slices instead of re-rendering on every change. Callbacks stay in App.tsx since they involve cross-store logic and Tauri `invoke()` calls.
+
+- **React Compiler enabled** — `babel-plugin-react-compiler` with `target: "18"` auto-memoizes all 63 modules at build time. Zero manual `useMemo`/`useCallback` needed going forward. Required `react-compiler-runtime` package for React 18 compatibility.
+
+- **parking_lot::Mutex** — replaced `std::sync::Mutex` across 5 Rust files (`lib.rs`, `vault.rs`, `downloads.rs`, `sync/discovery.rs`, `sync/mod.rs`). Removed 84+ `.unwrap_or_else(|e| e.into_inner())` and `.lock().unwrap()` patterns. parking_lot doesn't poison, so just `.lock()` directly.
+
+- **WebView2 memory management** — suspended tabs now get `MemoryUsageTargetLevel::LOW` via `ICoreWebView2_19`, reset to `NORMAL` on resume. Added browser args: `--renderer-process-limit=4` (caps renderer processes), `--js-flags=--max-old-space-size=512` (caps V8 heap), `--purge-v8-memory`, `--disable-low-res-tiling`.
+
+- **Release build profile** — added `[profile.release]` with `lto = "thin"`, `codegen-units = 1`, `strip = true`, `opt-level = 3`. Smaller binary, faster runtime.
+
+- **CSS transition fix** — two instances of `transition: all` replaced with specific properties (`.drop-zone-preview`, `.settings-perm-revoke`). Prevents layout thrashing on unrelated property changes.
+
+- **Vite config** — explicit `cssCodeSplit: true`.
+
+—-
+
 ## v0.10.5
 
 **2026-02-16**

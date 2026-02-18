@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
@@ -214,8 +214,7 @@ pub fn start_tcp_listener(app: tauri::AppHandle) {
         let state = app.state::<SyncState>();
         let mut lh = state
             .listener_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *lh = Some(handle);
     }
 }
@@ -238,8 +237,7 @@ async fn handle_incoming_pair(
     let rate_limited = {
         let mut attempts = state
             .failed_attempts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if let Some((count, since)) = attempts.get(peer_device_id) {
             if *count >= 3 && since.elapsed() < std::time::Duration::from_secs(300) {
                 true
@@ -268,8 +266,7 @@ async fn handle_incoming_pair(
     let already_active = {
         let active = state
             .pairing_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *active
     };
     if already_active {
@@ -287,8 +284,7 @@ async fn handle_incoming_pair(
     {
         let mut active = state
             .pairing_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *active = true;
     }
 
@@ -297,8 +293,7 @@ async fn handle_incoming_pair(
     {
         let mut sender = state
             .pairing_code_sender
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *sender = Some(tx);
     }
 
@@ -367,8 +362,7 @@ async fn handle_incoming_pair(
             {
                 let mut attempts = state
                     .failed_attempts
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                    .lock();
                 let entry = attempts
                     .entry(peer_device_id.to_string())
                     .or_insert((0, Instant::now()));
@@ -390,15 +384,13 @@ fn cleanup_pairing(state: &SyncState) {
     {
         let mut active = state
             .pairing_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *active = false;
     }
     {
         let mut sender = state
             .pairing_code_sender
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *sender = None;
     }
 }
@@ -419,8 +411,7 @@ fn store_paired_device(
     let devices = {
         let mut devices = state
             .paired_devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         // Replace if already exists
         devices.retain(|d| d.device_id != result.device_id);
         devices.push(paired);
@@ -449,8 +440,7 @@ async fn handle_incoming_sync(
     let peer = {
         let devices = state
             .paired_devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         devices.iter().find(|d| d.device_id == peer_device_id).cloned()
     };
     let peer = match peer {
@@ -576,12 +566,10 @@ pub fn trigger_sync(app: tauri::AppHandle) {
     let pairs: Vec<(PairedDevice, SocketAddr)> = {
         let devices = state
             .paired_devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         let disc = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         let peers = disc.as_ref().map(|d| d.get_peers()).unwrap_or_default();
 
         devices
@@ -650,8 +638,7 @@ pub fn start_sync_debounce(app: tauri::AppHandle) {
         let state = app.state::<SyncState>();
         let mut sender = state
             .sync_debounce
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *sender = Some(tx);
     }
 
@@ -683,8 +670,7 @@ pub fn start_sync_debounce(app: tauri::AppHandle) {
 pub fn notify_sync_change(state: &SyncState) {
     let sender = state
         .sync_debounce
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock();
     if let Some(ref tx) = *sender {
         let _ = tx.try_send(());
     }
@@ -727,13 +713,11 @@ pub async fn get_sync_status(state: tauri::State<'_, SyncState>) -> Result<SyncI
     let status = state
         .status
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .clone();
     let peers = {
         let discovery = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         match discovery.as_ref() {
             Some(d) => d.get_peers(),
             None => Vec::new(),
@@ -742,7 +726,6 @@ pub async fn get_sync_status(state: tauri::State<'_, SyncState>) -> Result<SyncI
     let paired = state
         .paired_devices
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .map(PairedDeviceInfo::from)
         .collect();
@@ -781,19 +764,17 @@ pub async fn enable_sync(
     {
         let mut discovery = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *discovery = Some(disc);
     }
     {
-        let mut status = state.status.lock().unwrap_or_else(|e| e.into_inner());
+        let mut status = state.status.lock();
         *status = SyncStatus::Discovering;
     }
     {
         let mut paired = state
             .paired_devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *paired = identity.paired_devices;
     }
 
@@ -818,8 +799,7 @@ pub async fn disable_sync(state: tauri::State<'_, SyncState>) -> Result<(), Stri
     let disc = {
         let mut discovery = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         discovery.take()
     };
     if let Some(d) = disc {
@@ -830,15 +810,14 @@ pub async fn disable_sync(state: tauri::State<'_, SyncState>) -> Result<(), Stri
     {
         let mut lh = state
             .listener_handle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if let Some(handle) = lh.take() {
             handle.abort();
         }
     }
 
     {
-        let mut status = state.status.lock().unwrap_or_else(|e| e.into_inner());
+        let mut status = state.status.lock();
         *status = SyncStatus::Disabled;
     }
 
@@ -851,8 +830,7 @@ pub async fn get_discovered_peers(
 ) -> Result<Vec<PeerInfo>, String> {
     let discovery = state
         .discovery
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock();
     match discovery.as_ref() {
         Some(d) => Ok(d.get_peers()),
         None => Ok(Vec::new()),
@@ -867,8 +845,7 @@ pub async fn set_device_name(
     if let Some(identity) = keys::load_identity(&state.app_data_dir)? {
         let mut discovery = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if let Some(ref mut d) = *discovery {
             let _ = d.unregister();
             d.register(&identity.device_id, &name, &identity.fingerprint)?;
@@ -893,8 +870,7 @@ pub async fn start_pairing(
     {
         let active = state
             .pairing_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if *active {
             return Err("Already pairing with another device".into());
         }
@@ -904,8 +880,7 @@ pub async fn start_pairing(
     let peer_addr = {
         let discovery = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         let peers = discovery
             .as_ref()
             .map(|d| d.get_peers())
@@ -933,8 +908,7 @@ pub async fn start_pairing(
     {
         let mut active = state
             .pairing_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         *active = true;
     }
 
@@ -1011,8 +985,7 @@ pub async fn enter_pairing_code(
     let sender = {
         let mut s = state
             .pairing_code_sender
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         s.take()
     };
     match sender {
@@ -1031,8 +1004,7 @@ pub async fn remove_device(
     let devices = {
         let mut devices = state
             .paired_devices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         devices.retain(|d| d.device_id != device_id);
         devices.clone()
     };
@@ -1086,10 +1058,9 @@ pub async fn simulate_pairing(
     {
         let disc = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if let Some(ref d) = *disc {
-            let mut peers = d.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut peers = d.peers.lock();
             peers.insert(
                 fake_device_id.clone(),
                 PeerInfo {
@@ -1308,10 +1279,9 @@ pub async fn simulate_sync(
     {
         let disc = state
             .discovery
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         if let Some(ref d) = *disc {
-            let mut peers = d.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut peers = d.peers.lock();
             peers.insert(
                 ghost_device_id.clone(),
                 PeerInfo {
@@ -1534,9 +1504,9 @@ pub async fn simulate_sync(
         // remove ghost from discovery so debounce doesn't try to reach it
         {
             let state = app2.state::<SyncState>();
-            let disc = state.discovery.lock().unwrap_or_else(|e| e.into_inner());
+            let disc = state.discovery.lock();
             if let Some(ref d) = *disc {
-                let mut peers = d.peers.lock().unwrap_or_else(|e| e.into_inner());
+                let mut peers = d.peers.lock();
                 peers.remove(&ghost_did);
             }
         }
@@ -1641,8 +1611,8 @@ pub async fn send_tab_to_device(
 
     // find peer address
     let (peer, addr) = {
-        let devices = state.paired_devices.lock().unwrap_or_else(|e| e.into_inner());
-        let disc = state.discovery.lock().unwrap_or_else(|e| e.into_inner());
+        let devices = state.paired_devices.lock();
+        let disc = state.discovery.lock();
         let peers = disc.as_ref().map(|d| d.get_peers()).unwrap_or_default();
         let device = devices.iter().find(|d| d.device_id == device_id)
             .ok_or("device not paired")?;
@@ -1755,7 +1725,7 @@ pub fn start_health_check(app: tauri::AppHandle) {
 
             // check discovery alive
             let disc_alive = {
-                let disc = state.discovery.lock().unwrap_or_else(|e| e.into_inner());
+                let disc = state.discovery.lock();
                 disc.is_some()
             };
             if !disc_alive {
@@ -1763,13 +1733,13 @@ pub fn start_health_check(app: tauri::AppHandle) {
                 if let Ok(mut disc) = DiscoveryService::new() {
                     let _ = disc.register(&state.device_id, &state.device_name, &state.fingerprint);
                     let _ = disc.start_browsing(app.clone(), state.device_id.clone());
-                    *state.discovery.lock().unwrap_or_else(|e| e.into_inner()) = Some(disc);
+                    *state.discovery.lock() = Some(disc);
                 }
             }
 
             // check listener alive — if handle is None, restart
             let has_handle = {
-                let lh = state.listener_handle.lock().unwrap_or_else(|e| e.into_inner());
+                let lh = state.listener_handle.lock();
                 lh.is_some()
             };
             if !has_handle {

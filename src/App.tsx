@@ -14,8 +14,15 @@ import ScreenshotOverlay from "./components/ScreenshotOverlay";
 import AnnotationEditor from "./components/AnnotationEditor";
 import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
+import GlanceOverlay from "./components/GlanceOverlay";
 import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone, PermissionRequest } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf, detectDropZone } from "./splitLayout";
+import { useTabStore } from "./store/tabStore";
+import { useUiStore } from "./store/uiStore";
+import { useDataStore } from "./store/dataStore";
+import { useFeatureStore } from "./store/featureStore";
+import { useVaultStore } from "./store/vaultStore";
+import { useSyncStore } from "./store/syncStore";
 
 // blocked URL schemes — defense-in-depth (Rust side also blocks these)
 const BLOCKED_SCHEMES = ["javascript:", "data:", "file:", "vbscript:", "blob:", "ms-msdt:", "search-ms:", "ms-officecmd:"];
@@ -90,40 +97,84 @@ function frecencyScore(visitCount: number, lastVisitMs: number): number {
 }
 
 export default function App() {
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [compactMode, setCompactMode] = useState(false);
-  const [findOpen, setFindOpen] = useState(false);
-  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
-  const [bookmarkData, setBookmarkData] = useState<BookmarkData>({ bookmarks: [], folders: [] });
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [urlQuery, setUrlQuery] = useState("");
-  const [cmdOpen, setCmdOpen] = useState(false);
-  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
-  const [annotationData, setAnnotationData] = useState<string | null>(null);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [readerTabs, setReaderTabs] = useState<Set<string>>(new Set());
-  const [readerSettings, setReaderSettings] = useState({ fontSize: 18, font: "serif" as "serif" | "sans", theme: "dark" as "dark" | "light" | "sepia", lineWidth: 680 });
-  const [hasVideo, setHasVideo] = useState(false);
-  const [pipActive, setPipActive] = useState(false);
-  const [settings, setSettings] = useState<BushidoSettings>({ ...DEFAULT_SETTINGS });
-  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
-  const [downloadsOpen, setDownloadsOpen] = useState(false);
-  const [panels, setPanels] = useState<WebPanel[]>([]);
-  const [activePanelId, setActivePanelId] = useState<string | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [syncToast, setSyncToast] = useState<"syncing" | "success" | "error" | null>(null);
-  const [syncTabReceived, setSyncTabReceived] = useState<{ from_device: string; url: string; title: string } | null>(null);
-  const [syncPairedDevices, setSyncPairedDevices] = useState<{ device_id: string; name: string }[]>([]);
-  const [permReq, setPermReq] = useState<PermissionRequest | null>(null);
-  const [permRemember, setPermRemember] = useState(true);
-  const [vaultSavePrompt, setVaultSavePrompt] = useState<{ domain: string; username: string; password: string } | null>(null);
-  const [vaultMasterModal, setVaultMasterModal] = useState<"setup" | "unlock" | null>(null);
-  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  // --- Zustand stores ---
+  const tabs = useTabStore(s => s.tabs);
+  const setTabs = useTabStore(s => s.setTabs);
+  const workspaces = useTabStore(s => s.workspaces);
+  const setWorkspaces = useTabStore(s => s.setWorkspaces);
+  const activeWorkspaceId = useTabStore(s => s.activeWorkspaceId);
+  const setActiveWorkspaceId = useTabStore(s => s.setActiveWorkspaceId);
+
+  const sidebarOpen = useUiStore(s => s.sidebarOpen);
+  const setSidebarOpen = useUiStore(s => s.setSidebarOpen);
+  const compactMode = useUiStore(s => s.compactMode);
+  const setCompactMode = useUiStore(s => s.setCompactMode);
+  const findOpen = useUiStore(s => s.findOpen);
+  const setFindOpen = useUiStore(s => s.setFindOpen);
+  const historyOpen = useUiStore(s => s.historyOpen);
+  const setHistoryOpen = useUiStore(s => s.setHistoryOpen);
+  const cmdOpen = useUiStore(s => s.cmdOpen);
+  const setCmdOpen = useUiStore(s => s.setCmdOpen);
+  const downloadsOpen = useUiStore(s => s.downloadsOpen);
+  const setDownloadsOpen = useUiStore(s => s.setDownloadsOpen);
+  const showOnboarding = useUiStore(s => s.showOnboarding);
+  const setShowOnboarding = useUiStore(s => s.setShowOnboarding);
+  const urlQuery = useUiStore(s => s.urlQuery);
+  const setUrlQuery = useUiStore(s => s.setUrlQuery);
+  const pageCtx = useUiStore(s => s.pageCtx);
+  const setPageCtx = useUiStore(s => s.setPageCtx);
+
+  const historyEntries = useDataStore(s => s.historyEntries);
+  const setHistoryEntries = useDataStore(s => s.setHistoryEntries);
+  const bookmarkData = useDataStore(s => s.bookmarkData);
+  const setBookmarkData = useDataStore(s => s.setBookmarkData);
+  const downloads = useDataStore(s => s.downloads);
+  const setDownloads = useDataStore(s => s.setDownloads);
+  const settings = useDataStore(s => s.settings);
+  const setSettings = useDataStore(s => s.setSettings);
+
+  const screenshotPreview = useFeatureStore(s => s.screenshotPreview);
+  const setScreenshotPreview = useFeatureStore(s => s.setScreenshotPreview);
+  const annotationData = useFeatureStore(s => s.annotationData);
+  const setAnnotationData = useFeatureStore(s => s.setAnnotationData);
+  const shareOpen = useFeatureStore(s => s.shareOpen);
+  const setShareOpen = useFeatureStore(s => s.setShareOpen);
+  const readerTabs = useFeatureStore(s => s.readerTabs);
+  const setReaderTabs = useFeatureStore(s => s.setReaderTabs);
+  const readerSettings = useFeatureStore(s => s.readerSettings);
+  const setReaderSettings = useFeatureStore(s => s.setReaderSettings);
+  const hasVideo = useFeatureStore(s => s.hasVideo);
+  const setHasVideo = useFeatureStore(s => s.setHasVideo);
+  const pipActive = useFeatureStore(s => s.pipActive);
+  const setPipActive = useFeatureStore(s => s.setPipActive);
+  const panels = useFeatureStore(s => s.panels);
+  const setPanels = useFeatureStore(s => s.setPanels);
+  const activePanelId = useFeatureStore(s => s.activePanelId);
+  const setActivePanelId = useFeatureStore(s => s.setActivePanelId);
+  const glance = useFeatureStore(s => s.glance);
+  const setGlance = useFeatureStore(s => s.setGlance);
+
+  const vaultSavePrompt = useVaultStore(s => s.vaultSavePrompt);
+  const setVaultSavePrompt = useVaultStore(s => s.setVaultSavePrompt);
+  const vaultMasterModal = useVaultStore(s => s.vaultMasterModal);
+  const setVaultMasterModal = useVaultStore(s => s.setVaultMasterModal);
+  const vaultUnlocked = useVaultStore(s => s.vaultUnlocked);
+  const setVaultUnlocked = useVaultStore(s => s.setVaultUnlocked);
+  const permReq = useVaultStore(s => s.permReq);
+  const setPermReq = useVaultStore(s => s.setPermReq);
+  const permRemember = useVaultStore(s => s.permRemember);
+  const setPermRemember = useVaultStore(s => s.setPermRemember);
+
+  const syncToast = useSyncStore(s => s.syncToast);
+  const setSyncToast = useSyncStore(s => s.setSyncToast);
+  const syncTabReceived = useSyncStore(s => s.syncTabReceived);
+  const setSyncTabReceived = useSyncStore(s => s.setSyncTabReceived);
+  const syncPairedDevices = useSyncStore(s => s.syncPairedDevices);
+  const setSyncPairedDevices = useSyncStore(s => s.setSyncPairedDevices);
+
   const vaultUnlockedRef = useRef(false);
   const vaultSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const glanceRef = useRef<typeof glance>(null);
   const syncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const urlBarRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
@@ -135,7 +186,6 @@ export default function App() {
   const prevSettingsRef = useRef<BushidoSettings | null>(null);
   const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
   const zoomRef = useRef<Record<string, number>>({});
-  const [pageCtx, setPageCtx] = useState<PageCtxMenu | null>(null);
   const pageCtxRef = useRef<HTMLDivElement>(null);
   const pageCtxPos = useClampedMenu(pageCtxRef, pageCtx);
   useEffect(() => {
@@ -537,6 +587,11 @@ export default function App() {
         } catch {}
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, url: e.payload.url, favicon } : t));
         setPanels(prev => prev.map(p => p.id === e.payload.id ? { ...p, url: e.payload.url, favicon } : p));
+        // update glance URL if this is the glance webview
+        if (glanceRef.current && e.payload.id === glanceRef.current.id) {
+          glanceRef.current = { ...glanceRef.current, url: e.payload.url };
+          setGlance(prev => prev && prev.id === e.payload.id ? { ...prev, url: e.payload.url } : prev);
+        }
         recordHistory(e.payload.url, "", favicon);
         if (domain) {
           invoke<boolean>("is_whitelisted", { domain }).then(wl => {
@@ -554,6 +609,11 @@ export default function App() {
           return prev.map(t => t.id === e.payload.id ? { ...t, title: clean, loading: false } : t);
         });
         setPanels(prev => prev.map(p => p.id === e.payload.id ? { ...p, title: clean } : p));
+        // update glance title if this is the glance webview
+        if (glanceRef.current && e.payload.id === glanceRef.current.id) {
+          glanceRef.current = { ...glanceRef.current, title: clean };
+          setGlance(prev => prev && prev.id === e.payload.id ? { ...prev, title: clean } : prev);
+        }
       }),
       listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
         setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, loading: e.payload.loading } : t));
@@ -671,6 +731,17 @@ export default function App() {
         setPermRemember(true);
       }),
       // vault save prompt from autofill script
+      // glance: ephemeral link preview
+      listen<{ url: string; sourceTabId: string }>("glance-request", (e) => {
+        if (glanceRef.current) return; // already showing a glance
+        const glanceId = `glance-${Date.now()}`;
+        const g = { id: glanceId, url: e.payload.url, title: e.payload.url, sourceTabId: e.payload.sourceTabId };
+        glanceRef.current = g;
+        setGlance(g);
+        invoke("open_glance", { url: e.payload.url, glanceId, sidebarW: layoutOffsetRef.current, topOffset });
+        // hide tab webviews so overlay is visible
+        invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffsetRef.current, topOffset });
+      }),
       listen<{ domain: string; username: string; password: string }>("vault-save-prompt", (e) => {
         setVaultSavePrompt(e.payload);
         if (vaultSaveTimer.current) clearTimeout(vaultSaveTimer.current);
@@ -908,6 +979,12 @@ export default function App() {
   }, [activeWorkspaceId, clearLoading, layoutOffset, topOffset]);
 
   const closeTab = useCallback((id: string) => {
+    // if source tab of glance is being closed, close glance too
+    if (glanceRef.current?.sourceTabId === id) {
+      invoke("close_glance", { glanceId: glanceRef.current.id }).catch(() => {});
+      glanceRef.current = null;
+      setGlance(null);
+    }
     invoke("close_tab", { id });
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
@@ -1011,8 +1088,49 @@ export default function App() {
   }, [activeWorkspaceId, tabs, workspaces, layoutOffset, topOffset, clearLoading, syncLayout]);
 
   const pinTab = useCallback((id: string) => {
-    setTabs(prev => prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t));
+    setTabs(prev => {
+      const tab = prev.find(t => t.id === id);
+      const willPin = tab ? !tab.pinned : true;
+      invoke("set_tab_pinned", { id, pinned: willPin }).catch(() => {});
+      return prev.map(t => t.id === id ? { ...t, pinned: willPin } : t);
+    });
   }, []);
+
+  const closeGlance = useCallback(() => {
+    const g = glanceRef.current;
+    if (!g) return;
+    invoke("close_glance", { glanceId: g.id });
+    glanceRef.current = null;
+    setGlance(null);
+    syncLayout();
+  }, [syncLayout]);
+
+  const expandGlance = useCallback(() => {
+    const g = glanceRef.current;
+    if (!g) return;
+    invoke("promote_glance", { glanceId: g.id });
+    // add as a real tab in React state — use glance_id as tab id (matches webview label)
+    const newTab: Tab = {
+      id: g.id, url: g.url, title: g.title,
+      loading: false, workspaceId: activeWorkspaceId, lastActiveAt: Date.now()
+    };
+    setTabs(prev => [...prev, newTab]);
+    setWorkspaces(prev => prev.map(w => w.id === activeWorkspaceId ? { ...w, activeTabId: g.id, paneLayout: undefined } : w));
+    glanceRef.current = null;
+    setGlance(null);
+    // syncLayout will be called by the workspace/tab update effects
+    setTimeout(() => syncLayout(), 50);
+  }, [activeWorkspaceId, syncLayout]);
+
+  const splitGlance = useCallback(() => {
+    const g = glanceRef.current;
+    if (!g) return;
+    invoke("close_glance", { glanceId: g.id });
+    glanceRef.current = null;
+    setGlance(null);
+    // open URL as a new tab (addTab will handle layout)
+    addTab(g.url);
+  }, [addTab]);
 
   const toggleCollapse = useCallback((id: string) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, collapsed: !t.collapsed } : t));
@@ -1106,12 +1224,15 @@ export default function App() {
   }, [workspaces, activeWorkspaceId, tabs, syncLayout]);
 
   // --- divider drag ---
-  const [draggingDiv, setDraggingDiv] = useState<number | null>(null);
+  const draggingDiv = useUiStore(s => s.draggingDiv);
+  const setDraggingDiv = useUiStore(s => s.setDraggingDiv);
   const mainRef = useRef<HTMLDivElement>(null);
 
   // --- drag-to-split ---
-  const [dropZone, setDropZone] = useState<DropZone | null>(null);
-  const [dragOverContent, setDragOverContent] = useState(false);
+  const dropZone = useUiStore(s => s.dropZone);
+  const setDropZone = useUiStore(s => s.setDropZone);
+  const dragOverContent = useUiStore(s => s.dragOverContent);
+  const setDragOverContent = useUiStore(s => s.setDragOverContent);
   const dropRaf = useRef(0);
 
   // compute dividers from current layout
@@ -1772,6 +1893,17 @@ export default function App() {
           onClose={() => { setScreenshotPreview(null); syncLayout(); }}
           onAnnotate={(data) => { setScreenshotPreview(null); syncLayout(); setAnnotationData(data); }}
           onRestoreWebview={() => syncLayout()}
+        />
+      )}
+      {glance && (
+        <GlanceOverlay
+          url={glance.url}
+          title={glance.title}
+          sidebarWidth={layoutOffset}
+          topOffset={topOffset}
+          onClose={closeGlance}
+          onExpand={expandGlance}
+          onSplit={splitGlance}
         />
       )}
       {annotationData && (

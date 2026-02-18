@@ -465,7 +465,7 @@ html, body, #root {
   opacity: 0.2;
   border-radius: 8px;
   border: 2px solid var(--accent);
-  transition: all 0.15s ease;
+  transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease, opacity 0.15s ease;
 }
 
 
@@ -4840,7 +4840,7 @@ html.light .webview {
   color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
 
 .settings-perm-revoke:hover {
@@ -5032,3 +5032,72 @@ html.light .webview {
   outline: none;
 }
 .settings-input:focus { border-color: var(--accent); }
+
+/* Glance overlay (ephemeral link preview) */
+.glance-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: 10000;
+  animation: glance-fade-in 150ms ease-out;
+}
+@keyframes glance-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.glance-frame {
+  position: fixed;
+  z-index: 10001;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  animation: glance-scale-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes glance-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.glance-topbar {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: rgba(20, 20, 30, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+.glance-url {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.glance-url-domain {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.glance-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+.glance-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.glance-btn.expand {
+  background: var(--accent);
+  color: #fff;
+}
+.glance-btn.expand:hover { filter: brightness(1.15); }
+.glance-btn.close { color: var(--text-dim); }
+.glance-btn.close:hover { background: rgba(239, 68, 68, 0.15); color: #f87171; }

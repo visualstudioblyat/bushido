@@ -8,7 +8,8 @@ mod vault;
 
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
-use std::sync::{Mutex, Arc};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::fs;
@@ -33,6 +34,7 @@ struct BlockerState {
     media_script: String,
     fingerprint_script: String,
     vault_script: String,
+    glance_script: String,
 }
 
 struct WhitelistState {
@@ -169,7 +171,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     // cap at 50 tabs to prevent resource exhaustion
     {
         let ws = app.state::<WebviewState>();
-        let tabs = ws.tabs.lock().unwrap_or_else(|e| e.into_inner());
+        let tabs = ws.tabs.lock();
         if tabs.len() >= 50 { return Err("Max 50 tabs".into()); }
     }
 
@@ -209,10 +211,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let media_script = bs.media_script.clone();
     let fingerprint_script = bs.fingerprint_script.clone();
     let vault_script = bs.vault_script.clone();
+    let glance_script = bs.glance_script.clone();
 
     // check if this site is whitelisted
     let ws = app.state::<WhitelistState>();
-    let whitelist_sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let whitelist_sites = ws.sites.lock().clone();
     let site_domain = url::Url::parse(&final_url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
@@ -233,6 +236,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_media = media_script.clone();
     let inject_fingerprint = fingerprint_script.clone();
     let inject_vault = vault_script.clone();
+    let inject_glance = glance_script.clone();
 
     // build security hardening JS (only enabled features)
     let mut sec_parts: Vec<&str> = Vec::new();
@@ -313,6 +317,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = wv.eval(&inject_media);
                 let _ = wv.eval(&inject_fingerprint);
                 let _ = wv.eval(&inject_vault);
+                let _ = wv.eval(&inject_glance);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
@@ -330,6 +335,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     builder = builder.initialization_script(&media_script);
     builder = builder.initialization_script(&fingerprint_script);
     builder = builder.initialization_script(&vault_script);
+    builder = builder.initialization_script(&glance_script);
 
     // only inject cosmetic scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
@@ -349,7 +355,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     ).map_err(|e| e.to_string())?;
 
     let state = app.state::<WebviewState>();
-    state.tabs.lock().unwrap_or_else(|e| e.into_inner()).insert(tab_id_track, true);
+    state.tabs.lock().insert(tab_id_track, true);
 
     // intercept downloads + ad blocking via WebView2 COM API
     #[cfg(windows)]
@@ -650,7 +656,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let app_clone = (*app_ref).clone();
                                         std::thread::spawn(move || {
                                             let vs = app_clone.state::<crate::vault::VaultState>();
-                                            let is_locked = vs.derived_key.lock().unwrap_or_else(|e| e.into_inner()).is_none();
+                                            let is_locked = vs.derived_key.lock().is_none();
                                             if is_locked {
                                                 // vault locked but page has login form — tell React to show unlock prompt
                                                 let has_master = crate::vault::has_master_password_sync(&vs);
@@ -681,6 +687,14 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let _ = app_ref.emit_to("main", "vault-save-prompt", serde_json::json!({
                                             "domain": domain, "username": username, "password": password
                                         }));
+                                    }
+                                    Some("glance") => {
+                                        if let Some(url) = msg.get("url").and_then(|v| v.as_str()) {
+                                            let _ = app_ref.emit_to("main", "glance-request", serde_json::json!({
+                                                "url": url,
+                                                "sourceTabId": *tab_ref
+                                            }));
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -803,7 +817,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     let tab_id_perm = tab_id_block.clone();
                     let perm_state = app_perm.state::<PermissionState>();
                     let perm_pending = perm_state.pending.clone();
-                    let perm_saved = perm_state.saved.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let perm_saved = perm_state.saved.lock().clone();
 
                     let perm_handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(
                         move |_sender, args| {
@@ -854,7 +868,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                     let mut user_initiated = windows_core::BOOL::default();
                                     let _ = args.IsUserInitiated(&mut user_initiated);
 
-                                    pending_ref.lock().unwrap_or_else(|e| e.into_inner())
+                                    pending_ref.lock()
                                         .insert(request_id.clone(), PendingPermission {
                                             deferral, args: args.clone(), _tab_id: tab_ref.clone(),
                                         });
@@ -909,6 +923,10 @@ async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
                         );
                         let _ = core3.TrySuspend(&handler);
                     }
+                    // set memory target to low — triggers GC, reduces slack
+                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                        let _ = core19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(1));
+                    }
                 }
             });
         }
@@ -933,6 +951,10 @@ async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
                     if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
                         let _ = core3.Resume();
                     }
+                    // restore memory target to normal
+                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                        let _ = core19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(0));
+                    }
                 }
             });
         }
@@ -945,7 +967,7 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
     crash_log::log_info("close_tab", &format!("id={}", id));
     // remove from state FIRST so layout_webviews won't try to position a dying webview
     let state = app.state::<WebviewState>();
-    state.tabs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    state.tabs.lock().remove(&id);
     if let Some(wv) = app.get_webview(&id) {
         if let Err(e) = wv.close() {
             crash_log::log_error("close_tab", &format!("wv.close() failed for {}: {}", id, e));
@@ -953,6 +975,87 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
     } else {
         crash_log::log_warn("close_tab", &format!("webview not found: {}", id));
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    let window = app.get_window("main").ok_or("no main window")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let total_w = size.width as f64 / scale;
+    let total_h = size.height as f64 / scale;
+    let content_w = total_w - sidebar_w;
+    let content_h = total_h - top_offset;
+
+    // 85% width, 80% height, centered in content area
+    let glance_w = content_w * 0.85;
+    let glance_h = content_h * 0.80;
+    let glance_x = sidebar_w + (content_w - glance_w) / 2.0;
+    let glance_y = top_offset + (content_h - glance_h) / 2.0;
+
+    // top bar is 40px rendered by React overlay, so offset webview content down
+    let bar_h = 40.0;
+    let wv_x = glance_x;
+    let wv_y = glance_y + bar_h;
+    let wv_w = glance_w;
+    let wv_h = glance_h - bar_h;
+
+    let webview_url = tauri::WebviewUrl::External(
+        url.parse().map_err(|e: url::ParseError| e.to_string())?
+    );
+
+    let bs = app.state::<BlockerState>();
+    let shortcut_s = bs.shortcut_script.clone();
+    let media_s = bs.media_script.clone();
+    let fingerprint_s = bs.fingerprint_script.clone();
+    let vault_s = bs.vault_script.clone();
+    let glance_s = bs.glance_script.clone();
+
+    let mut builder = tauri::WebviewBuilder::new(&glance_id, webview_url);
+    builder = builder.initialization_script(&shortcut_s);
+    builder = builder.initialization_script(&media_s);
+    builder = builder.initialization_script(&fingerprint_s);
+    builder = builder.initialization_script(&vault_s);
+    builder = builder.initialization_script(&glance_s);
+
+    let _webview = window.add_child(
+        builder,
+        tauri::LogicalPosition::new(wv_x, wv_y),
+        tauri::LogicalSize::new(wv_w, wv_h),
+    ).map_err(|e| e.to_string())?;
+
+    // register as panel so layout_webviews skips it
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().insert(glance_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_glance(app: tauri::AppHandle, glance_id: String) -> Result<(), String> {
+    // unregister from panels
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().remove(&glance_id);
+
+    // destroy webview
+    if let Some(wv) = app.get_webview(&glance_id) {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn promote_glance(app: tauri::AppHandle, glance_id: String) -> Result<(), String> {
+    // unregister from panels
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().remove(&glance_id);
+
+    // register as a normal tab in WebviewState using the glance_id as tab id
+    // (the webview label IS the glance_id, so layout_webviews can find it)
+    let ws = app.state::<WebviewState>();
+    ws.tabs.lock().insert(glance_id, false);
+
     Ok(())
 }
 
@@ -970,7 +1073,7 @@ struct PaneRectArg {
 #[tauri::command]
 async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<WebviewState>();
-    let tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let tabs = state.tabs.lock().clone();
     for (tab_id, _) in &tabs {
         if let Some(wv) = app.get_webview(tab_id) {
             let _ = wv.eval("if(window.__bushidoVaultRetry)window.__bushidoVaultRetry()");
@@ -983,8 +1086,8 @@ async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
 async fn layout_webviews(app: tauri::AppHandle, panes: Vec<PaneRectArg>, focused_tab_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
     let state = app.state::<WebviewState>();
     let panel_state = app.state::<PanelState>();
-    let panel_ids = panel_state.ids.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let tabs = state.tabs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let panel_ids = panel_state.ids.lock().clone();
+    let tabs = state.tabs.lock().clone();
 
     for (tab_id, _) in &tabs {
         if panel_ids.contains(tab_id) { continue; }
@@ -1136,6 +1239,15 @@ async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn set_tab_pinned(app: tauri::AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let js = format!("window.__bushidoPinned = {};", pinned);
+        let _ = wv.eval(&js);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward: bool) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
         if query.is_empty() {
@@ -1223,14 +1335,14 @@ async fn media_mute(app: tauri::AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 async fn register_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let ps = app.state::<PanelState>();
-    ps.ids.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
+    ps.ids.lock().insert(id);
     Ok(())
 }
 
 #[tauri::command]
 async fn unregister_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let ps = app.state::<PanelState>();
-    ps.ids.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    ps.ids.lock().remove(&id);
     Ok(())
 }
 
@@ -1310,7 +1422,7 @@ fn save_permissions(app: &tauri::AppHandle, perms: &HashMap<String, bool>) {
 async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
     let ws = app.state::<WhitelistState>();
     let (whitelisted, snapshot) = {
-        let mut sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sites = ws.sites.lock();
         let wl = if sites.contains(&domain) {
             sites.remove(&domain);
             false
@@ -1327,14 +1439,14 @@ async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool,
 #[tauri::command]
 async fn get_whitelist(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let ws = app.state::<WhitelistState>();
-    let sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
+    let sites = ws.sites.lock();
     Ok(sites.iter().cloned().collect())
 }
 
 #[tauri::command]
 async fn is_whitelisted(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
     let ws = app.state::<WhitelistState>();
-    let sites = ws.sites.lock().unwrap_or_else(|e| e.into_inner());
+    let sites = ws.sites.lock();
     Ok(sites.contains(&domain))
 }
 
@@ -1345,7 +1457,7 @@ async fn respond_permission(app: tauri::AppHandle, request_id: String, allow: bo
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
 
         let perm_state = app.state::<PermissionState>();
-        let pending = perm_state.pending.lock().unwrap_or_else(|e| e.into_inner())
+        let pending = perm_state.pending.lock()
             .remove(&request_id);
         let pending = pending.ok_or("Permission request not found")?;
 
@@ -1375,7 +1487,7 @@ async fn respond_permission(app: tauri::AppHandle, request_id: String, allow: bo
             };
             let kind_key = format!("{}:{}", domain, kind_str);
 
-            let mut saved = perm_state.saved.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = perm_state.saved.lock();
             saved.insert(kind_key, allow);
             save_permissions(&app, &saved);
         }
@@ -1395,7 +1507,7 @@ struct SavedPermissionEntry {
 #[tauri::command]
 async fn get_permissions(app: tauri::AppHandle) -> Result<Vec<SavedPermissionEntry>, String> {
     let ps = app.state::<PermissionState>();
-    let saved = ps.saved.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = ps.saved.lock();
     let result: Vec<SavedPermissionEntry> = saved.iter().map(|(key, &allowed)| {
         let parts: Vec<&str> = key.splitn(2, ':').collect();
         SavedPermissionEntry {
@@ -1410,7 +1522,7 @@ async fn get_permissions(app: tauri::AppHandle) -> Result<Vec<SavedPermissionEnt
 #[tauri::command]
 async fn revoke_permission(app: tauri::AppHandle, domain: String, permission: String) -> Result<(), String> {
     let ps = app.state::<PermissionState>();
-    let mut saved = ps.saved.lock().unwrap_or_else(|e| e.into_inner());
+    let mut saved = ps.saved.lock();
     let key = format!("{}:{}", domain, permission);
     saved.remove(&key);
     save_permissions(&app, &saved);
@@ -1433,7 +1545,7 @@ fn rebind_shortcut(app: tauri::AppHandle, action: String, old_combo: String, new
 
     // Update the keybinding map
     let kb = app.state::<KeybindingState>();
-    let mut map = kb.map.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = kb.map.lock();
     let old_normalized = normalize_combo(&old_combo);
     let new_normalized = normalize_combo(&new_combo);
     map.remove(&old_normalized);
@@ -1559,7 +1671,7 @@ async fn cancel_download(app: tauri::AppHandle, id: String) -> Result<(), String
 #[tauri::command]
 async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, String> {
     let dm = app.state::<downloads::DownloadManager>();
-    let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
+    let downloads = dm.downloads.lock();
     Ok(downloads.values().cloned().collect())
 }
 
@@ -1567,7 +1679,7 @@ async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, 
 async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let dm = app.state::<downloads::DownloadManager>();
     let path = {
-        let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
+        let downloads = dm.downloads.lock();
         let item = downloads.get(&id).ok_or("not found")?;
         item.file_path.clone()
     };
@@ -1578,7 +1690,7 @@ async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> 
 async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let dm = app.state::<downloads::DownloadManager>();
     let path = {
-        let downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
+        let downloads = dm.downloads.lock();
         let item = downloads.get(&id).ok_or("not found")?;
         item.file_path.clone()
     };
@@ -1597,7 +1709,11 @@ pub fn run() {
             "--disable-quic --site-per-process --origin-agent-cluster=true \
              --disable-dns-prefetch --disable-background-networking \
              --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
-             --disable-features=UserAgentClientHint");
+             --disable-features=UserAgentClientHint \
+             --renderer-process-limit=4 \
+             --js-flags=--max-old-space-size=512 \
+             --purge-v8-memory \
+             --disable-low-res-tiling");
     }
 
     // init data dir and crash logging FIRST
@@ -1617,6 +1733,7 @@ pub fn run() {
     let media_script = include_str!("media_listener.js").to_string();
     let fingerprint_script = include_str!("fingerprint.js").to_string();
     let vault_script = include_str!("vault_autofill.js").to_string();
+    let glance_script = include_str!("glance_listener.js").to_string();
 
     let sync_data_dir = data_dir.clone();
 
@@ -1676,6 +1793,7 @@ pub fn run() {
             media_script,
             fingerprint_script,
             vault_script,
+            glance_script,
         })
         .plugin({
             tauri_plugin_global_shortcut::Builder::new()
@@ -1690,7 +1808,7 @@ pub fn run() {
                 let normalized = shortcut.to_string().to_lowercase();
                 let kb_state = app.state::<KeybindingState>();
                 let action = {
-                    let map = kb_state.map.lock().unwrap_or_else(|e| e.into_inner());
+                    let map = kb_state.map.lock();
                     map.get(&normalized).cloned()
                 };
                 if let Some(action) = action {
@@ -1754,8 +1872,8 @@ pub fn run() {
                         if let Ok(mut disc) = sync::discovery::DiscoveryService::new() {
                             let _ = disc.register(&state.device_id, &state.device_name, &state.fingerprint);
                             let _ = disc.start_browsing(app.handle().clone(), state.device_id.clone());
-                            *state.discovery.lock().unwrap_or_else(|e| e.into_inner()) = Some(disc);
-                            *state.status.lock().unwrap_or_else(|e| e.into_inner()) = sync::SyncStatus::Discovering;
+                            *state.discovery.lock() = Some(disc);
+                            *state.status.lock() = sync::SyncStatus::Discovering;
                         }
                         state
                     } else {
@@ -1795,7 +1913,7 @@ pub fn run() {
             let pending = downloads::load_pending(&app.handle());
             if !pending.is_empty() {
                 let dm = app.state::<downloads::DownloadManager>();
-                let mut downloads = dm.downloads.lock().unwrap_or_else(|e| e.into_inner());
+                let mut downloads = dm.downloads.lock();
                 for item in pending {
                     downloads.insert(item.id.clone(), item);
                 }
@@ -1902,7 +2020,11 @@ pub fn run() {
             vault::vault_delete_entry,
             vault::vault_update_entry,
             vault::vault_generate_password,
-            vault_retry_autofill
+            vault_retry_autofill,
+            open_glance,
+            close_glance,
+            promote_glance,
+            set_tab_pinned
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Serialize, Deserialize};
@@ -106,7 +107,7 @@ impl RateLimiter {
         loop {
             // refill tokens based on elapsed time
             {
-                let mut last = self.last_refill.lock().unwrap();
+                let mut last = self.last_refill.lock();
                 let elapsed = last.elapsed().as_secs_f64();
                 if elapsed > 0.01 {
                     let refill = (elapsed * limit as f64) as u64;
@@ -344,13 +345,13 @@ pub async fn start(app: AppHandle, url: String, file_name: String, download_dir:
 
     {
         let dm = app.state::<DownloadManager>();
-        dm.downloads.lock().unwrap().insert(id.clone(), item.clone());
+        dm.downloads.lock().insert(id.clone(), item.clone());
     }
 
     let (tx, rx) = tokio::sync::watch::channel(false);
     {
         let dm = app.state::<DownloadManager>();
-        dm.cancel_tx.lock().unwrap().insert(id.clone(), tx);
+        dm.cancel_tx.lock().insert(id.clone(), tx);
     }
 
     let _ = app.emit_to("main", "download-started", &item);
@@ -387,7 +388,7 @@ pub async fn resume(app: AppHandle, id: String, rate_limiter: Arc<RateLimiter>) 
 
     let (url, file_path, _file_name, _download_dir, offset, has_segments) = {
         let dm = app.state::<DownloadManager>();
-        let mut downloads = dm.downloads.lock().unwrap();
+        let mut downloads = dm.downloads.lock();
         let item = downloads.get_mut(&id).ok_or("not found")?;
         if item.state != DlState::Paused { return Err("not paused".into()); }
         if !item.supports_range { return Err("server doesn't support resume".into()); }
@@ -401,7 +402,7 @@ pub async fn resume(app: AppHandle, id: String, rate_limiter: Arc<RateLimiter>) 
     let (tx, rx) = tokio::sync::watch::channel(false);
     {
         let dm = app.state::<DownloadManager>();
-        dm.cancel_tx.lock().unwrap().insert(id.clone(), tx);
+        dm.cancel_tx.lock().insert(id.clone(), tx);
     }
 
     let app2 = app.clone();
@@ -433,11 +434,11 @@ pub fn pause(app: &AppHandle, id: &str) -> Result<(), String> {
     let dm = app.state::<DownloadManager>();
 
     // signal cancel to stop the stream
-    if let Some(tx) = dm.cancel_tx.lock().unwrap().remove(id) {
+    if let Some(tx) = dm.cancel_tx.lock().remove(id) {
         let _ = tx.send(true);
     }
 
-    let mut downloads = dm.downloads.lock().unwrap();
+    let mut downloads = dm.downloads.lock();
     let item = downloads.get_mut(id).ok_or("not found")?;
     item.state = DlState::Paused;
     item.speed = 0;
@@ -472,12 +473,12 @@ pub fn cancel(app: &AppHandle, id: &str) -> Result<(), String> {
     let dm = app.state::<DownloadManager>();
 
     // signal cancel
-    if let Some(tx) = dm.cancel_tx.lock().unwrap().remove(id) {
+    if let Some(tx) = dm.cancel_tx.lock().remove(id) {
         let _ = tx.send(true);
     }
 
     let file_path = {
-        let mut downloads = dm.downloads.lock().unwrap();
+        let mut downloads = dm.downloads.lock();
         let item = downloads.remove(id).ok_or("not found")?;
         item.file_path
     };
@@ -508,7 +509,7 @@ async fn dl_task(
     let mut supports_range = false;
     {
         let dm = app.state::<DownloadManager>();
-        let downloads = dm.downloads.lock().unwrap();
+        let downloads = dm.downloads.lock();
         if let Some(item) = downloads.get(&id) {
             total_bytes = item.total_bytes;
             supports_range = item.supports_range;
@@ -545,7 +546,7 @@ async fn dl_task(
             if let Ok(len) = cl.to_str().unwrap_or("0").parse::<u64>() {
                 total_bytes = Some(len + actual_offset);
                 let dm = app.state::<DownloadManager>();
-                let mut downloads = dm.downloads.lock().unwrap();
+                let mut downloads = dm.downloads.lock();
                 if let Some(item) = downloads.get_mut(&id) {
                     item.total_bytes = total_bytes;
                 }
@@ -619,7 +620,7 @@ async fn dl_task(
                         if last_emit.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
                             last_emit = Instant::now();
                             let dm = app.state::<DownloadManager>();
-                            let mut downloads = dm.downloads.lock().unwrap();
+                            let mut downloads = dm.downloads.lock();
                             if let Some(item) = downloads.get_mut(&id) {
                                 item.received_bytes = received;
                                 item.speed = speed;
@@ -631,7 +632,7 @@ async fn dl_task(
                         if last_manifest.elapsed().as_secs() >= MANIFEST_INTERVAL_SECS {
                             last_manifest = Instant::now();
                             let dm = app.state::<DownloadManager>();
-                            let downloads = dm.downloads.lock().unwrap();
+                            let downloads = dm.downloads.lock();
                             if let Some(item) = downloads.get(&id) {
                                 let m = Manifest {
                                     id: id.clone(),
@@ -671,7 +672,7 @@ async fn dl_task(
 
     {
         let dm = app.state::<DownloadManager>();
-        let mut downloads = dm.downloads.lock().unwrap();
+        let mut downloads = dm.downloads.lock();
         if let Some(item) = downloads.get_mut(&id) {
             item.received_bytes = received;
             item.state = DlState::Completed;
@@ -734,9 +735,9 @@ async fn dl_task_chunked(
     // update DlItem segment count
     {
         let dm = app.state::<DownloadManager>();
-        let mut downloads = dm.downloads.lock().unwrap();
+        let mut downloads = dm.downloads.lock();
         if let Some(item) = downloads.get_mut(&id) {
-            let segs = seg_state.lock().unwrap();
+            let segs = seg_state.lock();
             item.segments = segs.iter().filter(|s| !s.done).count() as u32;
         }
     }
@@ -747,7 +748,7 @@ async fn dl_task_chunked(
 
     // spawn workers for non-done segments
     {
-        let segs = seg_state.lock().unwrap();
+        let segs = seg_state.lock();
         for seg in segs.iter() {
             if seg.done { continue; }
             spawn_segment_worker(
@@ -767,7 +768,7 @@ async fn dl_task_chunked(
 
     // track active worker count to know when all are done
     let mut active_workers = {
-        let segs = seg_state.lock().unwrap();
+        let segs = seg_state.lock();
         segs.iter().filter(|s| !s.done).count()
     };
 
@@ -776,7 +777,7 @@ async fn dl_task_chunked(
     let mut speed_bytes: u64 = 0;
     let mut speed_start = Instant::now();
     let mut last_total: u64 = {
-        let segs = seg_state.lock().unwrap();
+        let segs = seg_state.lock();
         segs.iter().map(|s| s.downloaded).sum()
     };
 
@@ -815,7 +816,7 @@ async fn dl_task_chunked(
             _ = tick.tick() => {
                 // aggregate progress
                 let (received, active_count) = {
-                    let segs = seg_state.lock().unwrap();
+                    let segs = seg_state.lock();
                     let r: u64 = segs.iter().map(|s| s.downloaded).sum();
                     let a = segs.iter().filter(|s| !s.done).count() as u32;
                     (r, a)
@@ -840,7 +841,7 @@ async fn dl_task_chunked(
                 // emit progress
                 {
                     let dm = app.state::<DownloadManager>();
-                    let mut downloads = dm.downloads.lock().unwrap();
+                    let mut downloads = dm.downloads.lock();
                     if let Some(item) = downloads.get_mut(&id) {
                         item.received_bytes = received;
                         item.speed = speed;
@@ -852,9 +853,9 @@ async fn dl_task_chunked(
                 // periodic manifest save
                 if last_manifest_save.elapsed().as_secs() >= MANIFEST_INTERVAL_SECS {
                     last_manifest_save = Instant::now();
-                    let segs = seg_state.lock().unwrap().clone();
+                    let segs = seg_state.lock().clone();
                     let dm = app.state::<DownloadManager>();
-                    let downloads = dm.downloads.lock().unwrap();
+                    let downloads = dm.downloads.lock();
                     if let Some(item) = downloads.get(&id) {
                         let m = Manifest {
                             id: id.clone(),
@@ -876,10 +877,10 @@ async fn dl_task_chunked(
             }
             _ = cancel_rx.changed() => {
                 // pause/cancel — save manifest with current segment state
-                let segs = seg_state.lock().unwrap().clone();
+                let segs = seg_state.lock().clone();
                 let received: u64 = segs.iter().map(|s| s.downloaded).sum();
                 let dm = app.state::<DownloadManager>();
-                let downloads = dm.downloads.lock().unwrap();
+                let downloads = dm.downloads.lock();
                 if let Some(item) = downloads.get(&id) {
                     let m = Manifest {
                         id: id.clone(),
@@ -905,13 +906,13 @@ async fn dl_task_chunked(
 
     // all done — mark complete
     let received: u64 = {
-        let segs = seg_state.lock().unwrap();
+        let segs = seg_state.lock();
         segs.iter().map(|s| s.downloaded).sum()
     };
 
     {
         let dm = app.state::<DownloadManager>();
-        let mut downloads = dm.downloads.lock().unwrap();
+        let mut downloads = dm.downloads.lock();
         if let Some(item) = downloads.get_mut(&id) {
             item.received_bytes = received;
             item.state = DlState::Completed;
@@ -967,7 +968,7 @@ fn spawn_segment_worker(
             Ok(r) => r,
             Err(_) => {
                 // segment failed, mark done to not block
-                let mut segs = seg_state.lock().unwrap();
+                let mut segs = seg_state.lock();
                 if let Some(s) = segs.iter_mut().find(|s| s.idx == seg_idx) {
                     s.done = true;
                 }
@@ -979,7 +980,7 @@ fn spawn_segment_worker(
         let file = match std::fs::OpenOptions::new().write(true).open(&file_path) {
             Ok(f) => f,
             Err(_) => {
-                let mut segs = seg_state.lock().unwrap();
+                let mut segs = seg_state.lock();
                 if let Some(s) = segs.iter_mut().find(|s| s.idx == seg_idx) {
                     s.done = true;
                 }
@@ -1006,7 +1007,7 @@ fn spawn_segment_worker(
 
                             // update shared segment state
                             let current_end = {
-                                let mut segs = seg_state.lock().unwrap();
+                                let mut segs = seg_state.lock();
                                 if let Some(s) = segs.iter_mut().find(|s| s.idx == seg_idx) {
                                     s.downloaded += len;
                                     s.end
@@ -1032,7 +1033,7 @@ fn spawn_segment_worker(
 
         // mark segment done
         {
-            let mut segs = seg_state.lock().unwrap();
+            let mut segs = seg_state.lock();
             if let Some(s) = segs.iter_mut().find(|s| s.idx == seg_idx) {
                 s.done = true;
             }
@@ -1043,7 +1044,7 @@ fn spawn_segment_worker(
 
 // dynamic segment splitting: find biggest non-done segment, split at midpoint
 fn try_split(seg_state: &Arc<Mutex<Vec<Segment>>>) -> Option<(u32, u64, u64)> {
-    let mut segs = seg_state.lock().unwrap();
+    let mut segs = seg_state.lock();
 
     // find non-done segment with most remaining bytes
     let mut best_idx: Option<usize> = None;
@@ -1087,7 +1088,7 @@ fn try_split(seg_state: &Arc<Mutex<Vec<Segment>>>) -> Option<(u32, u64, u64)> {
 
 pub fn set_priority(app: &AppHandle, id: &str, priority: u32) -> Result<(), String> {
     let dm = app.state::<DownloadManager>();
-    let mut downloads = dm.downloads.lock().unwrap();
+    let mut downloads = dm.downloads.lock();
     let item = downloads.get_mut(id).ok_or("not found")?;
     item.priority = priority;
     let _ = app.emit_to("main", "download-progress", item.clone());
@@ -1096,7 +1097,7 @@ pub fn set_priority(app: &AppHandle, id: &str, priority: u32) -> Result<(), Stri
 
 fn fail(app: &AppHandle, id: &str, error: &str) {
     let dm = app.state::<DownloadManager>();
-    let mut downloads = dm.downloads.lock().unwrap();
+    let mut downloads = dm.downloads.lock();
     if let Some(item) = downloads.get_mut(id) {
         item.state = DlState::Failed;
         item.error = Some(error.to_string());

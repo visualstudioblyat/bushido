@@ -1,7 +1,8 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Debug, Serialize)]
@@ -76,7 +77,7 @@ impl DiscoveryService {
 
     pub fn start_browsing(&self, app: AppHandle, own_device_id: String) -> Result<(), String> {
         {
-            let mut active = self.browse_active.lock().unwrap_or_else(|e| e.into_inner());
+            let mut active = self.browse_active.lock();
             if *active {
                 return Ok(()); // already browsing
             }
@@ -93,7 +94,7 @@ impl DiscoveryService {
             while let Ok(event) = receiver.recv() {
                 // check if we should stop
                 {
-                    let active = browse_active.lock().unwrap_or_else(|e| e.into_inner());
+                    let active = browse_active.lock();
                     if !*active { break; }
                 }
 
@@ -132,7 +133,7 @@ impl DiscoveryService {
 
                         // store and emit
                         {
-                            let mut peers_lock = peers.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut peers_lock = peers.lock();
                             peers_lock.insert(device_id.clone(), peer.clone());
                         }
 
@@ -148,7 +149,7 @@ impl DiscoveryService {
                     }
                     ServiceEvent::ServiceRemoved(_ty, fullname) => {
                         // extract device_id from fullname and remove
-                        let mut peers_lock = peers.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut peers_lock = peers.lock();
                         let removed_id = peers_lock.iter()
                             .find(|(_, p)| fullname.contains(&p.device_id[..8.min(p.device_id.len())]))
                             .map(|(id, _)| id.clone());
@@ -166,7 +167,7 @@ impl DiscoveryService {
     }
 
     pub fn stop_browsing(&self) {
-        let mut active = self.browse_active.lock().unwrap_or_else(|e| e.into_inner());
+        let mut active = self.browse_active.lock();
         *active = false;
     }
 
@@ -188,7 +189,7 @@ impl DiscoveryService {
     }
 
     pub fn get_peers(&self) -> Vec<PeerInfo> {
-        let peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let peers = self.peers.lock();
         peers.values().cloned().collect()
     }
 }

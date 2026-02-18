@@ -2,7 +2,15 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react({
+      babel: {
+        plugins: [
+          ["babel-plugin-react-compiler", { target: "18" }],
+        ],
+      },
+    }),
+  ],
   clearScreen: false,
   server: {
     port: 1420,
@@ -13,6 +21,7 @@ export default defineConfig({
     target: "esnext",
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_DEBUG,
+    cssCodeSplit: true,
     rollupOptions: {
       output: {
         manualChunks: {

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::Serialize;
 use uuid::Uuid;
@@ -82,7 +82,7 @@ impl VaultState {
     }
 
     fn get_key(&self) -> Result<[u8; 32], String> {
-        let guard = self.derived_key.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.derived_key.lock();
         guard.ok_or_else(|| "vault locked".to_string())
     }
 }
@@ -112,7 +112,7 @@ pub fn has_master_password_sync(state: &VaultState) -> bool {
 
 // sync helper for postMessage handler (no async)
 pub fn get_entries_for_domain(state: &VaultState, domain: &str) -> Result<Vec<VaultEntry>, String> {
-    if state.derived_key.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+    if state.derived_key.lock().is_none() {
         return Ok(vec![]);
     }
     let conn = state.open_db()?;
@@ -171,7 +171,7 @@ pub async fn vault_setup(state: tauri::State<'_, VaultState>, master_password: S
 
     // derive and store key in memory
     let key = derive_key(&master_password, salt.as_str().as_bytes())?;
-    let mut guard = state.derived_key.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = state.derived_key.lock();
     *guard = Some(key);
 
     Ok(())
@@ -207,7 +207,7 @@ pub async fn vault_unlock(state: tauri::State<'_, VaultState>, master_password: 
         .map_err(|_| "wrong password".to_string())?;
 
     let key = derive_key(&master_password, salt_str.as_bytes())?;
-    let mut guard = state.derived_key.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = state.derived_key.lock();
     *guard = Some(key);
 
     Ok(())
@@ -215,7 +215,7 @@ pub async fn vault_unlock(state: tauri::State<'_, VaultState>, master_password: 
 
 #[tauri::command]
 pub async fn vault_lock(state: tauri::State<'_, VaultState>) -> Result<(), String> {
-    let mut guard = state.derived_key.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = state.derived_key.lock();
     if let Some(ref mut key) = *guard {
         // zero out before dropping
         key.iter_mut().for_each(|b| *b = 0);
@@ -226,7 +226,7 @@ pub async fn vault_lock(state: tauri::State<'_, VaultState>) -> Result<(), Strin
 
 #[tauri::command]
 pub async fn vault_is_unlocked(state: tauri::State<'_, VaultState>) -> Result<bool, String> {
-    let guard = state.derived_key.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = state.derived_key.lock();
     Ok(guard.is_some())
 }
 
