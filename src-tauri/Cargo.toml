@@ -1,6 +1,6 @@
 [package]
 name = "bushido-browser"
-version = "0.10.6"
+version = "0.10.7"
 description = "Bushido Browser"
 authors = [""]
 edition = "2021"
@@ -43,6 +43,7 @@ zeroize = "1"
 argon2 = "0.5"
 hostname = "0.4"
 parking_lot = "0.12"
+mimalloc = { version = "0.1", default-features = false }
 
 # LAN Sync — Phase B: Pairing + Encryption
 spake2 = "0.4"
@@ -57,7 +58,7 @@ lz4_flex = "0.11"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows-core = "0.61"
-windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage"] }
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage", "Win32_System_ProcessStatus"] }
 windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
 arboard = { version = "3", features = ["image-data"] }
 

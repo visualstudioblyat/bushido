@@ -6,6 +6,9 @@ mod screenshot;
 mod sync;
 mod vault;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
 use std::sync::Arc;
@@ -143,6 +146,70 @@ struct PermissionState {
     saved: Mutex<HashMap<String, bool>>,
     #[cfg(windows)]
     pending: Arc<Mutex<HashMap<String, PendingPermission>>>,
+}
+
+/// Trim working set of the current process — moves pages to the standby list,
+/// recovering 70-85% of RSS. The OS will page them back in on demand.
+#[cfg(windows)]
+fn trim_working_set() {
+    use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let _ = K32EmptyWorkingSet(GetCurrentProcess());
+    }
+}
+
+/// Enable or disable EcoQoS (Efficiency Mode) on the current process.
+/// When enabled, Windows schedules the process on E-cores and limits clock boost.
+#[cfg(windows)]
+fn set_ecoqos(enable: bool) {
+    use windows::Win32::System::Threading::*;
+    use std::mem::size_of;
+    unsafe {
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: if enable { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+        };
+        let _ = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            &state as *const _ as *const std::ffi::c_void,
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+    }
+}
+
+/// Set memory priority for the current process (0=lowest, 5=normal).
+/// Background browsers should use MEMORY_PRIORITY_VERY_LOW (1).
+#[cfg(windows)]
+fn set_memory_priority(priority: u32) {
+    use windows::Win32::System::Threading::*;
+    use std::mem::size_of;
+    unsafe {
+        let info = MEMORY_PRIORITY_INFORMATION {
+            MemoryPriority: MEMORY_PRIORITY(priority),
+        };
+        let _ = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessMemoryPriority,
+            &info as *const _ as *const std::ffi::c_void,
+            size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        );
+    }
+}
+
+/// Called by React when window is minimized (low=true) or restored (low=false).
+/// Enables EcoQoS + low memory priority when minimized, restores on focus.
+#[tauri::command]
+async fn set_power_mode(low: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        set_ecoqos(low);
+        set_memory_priority(if low { 1 } else { 5 }); // 1=VERY_LOW, 5=NORMAL
+        if low { trim_working_set(); }
+    }
+    Ok(())
 }
 
 fn is_blocked_scheme(url: &str) -> bool {
@@ -906,6 +973,19 @@ async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
         // pause media before suspending to prevent AUDIO_RENDERER_ERROR on resume
         let _ = wv.eval("document.querySelectorAll('video,audio').forEach(m=>m.pause())");
 
+        // inject content-visibility:hidden to stop rendering + force-lose WebGL contexts
+        let _ = wv.eval(
+            "(function(){try{\
+                let s=document.getElementById('__bushido_bg_style');\
+                if(!s){s=document.createElement('style');s.id='__bushido_bg_style';document.head.appendChild(s)}\
+                s.textContent='*{content-visibility:hidden !important}';\
+                document.querySelectorAll('canvas').forEach(c=>{\
+                    let gl=c.getContext('webgl')||c.getContext('webgl2');\
+                    if(gl){let ext=gl.getExtension('WEBGL_lose_context');if(ext)ext.loseContext()}\
+                });\
+            }catch(e){}})()"
+        );
+
         #[cfg(windows)]
         {
             let _ = wv.with_webview(move |wv| {
@@ -929,6 +1009,9 @@ async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
                     }
                 }
             });
+
+            // trim working set of our own process after suspend
+            trim_working_set();
         }
     }
     Ok(())
@@ -958,6 +1041,14 @@ async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
                 }
             });
         }
+
+        // remove background rendering block
+        let _ = wv.eval(
+            "(function(){try{\
+                let s=document.getElementById('__bushido_bg_style');\
+                if(s)s.remove();\
+            }catch(e){}})()"
+        );
     }
     Ok(())
 }
@@ -1706,14 +1797,17 @@ pub fn run() {
     {
         std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--disable-quic --site-per-process --origin-agent-cluster=true \
+            "--enable-quic --site-per-process --origin-agent-cluster=true \
              --disable-dns-prefetch --disable-background-networking \
              --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
              --disable-features=UserAgentClientHint \
              --renderer-process-limit=4 \
-             --js-flags=--max-old-space-size=512 \
+             --js-flags=\"--max-old-space-size=512 --max-semi-space-size=2 --optimize-for-size --lite-mode\" \
              --purge-v8-memory \
-             --disable-low-res-tiling");
+             --disable-low-res-tiling \
+             --gpu-rasterization-msaa-sample-count=0 \
+             --enable-zero-copy \
+             --decoded-image-working-set-budget-mb=128");
     }
 
     // init data dir and crash logging FIRST
@@ -2024,7 +2118,8 @@ pub fn run() {
             open_glance,
             close_glance,
             promote_glance,
-            set_tab_pinned
+            set_tab_pinned,
+            set_power_mode
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

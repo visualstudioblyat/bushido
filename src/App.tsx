@@ -766,6 +766,15 @@ export default function App() {
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
 
+  // EcoQoS + memory priority: low-power mode when window hidden/minimized
+  useEffect(() => {
+    const onVisChange = () => {
+      invoke("set_power_mode", { low: document.hidden }).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
+
   // panel positioning
   const positionActivePanel = useCallback(() => {
     if (!activePanelId || compactMode) return;
