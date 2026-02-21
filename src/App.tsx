@@ -123,6 +123,8 @@ export default function App() {
   const setUrlQuery = useUiStore(s => s.setUrlQuery);
   const pageCtx = useUiStore(s => s.pageCtx);
   const setPageCtx = useUiStore(s => s.setPageCtx);
+  const errorToast = useUiStore(s => s.errorToast);
+  const showError = useUiStore(s => s.showError);
 
   const historyEntries = useDataStore(s => s.historyEntries);
   const setHistoryEntries = useDataStore(s => s.setHistoryEntries);
@@ -459,7 +461,7 @@ export default function App() {
         compactMode,
         panels: panels.map(p => ({ id: p.id, url: p.url, title: p.title, favicon: p.favicon })),
       };
-      invoke("save_session", { tabs: JSON.stringify(session) });
+      invoke("save_session", { tabs: JSON.stringify(session) }).catch(() => showError("Failed to save session"));
     }, 1000);
     return () => clearTimeout(t);
   }, [tabs, workspaces, activeWorkspaceId, compactMode, panels]);
@@ -2122,6 +2124,14 @@ export default function App() {
         <span>{syncToast === "syncing" ? "Syncing..." : syncToast === "success" ? "Synced" : "Sync failed"}</span>
       </div>
     )}
+    {errorToast && (
+      <div className="sync-toast sync-toast--error">
+        <svg className="sync-toast-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 4v5M8 11v1" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        <span>{errorToast}</span>
+      </div>
+    )}
     {syncTabReceived && (
       <div className="sync-toast sync-toast--tab-received" onClick={() => {
         navigate(syncTabReceived.url);
@@ -2148,7 +2158,7 @@ export default function App() {
             setVaultMasterModal(hasMaster ? "unlock" : "setup");
             return;
           }
-          await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => {});
+          await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => showError("Failed to save password"));
           setVaultSavePrompt(null);
         }}>Save</button>
         <button className="vault-save-btn dismiss" onClick={() => setVaultSavePrompt(null)}>Dismiss</button>
@@ -2172,10 +2182,10 @@ export default function App() {
             const pw = (form.elements.namedItem("vaultpw") as HTMLInputElement).value;
             if (vaultMasterModal === "setup") {
               const confirm = (form.elements.namedItem("vaultpw2") as HTMLInputElement).value;
-              if (pw !== confirm) { alert("Passwords don't match"); return; }
-              await invoke("vault_setup", { masterPassword: pw }).catch((err: any) => { alert(err); return; });
+              if (pw !== confirm) { showError("Passwords don't match"); return; }
+              await invoke("vault_setup", { masterPassword: pw }).catch((err: any) => { showError(String(err)); return; });
             } else {
-              await invoke("vault_unlock", { masterPassword: pw }).catch((err: any) => { alert(String(err)); return; });
+              await invoke("vault_unlock", { masterPassword: pw }).catch((err: any) => { showError(String(err)); return; });
             }
             setVaultUnlocked(true);
             setVaultMasterModal(null);
@@ -2183,7 +2193,7 @@ export default function App() {
             invoke("vault_retry_autofill").catch(() => {});
             // retry save if pending
             if (vaultSavePrompt) {
-              await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => {});
+              await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => showError("Failed to save password"));
               setVaultSavePrompt(null);
             }
           }}>

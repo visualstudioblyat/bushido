@@ -2,6 +2,7 @@ import { memo, useCallback, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BushidoSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
+import { useUiStore } from "../store/uiStore";
 import PairingWizard from "./PairingWizard";
 
 interface Props {
@@ -1007,7 +1008,9 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               for (const [action, combo] of Object.entries(defaults)) {
                 const oldCombo = kb[action];
                 if (oldCombo && oldCombo !== combo) {
-                  await invoke("rebind_shortcut", { action, oldCombo, newCombo: combo }).catch(() => {});
+                  await invoke("rebind_shortcut", { action, oldCombo, newCombo: combo }).catch(() => {
+                    useUiStore.getState().showError("Failed to rebind shortcut");
+                  });
                 }
               }
               onUpdate({ keybindings: { ...defaults } });
@@ -1025,7 +1028,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       await invoke("vault_unlock", { masterPassword: pw });
       setVaultUnlocked(true);
       invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(() => {});
-    } catch (e) { alert(String(e)); }
+    } catch (e) { useUiStore.getState().showError(String(e)); }
   };
 
   const vaultSetup = async (pw: string) => {
@@ -1033,7 +1036,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       await invoke("vault_setup", { masterPassword: pw });
       setVaultUnlocked(true);
       setVaultHasMaster(true);
-    } catch (e) { alert(String(e)); }
+    } catch (e) { useUiStore.getState().showError(String(e)); }
   };
 
   const renderPasswords = () => {
@@ -1092,8 +1095,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                     <button className="vault-entry-btn" onClick={() => navigator.clipboard.writeText(entry.password)}>Copy</button>
                   </div>
                   <button className="vault-entry-btn danger" onClick={async () => {
-                    await invoke("vault_delete_entry", { id: entry.id });
-                    setVaultEntries(prev => prev.filter(e => e.id !== entry.id));
+                    try {
+                      await invoke("vault_delete_entry", { id: entry.id });
+                      setVaultEntries(prev => prev.filter(e => e.id !== entry.id));
+                    } catch { useUiStore.getState().showError("Failed to delete password"); }
                   }}>Delete</button>
                 </div>
               ))}

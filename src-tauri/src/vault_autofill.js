@@ -247,8 +247,8 @@
     vlog('trySavePrompt: found', forms.length, 'forms');
     for (var i = 0; i < forms.length; i++) {
       var pw = forms[i].pass;
-      // use field value, or fall back to cached value (google clears field on submit)
-      var pwValue = (pw && pw.value) ? pw.value : lastPwValue;
+      // use field value, or fall back to cached value only if same domain
+      var pwValue = (pw && pw.value) ? pw.value : (lastPwDomain === location.hostname ? lastPwValue : '');
       vlog('  form', i, 'pw:', pw ? pw.type : 'null', 'field:', pw && pw.value ? pw.value.length + ' chars' : 'empty', 'cached:', lastPwValue.length, 'chars');
       if (!pwValue) continue;
       var userField = forms[i].user;

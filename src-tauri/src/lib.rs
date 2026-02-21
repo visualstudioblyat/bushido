@@ -795,6 +795,51 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let mut crash_token: i64 = 0;
                 let _ = core.add_ProcessFailed(&crash_handler, &mut crash_token);
 
+                // navigation error page — styled error when page fails to load
+                let nav_handler = webview2_com::NavigationCompletedEventHandler::create(Box::new(
+                    move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
+                        if let (Some(wv), Some(args)) = (sender, args) {
+                            let mut success = windows_core::BOOL(0);
+                            let _ = unsafe { args.IsSuccess(&mut success) };
+                            if success.0 == 0 {
+                                // WebErrorStatus is COREWEBVIEW2_WEB_ERROR_STATUS(i32) newtype
+                                let mut status: i32 = 0;
+                                let _ = unsafe { args.WebErrorStatus(&mut status as *mut i32 as *mut _) };
+                                // skip user-cancelled navigations
+                                if status == 14 { return Ok(()); }
+                                let msg = match status {
+                                    6 | 12 => "Server unreachable",
+                                    7 => "Connection timed out",
+                                    11 => "You're offline",
+                                    13 => "Couldn't find that site",
+                                    9 | 10 => "Connection was reset",
+                                    15 => "Too many redirects",
+                                    1..=5 => "Certificate error",
+                                    _ => "Something went wrong",
+                                };
+                                let hint = match status {
+                                    11 => "Check your internet connection",
+                                    13 => "Check the URL or try again",
+                                    7 => "The server took too long to respond",
+                                    1..=5 => "This site's security certificate has a problem",
+                                    _ => "Try refreshing or check your connection",
+                                };
+                                let js = format!(
+                                    r#"document.documentElement.innerHTML = '<head><style>body{{margin:0;background:#0c0c0f;color:#e2e2e8;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}}h1{{font-size:28px;font-weight:600;margin:0 0 8px;letter-spacing:-0.5px}}p{{opacity:0.5;font-size:14px;margin:0 0 24px}}button{{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);color:#e2e2e8;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;transition:background 0.15s}}button:hover{{background:rgba(255,255,255,0.12)}}.code{{opacity:0.3;font-size:11px;margin-top:12px;font-family:monospace}}</style></head><body><div><h1>{msg}</h1><p>{hint}</p><button onclick="location.reload()">Try again</button><div class="code">ERR_{code}</div></div></body>';"#,
+                                    msg = msg, hint = hint, code = status
+                                );
+                                let _ = unsafe { wv.ExecuteScript(
+                                    &windows_core::HSTRING::from(&js),
+                                    None,
+                                ) };
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+                let mut nav_token: i64 = 0;
+                let _ = core.add_NavigationCompleted(&nav_handler, &mut nav_token);
+
                 // context menu — suppress default Chromium menu, emit target info to React
                 if let Ok(core11) = core.cast::<ICoreWebView2_11>() {
                     let app_ctx = app_for_block.clone();

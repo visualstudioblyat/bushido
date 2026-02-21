@@ -14,6 +14,7 @@ interface UiState {
   dropZone: DropZone | null;
   dragOverContent: boolean;
   pageCtx: PageCtxMenu | null;
+  errorToast: string | null;
 
   setSidebarOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   setCompactMode: (v: boolean | ((p: boolean) => boolean)) => void;
@@ -27,6 +28,7 @@ interface UiState {
   setDropZone: (v: DropZone | null) => void;
   setDragOverContent: (v: boolean) => void;
   setPageCtx: (v: PageCtxMenu | null) => void;
+  showError: (msg: string) => void;
 }
 
 const toggle = (v: boolean | ((p: boolean) => boolean), prev: boolean) =>
@@ -45,6 +47,7 @@ export const useUiStore = create<UiState>((set) => ({
   dropZone: null,
   dragOverContent: false,
   pageCtx: null,
+  errorToast: null,
 
   setSidebarOpen: (v) => set((s) => ({ sidebarOpen: toggle(v, s.sidebarOpen) })),
   setCompactMode: (v) => set((s) => ({ compactMode: toggle(v, s.compactMode) })),
@@ -58,4 +61,8 @@ export const useUiStore = create<UiState>((set) => ({
   setDropZone: (v) => set({ dropZone: v }),
   setDragOverContent: (v) => set({ dragOverContent: v }),
   setPageCtx: (v) => set({ pageCtx: v }),
+  showError: (msg) => {
+    set({ errorToast: msg });
+    setTimeout(() => set({ errorToast: null }), 4000);
+  },
 }));

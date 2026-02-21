@@ -2,6 +2,24 @@
 
 ---
 
+## v0.10.8
+
+**2026-02-20**
+
+Stability hardening. Silent failures replaced with visible feedback, and navigation errors get a styled error page instead of Chrome's default.
+
+### Added
+
+- **Error toast system** — `showError(msg)` in uiStore, auto-clears after 4s. Reuses existing sync-toast glass styling with danger color. Replaces silent `.catch(() => {})` on vault save/unlock/delete, session save, and shortcut rebind operations. Also replaces raw `alert()` calls in vault setup/unlock flows.
+
+- **Custom error page** — `NavigationCompletedEventHandler` on every child webview detects failed navigations via `IsSuccess()` + `WebErrorStatus()`. Injects a styled HTML error page matching Bushido's dark aesthetic instead of Chrome's default white "This site can't be reached". Human-readable messages per error code: "You're offline", "Couldn't find that site", "Connection timed out", "Server unreachable", "Certificate error". Includes "Try again" button. Skips user-cancelled navigations.
+
+### Fixed
+
+- **Vault domain leak** — cached `lastPwValue` in `vault_autofill.js` was persisting across domain navigations, potentially autofilling the wrong password. Now scoped to the domain where the password was captured.
+
+---
+
 ## v0.10.7
 
 **2026-02-19**
