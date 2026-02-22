@@ -388,7 +388,7 @@ export default function App() {
         const firstActiveWs = restoredWs.find(w => w.id === session.activeWorkspaceId);
         restoredTabs.forEach(t => {
           if (!t.url.startsWith("bushido://") && !t.suspended) {
-            invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, ...tabArgs });
+            invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, profileName: t.workspaceId, ...tabArgs });
             clearLoading(t.id);
           }
         });
@@ -439,7 +439,7 @@ export default function App() {
           setActiveWorkspaceId(wsId);
 
           restored.forEach(t => {
-            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40, ...tabArgs });
+            invoke("create_tab", { id: t.id, url: t.url, sidebarW: 300, topOffset: 40, profileName: t.workspaceId, ...tabArgs });
             clearLoading(t.id);
           });
           invoke("layout_webviews", { panes: [{ tabId: restored[0].id, x: 0, y: 0, w: window.innerWidth - 300, h: window.innerHeight - 40 }], focusedTabId: restored[0].id, sidebarW: 300, topOffset: 40 });
@@ -740,7 +740,11 @@ export default function App() {
         const g = { id: glanceId, url: e.payload.url, title: e.payload.url, sourceTabId: e.payload.sourceTabId };
         glanceRef.current = g;
         setGlance(g);
-        invoke("open_glance", { url: e.payload.url, glanceId, sidebarW: layoutOffsetRef.current, topOffset });
+        setTabs(prev => {
+          const src = prev.find(t => t.id === e.payload.sourceTabId);
+          invoke("open_glance", { url: e.payload.url, glanceId, sidebarW: layoutOffsetRef.current, topOffset, profileName: src?.workspaceId });
+          return prev;
+        });
         // hide tab webviews so overlay is visible
         invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: layoutOffsetRef.current, topOffset });
       }),
@@ -754,6 +758,19 @@ export default function App() {
         if (!vaultUnlockedRef.current) {
           setVaultMasterModal("unlock");
         }
+      }),
+      // popup / window.open from webview — open in same workspace
+      listen<{ sourceTabId: string; url: string }>("new-window-requested", (e) => {
+        const id = genId();
+        setTabs(prev => {
+          const sourceTab = prev.find(t => t.id === e.payload.sourceTabId);
+          const wsId = sourceTab?.workspaceId || "ws-1";
+          const tab: Tab = { id, url: e.payload.url, title: "Loading...", loading: true, workspaceId: wsId, lastActiveAt: Date.now() };
+          const sr = settingsRef.current;
+          invoke("create_tab", { id, url: e.payload.url, sidebarW: layoutOffsetRef.current, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: wsId, ...secArgs(sr) });
+          setWorkspaces(ws => ws.map(w => w.id === wsId ? { ...w, activeTabId: id } : w));
+          return [...prev, tab];
+        });
       }),
     ];
 
@@ -903,7 +920,7 @@ export default function App() {
     setTabs(prev => [...prev, tab]);
     setActiveWorkspaceId(wsId);
     const sr = settingsRef.current;
-    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) });
+    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: wsId, ...secArgs(sr) });
     clearLoading(tabId);
   }, [workspaces.length, clearLoading, layoutOffset, topOffset]);
 
@@ -935,36 +952,58 @@ export default function App() {
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, color } : w));
   }, []);
 
+  const clearWorkspaceData = useCallback((wsId: string) => {
+    // find any active webview tab in this workspace to get a handle
+    const wsTab = tabs.find(t => t.workspaceId === wsId && !t.url.startsWith("bushido://") && t.memoryState !== "destroyed");
+    if (wsTab) {
+      invoke("clear_workspace_data", { tabId: wsTab.id }).catch(() => {});
+    }
+  }, [tabs]);
+
   const moveTabToWorkspace = useCallback((tabId: string, targetWsId: string) => {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab || tab.workspaceId === targetWsId) return;
+
+    // profile isolation: moving tab means different cookie jar — confirm with user
+    if (!window.confirm("Moving this tab will reload it in a different session. You may be logged out. Continue?")) return;
+
+    const savedUrl = tab.url;
+    const sourceWsId = tab.workspaceId;
+
+    // close old webview (profile is locked at creation time)
+    if (!savedUrl.startsWith("bushido://")) {
+      invoke("close_tab", { id: tabId });
+    }
+
+    // create new tab in target workspace with correct profile
+    const newId = genId();
     setTabs(prev => {
-      const tab = prev.find(t => t.id === tabId);
-      if (!tab) return prev;
-      const sourceWsId = tab.workspaceId;
-      const next = prev.map(t => t.id === tabId ? { ...t, workspaceId: targetWsId, parentId: undefined } : t);
-
-      // if moved tab was active in source workspace, switch to adjacent
-      setWorkspaces(wsList => wsList.map(w => {
-        if (w.id === sourceWsId && w.activeTabId === tabId) {
-          const remaining = next.filter(t => t.workspaceId === sourceWsId);
-          const newActiveId = remaining.length > 0 ? remaining[0].id : "";
-          // remove from pane layout if present
-          let newLayout = w.paneLayout;
-          if (newLayout && hasLeaf(newLayout, tabId)) {
-            newLayout = removePane(newLayout, tabId) || undefined;
-          }
-          const updated = { ...w, activeTabId: newActiveId, paneLayout: newLayout };
-          if (sourceWsId === activeWorkspaceId && newActiveId) syncLayout(updated, next);
-          return updated;
-        }
-        if (w.id === targetWsId) {
-          return { ...w, activeTabId: tabId };
-        }
-        return w;
-      }));
-
-      return next;
+      const without = prev.filter(t => t.id !== tabId);
+      return [...without, { id: newId, url: savedUrl, title: tab.title, loading: true, workspaceId: targetWsId, lastActiveAt: Date.now() } as Tab];
     });
-  }, [activeWorkspaceId, syncLayout]);
+
+    setWorkspaces(wsList => wsList.map(w => {
+      if (w.id === sourceWsId && w.activeTabId === tabId) {
+        const remaining = tabs.filter(t => t.workspaceId === sourceWsId && t.id !== tabId);
+        const newActiveId = remaining.length > 0 ? remaining[0].id : "";
+        let newLayout = w.paneLayout;
+        if (newLayout && hasLeaf(newLayout, tabId)) {
+          newLayout = removePane(newLayout, tabId) || undefined;
+        }
+        const updated = { ...w, activeTabId: newActiveId, paneLayout: newLayout };
+        if (sourceWsId === activeWorkspaceId && newActiveId) syncLayout(updated);
+        return updated;
+      }
+      if (w.id === targetWsId) return { ...w, activeTabId: newId };
+      return w;
+    }));
+
+    // create webview in target workspace's profile
+    if (!savedUrl.startsWith("bushido://")) {
+      const sr = settingsRef.current;
+      invoke("create_tab", { id: newId, url: savedUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetWsId, ...secArgs(sr) });
+    }
+  }, [tabs, activeWorkspaceId, syncLayout, layoutOffset, topOffset]);
 
   // --- tab operations (workspace-aware) ---
 
@@ -979,8 +1018,11 @@ export default function App() {
       const sr = settingsRef.current;
       const cw = window.innerWidth - layoutOffset;
       const ch = window.innerHeight - topOffset;
-      invoke("create_tab", { id, url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
+      invoke("create_tab", { id, url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: activeWorkspaceId, ...secArgs(sr) }).then(() => {
         invoke("layout_webviews", { panes: [{ tabId: id, x: 0, y: 0, w: cw, h: ch }], focusedTabId: id, sidebarW: layoutOffset, topOffset });
+      }).catch(() => {
+        useUiStore.getState().showError("Failed to create tab");
+        setTabs(prev => prev.filter(t => t.id !== id));
       });
       clearLoading(id);
     } else {
@@ -1074,7 +1116,7 @@ export default function App() {
       // recreate crashed webview
       const sr = settingsRef.current;
       invoke("close_tab", { id }).then(() =>
-        invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) })
+        invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetTab.workspaceId, ...secArgs(sr) })
       ).then(() => syncLayout(updated));
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, crashed: false, loading: true, lastActiveAt: Date.now() } : t));
@@ -1086,7 +1128,7 @@ export default function App() {
     } else if (targetTab?.suspended || targetTab?.memoryState === "destroyed") {
       // full recreate — page reload required
       const sr = settingsRef.current;
-      invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
+      invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetTab.workspaceId, ...secArgs(sr) }).then(() => {
         syncLayout(updated);
       });
       clearLoading(id);
@@ -1186,7 +1228,7 @@ export default function App() {
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
     if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended || currentTab?.memoryState === "destroyed" || currentTab?.memoryState === "suspended") {
       const sr = settingsRef.current;
-      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, ...secArgs(sr) }).then(() => {
+      invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: currentTab?.workspaceId, ...secArgs(sr) }).then(() => {
         // directly position — syncLayout would read stale tab URL from state
         const cw = window.innerWidth - layoutOffset;
         const ch = window.innerHeight - topOffset;
@@ -1854,7 +1896,7 @@ export default function App() {
     tabs.forEach(t => {
       if (t.url.startsWith("bushido://") || t.suspended || t.memoryState === "destroyed") return;
       invoke("close_tab", { id: t.id }).then(() => {
-        invoke("create_tab", { id: t.id, url: t.url, sidebarW: layoutOffset, topOffset, isPanel: false, ...base });
+        invoke("create_tab", { id: t.id, url: t.url, sidebarW: layoutOffset, topOffset, isPanel: false, profileName: t.workspaceId, ...base });
       });
     });
     panels.forEach(p => {
@@ -1902,7 +1944,7 @@ export default function App() {
           tabUrl={current?.url || ""}
           preview={screenshotPreview}
           onClose={() => { setScreenshotPreview(null); syncLayout(); }}
-          onAnnotate={(data) => { setScreenshotPreview(null); syncLayout(); setAnnotationData(data); }}
+          onAnnotate={(data) => { setScreenshotPreview(null); setAnnotationData(data); }}
           onRestoreWebview={() => syncLayout()}
         />
       )}
@@ -1920,7 +1962,7 @@ export default function App() {
       {annotationData && (
         <AnnotationEditor
           imageData={annotationData}
-          onClose={() => setAnnotationData(null)}
+          onClose={() => { setAnnotationData(null); syncLayout(); }}
         />
       )}
       {shareOpen && current?.url && (
@@ -1974,6 +2016,7 @@ export default function App() {
           onSwitchWorkspace={switchWorkspace}
           onAddWorkspace={addWorkspace}
           onDeleteWorkspace={deleteWorkspace}
+          onClearWorkspaceData={clearWorkspaceData}
           onRenameWorkspace={renameWorkspace}
           onRecolorWorkspace={recolorWorkspace}
           onToggleCollapse={toggleCollapse}
@@ -2074,6 +2117,7 @@ export default function App() {
               onUpdate={updateSettings}
               onReloadAllTabs={reloadAllTabs}
               onThemeChange={handleThemeChange}
+              onOpenUrl={addTab}
             />
           ) : (
             <WebviewPanel />
@@ -2268,6 +2312,15 @@ export default function App() {
               <div className="ctx-item" tabIndex={0} onClick={() => { if (isSafeUrl(pageCtx.sourceUri)) addTab(pageCtx.sourceUri); setPageCtx(null); }}>
                 Open image in new tab
               </div>
+              <div className="ctx-item" tabIndex={0} onClick={() => {
+                const imgUrl = pageCtx.sourceUri;
+                const filename = imgUrl.split("/").pop()?.split("?")[0] || "image.png";
+                const sr = settingsRef.current;
+                invoke("start_download", { url: imgUrl, filename, downloadDir: sr.downloadLocation || "", cookies: null, mimeRouting: sr.mimeRouting || null });
+                setPageCtx(null);
+              }}>
+                Save image as...
+              </div>
               <div className="ctx-item" tabIndex={0} onClick={() => { invoke("copy_text_to_clipboard", { text: pageCtx.sourceUri }); setPageCtx(null); }}>
                 Copy image URL
               </div>
@@ -2308,6 +2361,24 @@ export default function App() {
           </div>
           <div className="ctx-item" tabIndex={0} onClick={() => { invoke("reload_tab", { id: pageCtx.tabId }); setPageCtx(null); }}>
             Reload
+          </div>
+          <div className="ctx-divider" />
+          <div className="ctx-item" tabIndex={0} onClick={() => {
+            const tab = tabs.find(t => t.id === pageCtx.tabId);
+            if (tab?.url) navigator.clipboard.writeText(tab.url);
+            setPageCtx(null);
+          }}>
+            Copy page URL
+          </div>
+          <div className="ctx-item" tabIndex={0} onClick={() => { invoke("print_tab", { id: pageCtx.tabId }); setPageCtx(null); }}>
+            Print page
+          </div>
+          <div className="ctx-item" tabIndex={0} onClick={() => {
+            const tab = tabs.find(t => t.id === pageCtx.tabId);
+            if (tab?.url) addTab("view-source:" + tab.url);
+            setPageCtx(null);
+          }}>
+            View page source
           </div>
           <div className="ctx-divider" />
           <div className="ctx-item" tabIndex={0} onClick={() => { invoke("toggle_devtools", { id: pageCtx.tabId }); setPageCtx(null); }}>

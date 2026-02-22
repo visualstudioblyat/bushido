@@ -225,7 +225,7 @@ fn is_blocked_scheme(url: &str) -> bool {
 }
 
 #[tauri::command]
-async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>) -> Result<(), String> {
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>) -> Result<(), String> {
     crash_log::log_info("create_tab", &format!("id={} url={}", id, url));
     let disable_dev_tools = disable_dev_tools.unwrap_or(false);
     let disable_status_bar = disable_status_bar.unwrap_or(false);
@@ -327,7 +327,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let load_cookie_reject = cookie_auto_reject;
 
     let mut builder = WebviewBuilder::new(&id, webview_url)
-        .auto_resize();
+        .auto_resize()
+        .with_profile_name(profile_name);
 
     if is_panel {
         builder = builder.user_agent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36");
@@ -840,6 +841,34 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let mut nav_token: i64 = 0;
                 let _ = core.add_NavigationCompleted(&nav_handler, &mut nav_token);
 
+                // intercept popups (window.open, target="_blank") — open in same workspace
+                let app_nw = app_for_block.clone();
+                let tab_id_nw = tab_id_block.clone();
+                let nw_handler = webview2_com::NewWindowRequestedEventHandler::create(Box::new(
+                    move |_sender, args| {
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_nw);
+                        let tab_ref = AssertUnwindSafe(&tab_id_nw);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let _ = args.SetHandled(true);
+                                let mut uri = windows::core::PWSTR::null();
+                                if args.Uri(&mut uri).is_ok() && !uri.is_null() {
+                                    if let Ok(url_str) = uri.to_string() {
+                                        if !url_str.is_empty() {
+                                            let _ = app_ref.emit_to("main", "new-window-requested",
+                                                serde_json::json!({ "sourceTabId": *tab_ref, "url": url_str }));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        Ok(())
+                    },
+                ));
+                let mut nw_token: i64 = 0;
+                let _ = core.add_NewWindowRequested(&nw_handler, &mut nw_token);
+
                 // context menu — suppress default Chromium menu, emit target info to React
                 if let Ok(core11) = core.cast::<ICoreWebView2_11>() {
                     let app_ctx = app_for_block.clone();
@@ -1115,7 +1144,7 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, sidebar_w: f64, top_offset: f64, profile_name: Option<String>) -> Result<(), String> {
     let window = app.get_window("main").ok_or("no main window")?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
@@ -1148,7 +1177,8 @@ async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, side
     let vault_s = bs.vault_script.clone();
     let glance_s = bs.glance_script.clone();
 
-    let mut builder = tauri::WebviewBuilder::new(&glance_id, webview_url);
+    let mut builder = tauri::WebviewBuilder::new(&glance_id, webview_url)
+        .with_profile_name(profile_name);
     builder = builder.initialization_script(&shortcut_s);
     builder = builder.initialization_script(&media_s);
     builder = builder.initialization_script(&fingerprint_s);
@@ -1192,6 +1222,36 @@ async fn promote_glance(app: tauri::AppHandle, glance_id: String) -> Result<(), 
     let ws = app.state::<WebviewState>();
     ws.tabs.lock().insert(glance_id, false);
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_workspace_data(app: tauri::AppHandle, tab_id: String) -> Result<(), String> {
+    let wv = app.get_webview(&tab_id).ok_or("no webview for this workspace")?;
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use windows::core::Interface;
+        let _ = wv.with_webview(move |wv| {
+            unsafe {
+                let controller = wv.controller();
+                let core = match controller.CoreWebView2() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                if let Ok(core13) = core.cast::<ICoreWebView2_13>() {
+                    if let Ok(profile) = core13.Profile() {
+                        if let Ok(profile2) = profile.cast::<ICoreWebView2Profile2>() {
+                            let handler = webview2_com::ClearBrowsingDataCompletedHandler::create(
+                                Box::new(|_| Ok(()))
+                            );
+                            let _ = profile2.ClearBrowsingDataAll(&handler);
+                        }
+                    }
+                }
+            }
+        });
+    }
     Ok(())
 }
 
@@ -2163,6 +2223,7 @@ pub fn run() {
             open_glance,
             close_glance,
             promote_glance,
+            clear_workspace_data,
             set_tab_pinned,
             set_power_mode
         ])

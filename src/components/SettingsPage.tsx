@@ -1,6 +1,7 @@
 import { memo, useCallback, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { BushidoSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
 import { useUiStore } from "../store/uiStore";
 import PairingWizard from "./PairingWizard";
@@ -10,6 +11,7 @@ interface Props {
   onUpdate: (patch: Partial<BushidoSettings>) => void;
   onReloadAllTabs: () => void;
   onThemeChange: (accent: string, mode: "dark" | "light") => void;
+  onOpenUrl: (url: string) => void;
 }
 
 const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[] = [
@@ -184,7 +186,7 @@ interface SyncInfo {
   paired_devices: { device_id: string; name: string; fingerprint: string; paired_at: number }[];
 }
 
-export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange }: Props) {
+export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange, onOpenUrl }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const [securityDirty, setSecurityDirty] = useState(false);
   const [syncInfo, setSyncInfo] = useState<SyncInfo | null>(null);
@@ -913,6 +915,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               </button>
             </div>
           </div>
+          {import.meta.env.DEV && (
           <div className="settings-subsection">
             <h3 className="settings-subsection-title">Debug</h3>
             <div className="settings-row">
@@ -958,6 +961,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               </button>
             </div>
           </div>
+          )}
         </>
       )}
     </section>
@@ -1127,21 +1131,31 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     );
   };
 
+  const [appVersion, setAppVersion] = useState("...");
+  useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(() => setAppVersion("unknown")); }, []);
+
   const renderAbout = () => (
     <section className="settings-section">
       <h2 className="settings-section-title">About</h2>
       <div className="settings-about">
         <div className="settings-about-name">Bushido Browser</div>
-        <div className="settings-about-version">v0.10.0</div>
-        <div className="settings-about-desc">A minimal, privacy-focused browser built with Tauri.</div>
-        <button
-          className="settings-about-btn"
-          style={{ marginTop: 12 }}
-          onClick={() => {
+        <div className="settings-about-version">v{appVersion}</div>
+        <div className="settings-about-desc">A fast, private web browser with workspaces, split view, and LAN sync.</div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button className="settings-about-btn" onClick={() => {
             onUpdate({ onboardingComplete: false });
             setTimeout(() => window.location.reload(), 600);
-          }}
-        >Replay Onboarding</button>
+          }}>Replay Onboarding</button>
+        </div>
+        <div style={{ marginTop: 20, fontSize: 12, opacity: 0.5, lineHeight: 1.8 }}>
+          <div>Built with Tauri, React, and WebView2</div>
+          <div>Licensed under MPL-2.0</div>
+          <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://bushido-browser.app")}>Website</span>
+            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/visualstudioblyat/bushido")}>GitHub</span>
+            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/visualstudioblyat/bushido/issues")}>Report a Bug</span>
+          </div>
+        </div>
       </div>
     </section>
   );

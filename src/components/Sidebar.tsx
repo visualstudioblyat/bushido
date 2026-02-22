@@ -39,6 +39,7 @@ interface Props {
   onSwitchWorkspace: (id: string) => void;
   onAddWorkspace: () => void;
   onDeleteWorkspace: (id: string) => void;
+  onClearWorkspaceData: (id: string) => void;
   onRenameWorkspace: (id: string, name: string) => void;
   onRecolorWorkspace: (id: string, color: string) => void;
   onToggleCollapse: (id: string) => void;
@@ -173,7 +174,7 @@ export default memo(function Sidebar({
   tabs, pinnedTabs, activeTab, open, compact,
   onSelect, onClose, onPin, onNew, onToggle, onReorder,
   workspaces, activeWorkspaceId,
-  onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onRenameWorkspace, onRecolorWorkspace,
+  onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onClearWorkspaceData, onRenameWorkspace, onRecolorWorkspace,
   onToggleCollapse, onAddChildTab, onMoveTabToWorkspace,
   bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark,
   onAddBookmarkFolder, onRenameBookmarkFolder, onDeleteBookmarkFolder, onMoveBookmarkToFolder,
@@ -1345,6 +1346,15 @@ export default memo(function Sidebar({
                 />
               ))}
             </div>
+            <div className="ctx-divider" />
+            <button className="ctx-item" onClick={() => {
+              if (window.confirm("Clear all browsing data for this workspace? You will be logged out of all sites.")) {
+                onClearWorkspaceData(wsCtx.wsId);
+              }
+              closeWsCtx();
+            }}>
+              clear workspace data
+            </button>
             {workspaces.length > 1 && (
               <>
                 <div className="ctx-divider" />
