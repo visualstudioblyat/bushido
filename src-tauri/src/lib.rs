@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::fs;
 use std::path::PathBuf;
-use adblock::engine::Engine;
 use adblock::request::Request;
+use parking_lot::RwLock;
 
 struct WebviewState {
     tabs: Mutex<HashMap<String, bool>>,
@@ -30,8 +30,11 @@ struct PanelState {
 
 
 struct BlockerState {
-    engine: Arc<Engine>,
+    engine: Arc<RwLock<adblock::engine::Engine>>,
+    data_dir: PathBuf,
+    scriptlet_preamble: String,
     cosmetic_script: String,
+    cosmetic_observer_script: String,
     cookie_script: String,
     shortcut_script: String,
     media_script: String,
@@ -212,6 +215,15 @@ async fn set_power_mode(low: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn update_filter_lists(app: tauri::AppHandle) -> Result<String, String> {
+    let bs = app.state::<BlockerState>();
+    let engine = bs.engine.clone();
+    let data_dir = bs.data_dir.clone();
+    blocker::update_filter_lists(data_dir, engine).await?;
+    Ok("Filter lists updated".into())
+}
+
 fn is_blocked_scheme(url: &str) -> bool {
     let lower = url.trim().to_lowercase();
     lower.starts_with("javascript:") || lower.starts_with("data:")
@@ -272,7 +284,9 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
     let bs = app.state::<BlockerState>();
     let engine = bs.engine.clone();
+    let scriptlet_preamble = bs.scriptlet_preamble.clone();
     let cosmetic_script = bs.cosmetic_script.clone();
+    let cosmetic_observer_script = bs.cosmetic_observer_script.clone();
     let cookie_script = bs.cookie_script.clone();
     let shortcut_script = bs.shortcut_script.clone();
     let media_script = bs.media_script.clone();
@@ -298,6 +312,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let app_load = app.clone();
     let engine_for_nav = engine.clone();
     let inject_cosmetic = cosmetic_script.clone();
+    let inject_cosmetic_observer = cosmetic_observer_script.clone();
     let inject_cookie = cookie_script.clone();
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
@@ -319,12 +334,31 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let security_js = if sec_parts.is_empty() { String::new() } else { format!("(function(){{{}}})();", sec_parts.join("")) };
     let inject_security = security_js.clone();
 
+    // per-tab cosmetic state: computed in on_navigation, injected in on_page_load
+    struct PendingCosmetic {
+        css: String,
+        script: String,
+        exceptions: HashSet<String>,
+        generichide: bool,
+    }
+    let pending_cosmetic: Arc<Mutex<PendingCosmetic>> = Arc::new(Mutex::new(PendingCosmetic {
+        css: String::new(), script: String::new(), exceptions: HashSet::new(), generichide: false,
+    }));
+    let pending_for_nav = pending_cosmetic.clone();
+    let pending_for_load = pending_cosmetic.clone();
+    let pending_for_msg = pending_cosmetic.clone();
+    // shared state for dynamic AddScriptToExecuteOnDocumentCreated script ID
+    let dynamic_script_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
     let whitelisted_for_nav = site_whitelisted;
     let whitelisted_for_load = site_whitelisted;
     let nav_https_only = https_only;
     let nav_ad_blocker = ad_blocker;
     let load_ad_blocker = ad_blocker;
     let load_cookie_reject = cookie_auto_reject;
+    // shared source URL for third-party classification (updated on every navigation)
+    let current_source_url: Arc<Mutex<String>> = Arc::new(Mutex::new(final_url.clone()));
+    let source_for_nav = current_source_url.clone();
 
     let mut builder = WebviewBuilder::new(&id, webview_url)
         .auto_resize()
@@ -351,13 +385,26 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
 
             // adblock-rust engine check for document-level navigations
             if nav_ad_blocker && !whitelisted_for_nav {
+                let guard = engine_for_nav.read();
                 if let Ok(req) = Request::new(&url_str, &url_str, "document") {
-                    let result = engine_for_nav.check_network_request(&req);
+                    let result = guard.check_network_request(&req);
                     if result.matched {
                         return false;
                     }
                 }
+                // compute cosmetic resources for this URL (injected in on_page_load)
+                let cosmetic = blocker::get_cosmetic_resources(&guard, &url_str);
+                {
+                    let mut pc = pending_for_nav.lock();
+                    pc.css = cosmetic.css;
+                    pc.script = cosmetic.script;
+                    pc.exceptions = cosmetic.exceptions;
+                    pc.generichide = cosmetic.generichide;
+                }
             }
+
+            // update source URL for third-party request classification
+            *source_for_nav.lock() = url_str.clone();
 
             let _ = app_nav.emit_to("main", "tab-url-changed", serde_json::json!({
                 "id": tab_id_nav,
@@ -389,6 +436,30 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
+
+                    // inject dynamic cosmetic resources (computed in on_navigation)
+                    let (css, script, generichide) = {
+                        let guard = pending_for_load.lock();
+                        (guard.css.clone(), guard.script.clone(), guard.generichide)
+                    };
+                    if !css.is_empty() {
+                        let js = format!(
+                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                            serde_json::to_string(&css).unwrap_or_default()
+                        );
+                        let _ = wv.eval(&js);
+                    }
+                    if !script.is_empty() {
+                        let js = format!(
+                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                            script
+                        );
+                        let _ = wv.eval(&js);
+                    }
+                    // inject cosmetic observer for dynamic generic element hiding
+                    if !generichide {
+                        let _ = wv.eval(&inject_cosmetic_observer);
+                    }
                 }
                 if load_cookie_reject && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cookie);
@@ -399,6 +470,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
             }
         });
 
+    builder = builder.initialization_script(&scriptlet_preamble);
     builder = builder.initialization_script(&shortcut_script);
     builder = builder.initialization_script(&media_script);
     builder = builder.initialization_script(&fingerprint_script);
@@ -408,6 +480,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     // only inject cosmetic scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
         builder = builder.initialization_script(&cosmetic_script);
+        builder = builder.initialization_script(&cosmetic_observer_script);
     }
     if cookie_auto_reject && !site_whitelisted {
         builder = builder.initialization_script(&cookie_script);
@@ -433,7 +506,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
         let app_for_block = app.clone();
         let tab_id_block = id.clone();
         let block_enabled = ad_blocker && !site_whitelisted;
-        let source_url = final_url.clone();
+        let source_url = current_source_url.clone();
 
         let wv_tab_id = id.clone();
         let with_result = webview.with_webview(move |wv| {
@@ -640,19 +713,42 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let _ = args.ResourceContext(&mut ctx);
                                         let rtype = blocker::resource_type_str(ctx.0 as u32);
 
-                                        let matched = Request::new(&url, &source_ref, rtype)
-                                            .map(|req| engine_ref.check_network_request(&req).matched)
-                                            .unwrap_or(false);
-                                        if matched {
-                                            let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
-                                            let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+                                        // strip tracking params from document navigations
+                                        if rtype == "document" {
+                                            if let Some(clean) = blocker::strip_tracking_params(&url) {
+                                                let new_url: Vec<u16> = format!("{}\0", clean).encode_utf16().collect();
+                                                let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
+                                                // don't return — still check for blocking
+                                            }
+                                        }
 
-                                            let count = count_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                                            if count <= 3 || count % 5 == 0 {
-                                                let _ = app_ref.emit_to("main", "tab-blocked-count", serde_json::json!({
-                                                    "id": *tab_ref,
-                                                    "count": count
-                                                }));
+                                        let current_source = source_ref.lock().clone();
+                                        if let Ok(req) = Request::new(&url, &current_source, rtype) {
+                                            let result = engine_ref.read().check_network_request(&req);
+
+                                            if !result.matched {
+                                                // handle $removeparam (rewritten URL)
+                                                if let Some(ref rewritten) = result.rewritten_url {
+                                                    let new_url: Vec<u16> = format!("{}\0", rewritten).encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
+                                                }
+                                            } else {
+                                                // request is blocked — use redirect surrogate or about:blank
+                                                if let Some(ref data_uri) = result.redirect {
+                                                    let redir_url: Vec<u16> = format!("{}\0", data_uri).encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(redir_url.as_ptr()));
+                                                } else {
+                                                    let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+                                                }
+
+                                                let count = count_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                                if count <= 3 || count % 5 == 0 {
+                                                    let _ = app_ref.emit_to("main", "tab-blocked-count", serde_json::json!({
+                                                        "id": *tab_ref,
+                                                        "count": count
+                                                    }));
+                                                }
                                             }
                                         }
                                     }
@@ -669,12 +765,17 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 // postMessage IPC handler — replaces title encoding
                 let app_msg = app_for_block.clone();
                 let tab_id_msg = tab_id_block.clone();
+                let engine_for_msg = engine_for_block.clone();
+                let pending_for_msg2 = pending_for_msg.clone();
 
                 let msg_handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(
-                    move |_sender, args| {
+                    move |sender, args| {
                         let args_ref = AssertUnwindSafe(&args);
                         let app_ref = AssertUnwindSafe(&app_msg);
                         let tab_ref = AssertUnwindSafe(&tab_id_msg);
+                        let engine_ref = AssertUnwindSafe(&engine_for_msg);
+                        let pending_ref = AssertUnwindSafe(&pending_for_msg2);
+                        let sender_ref = AssertUnwindSafe(&sender);
                         let _ = catch_unwind(move || {
                             if let Some(args) = args_ref.as_ref() {
                                 let mut msg_pwstr = windows::core::PWSTR::null();
@@ -764,6 +865,37 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                             }));
                                         }
                                     }
+                                    Some("cosmetic-probe") => {
+                                        let classes: Vec<String> = msg.get("classes")
+                                            .and_then(|v| v.as_array())
+                                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        let ids: Vec<String> = msg.get("ids")
+                                            .and_then(|v| v.as_array())
+                                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        if classes.is_empty() && ids.is_empty() { return; }
+                                        let exceptions = {
+                                            pending_ref.lock().exceptions.clone()
+                                        };
+                                        let selectors = blocker::get_hidden_selectors(
+                                            &engine_ref.read(),
+                                            &classes,
+                                            &ids,
+                                            &exceptions,
+                                        );
+                                        if !selectors.is_empty() {
+                                            let json_arr = serde_json::to_string(&selectors).unwrap_or_default();
+                                            let js = format!("window.__bushidoApplyCosmetic({})", json_arr);
+                                            if let Some(ref s) = *sender_ref {
+                                                let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                                let _ = s.ExecuteScript(
+                                                    windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                                    None,
+                                                );
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -840,6 +972,101 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 ));
                 let mut nav_token: i64 = 0;
                 let _ = core.add_NavigationCompleted(&nav_handler, &mut nav_token);
+
+                // early scriptlet injection via ContentLoading (fires before DOM parsing)
+                if block_enabled {
+                    let pending_for_content = pending_for_msg.clone();
+                    let content_handler = webview2_com::ContentLoadingEventHandler::create(Box::new(
+                        move |sender: Option<ICoreWebView2>, _args: Option<ICoreWebView2ContentLoadingEventArgs>| {
+                            let pending_c = AssertUnwindSafe(&pending_for_content);
+                            let sender_c = AssertUnwindSafe(&sender);
+                            let _ = catch_unwind(move || {
+                                let (css, script) = {
+                                    let guard = pending_c.lock();
+                                    (guard.css.clone(), guard.script.clone())
+                                };
+                                if let Some(ref wv) = *sender_c {
+                                    // inject CSS immediately
+                                    if !css.is_empty() {
+                                        let js = format!(
+                                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic-early';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                                            serde_json::to_string(&css).unwrap_or_default()
+                                        );
+                                        let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = wv.ExecuteScript(
+                                            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                            None,
+                                        );
+                                    }
+                                    // inject scriptlets immediately (before page scripts)
+                                    if !script.is_empty() {
+                                        let js = format!(
+                                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                            script
+                                        );
+                                        let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = wv.ExecuteScript(
+                                            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                            None,
+                                        );
+                                    }
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut content_token: i64 = 0;
+                    let _ = core.add_ContentLoading(&content_handler, &mut content_token);
+
+                    // dynamic scriptlet injection — register for NEXT navigation's document_start
+                    // Scripts registered during NavigationStarting apply at true document_start
+                    // for subsequent navigations (refresh, back/forward, same-site nav)
+                    let pending_for_dynscript = pending_for_msg.clone();
+                    let dyn_id_for_nav = dynamic_script_id.clone();
+                    let core_for_dynscript = core.clone();
+
+                    let nav_script_handler = webview2_com::NavigationStartingEventHandler::create(Box::new(
+                        move |_sender, _args| {
+                            let pending_c = AssertUnwindSafe(&pending_for_dynscript);
+                            let dyn_c = AssertUnwindSafe(&dyn_id_for_nav);
+                            let core_c = AssertUnwindSafe(&core_for_dynscript);
+                            let _ = catch_unwind(move || {
+                                // remove previously registered dynamic script
+                                if let Some(old_id) = dyn_c.lock().take() {
+                                    let wide: Vec<u16> = old_id.encode_utf16().chain(std::iter::once(0)).collect();
+                                    let _ = core_c.RemoveScriptToExecuteOnDocumentCreated(
+                                        windows::core::PCWSTR::from_raw(wide.as_ptr())
+                                    );
+                                }
+
+                                // read scriptlets (already computed by on_navigation which fires first)
+                                let script = pending_c.lock().script.clone();
+                                if script.is_empty() { return; }
+
+                                let js = format!(
+                                    "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                    script
+                                );
+
+                                // register for next navigation's document_start (fire-and-forget)
+                                let dyn_store = dyn_c.clone();
+                                let handler = webview2_com::AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(
+                                    Box::new(move |result: windows::core::Result<()>, id: String| {
+                                        if result.is_ok() && !id.is_empty() {
+                                            *dyn_store.lock() = Some(id);
+                                        }
+                                        Ok(())
+                                    })
+                                );
+                                let js_hstr = windows_core::HSTRING::from(js);
+                                let _ = core_c.AddScriptToExecuteOnDocumentCreated(&js_hstr, &handler);
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut nav_script_token: i64 = 0;
+                    let _ = core.add_NavigationStarting(&nav_script_handler, &mut nav_script_token);
+                }
 
                 // intercept popups (window.open, target="_blank") — open in same workspace
                 let app_nw = app_for_block.clone();
@@ -1926,7 +2153,9 @@ pub fn run() {
     // init adblock-rust engine (cached binary or cold compile)
     let engine = blocker::init_engine(&data_dir);
 
+    let scriptlet_preamble = include_str!("scriptlet_preamble.js").to_string();
     let cosmetic_script = include_str!("content_blocker.js").to_string();
+    let cosmetic_observer_script = include_str!("cosmetic_observer.js").to_string();
     let cookie_script = include_str!("cookie_blocker.js").to_string();
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
     let media_script = include_str!("media_listener.js").to_string();
@@ -1985,8 +2214,11 @@ pub fn run() {
         .manage(std::sync::Arc::new(downloads::RateLimiter::new(0)))
         .manage(keybinding_state)
         .manage(BlockerState {
-            engine,
+            engine: engine.clone(),
+            data_dir: data_dir.clone(),
+            scriptlet_preamble,
             cosmetic_script,
+            cosmetic_observer_script,
             cookie_script,
             shortcut_script,
             media_script,
@@ -2118,6 +2350,54 @@ pub fn run() {
                 }
             }
 
+            // filter list auto-update (startup check + every 24h)
+            {
+                let bs = app.state::<BlockerState>();
+                let engine_update = bs.engine.clone();
+                let data_dir_update = bs.data_dir.clone();
+                let app_handle = app.handle().clone();
+
+                tauri::async_runtime::spawn(async move {
+                    // check if update needed (>24h since last)
+                    let metadata = blocker::load_metadata(&data_dir_update);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let stale = metadata.last_updated
+                        .map(|t| now.saturating_sub(t) > 86400)
+                        .unwrap_or(true);
+
+                    if stale {
+                        // small delay so browser UI loads first
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        if let Err(e) = blocker::update_filter_lists(
+                            data_dir_update.clone(),
+                            engine_update.clone(),
+                        ).await {
+                            eprintln!("filter list update failed: {}", e);
+                        } else {
+                            let _ = app_handle.emit_to("main", "filter-lists-updated", ());
+                        }
+                    }
+
+                    // then every 24h
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+                    interval.tick().await; // skip first tick
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = blocker::update_filter_lists(
+                            data_dir_update.clone(),
+                            engine_update.clone(),
+                        ).await {
+                            eprintln!("filter list update failed: {}", e);
+                        } else {
+                            let _ = app_handle.emit_to("main", "filter-lists-updated", ());
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2225,7 +2505,8 @@ pub fn run() {
             promote_glance,
             clear_workspace_data,
             set_tab_pinned,
-            set_power_mode
+            set_power_mode,
+            update_filter_lists
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

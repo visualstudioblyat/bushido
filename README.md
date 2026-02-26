@@ -31,7 +31,8 @@
 
 Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care —blocking is built into the browser core, not an extension that can be neutered.
 
-- **Native Ad & Tracker Blocking** —140,000+ filter rules from EasyList and EasyPrivacy, matched in under 0.05ms per request. Blocking happens at the WebView2 network level before connections are established —page JavaScript can't bypass it.
+- **Native Ad & Tracker Blocking** —10 filter lists (EasyList, EasyPrivacy, uBlock Filters, and more), matched in under 0.05ms per request. Network blocking at the WebView2 COM level before connections are established. Cosmetic filtering hides ad containers that survive network blocking. Scriptlet injection (173 uBlock Origin resources) defuses anti-adblock scripts. Page JavaScript can't bypass any of it.
+- **Fingerprint Protection** —Canvas, WebGL, audio, navigator, screen, timing —all spoofed with realistic per-session randomized values. Hardened against common detection techniques: `Function.prototype.toString` inspection, iframe cross-realm access, Web Worker clean scope, `Object.getOwnPropertyDescriptor` probing, `Date.now` vs `performance.now` comparison, error stack trace sanitization, WebGL parameter consistency. Init script runs before any page JS exists —the page never gets a reference to the original functions.
 - **Cookie Banner Rejection** —Automatically clicks "Reject All" on consent popups across 8+ frameworks. You never see them.
 - **HTTPS-Only Mode** —All traffic upgraded to HTTPS. HTTP connections are refused.
 - **Download Manager** —Parallel chunked downloads (up to 6 segments), crash recovery via manifest files, cookie-aware authenticated downloads. Pause, resume, retry. Built into the browser, no extension needed.
@@ -53,7 +54,8 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 | Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
 | Frontend | React + TypeScript |
 | Rendering | System WebView (WebView2 / WebKit) |
-| Ad Blocking | adblock-rust engine + WebView2 COM interception |
+| Ad Blocking | adblock-rust engine + WebView2 COM interception + cosmetic filtering + scriptlet injection |
+| Fingerprint Resistance | JS-level spoofing at document_start, hardened against cross-realm and introspection attacks |
 | Downloads | Rust async + parallel chunked byte-range segments |
 | LAN Sync | mDNS discovery + SPAKE2 pairing + Noise Protocol (XChaCha20) |
 
@@ -94,6 +96,9 @@ Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-
 - [x] ~~Permission Prompts (custom glass UI, per-site memory)~~ —shipped in v0.10.3
 - [x] ~~Download Enhancements (queue reorder, bandwidth throttle, MIME auto-sort)~~ —shipped in v0.10.3
 - [x] ~~Shortcut Runtime Rebinding~~ —shipped in v0.10.4
+- [x] ~~Workspace Isolation (per-workspace cookies/storage)~~ —shipped in v0.11.0
+- [x] ~~Ad Blocker Tier 2 (cosmetic filtering + scriptlet injection)~~ —shipped in v0.12.0
+- [x] ~~Fingerprint Protection v3 (6 bypass categories closed)~~ —shipped in v0.12.0
 - [ ] Boosts —per-site CSS/JS injection
 - [ ] Custom themes
 - [ ] Cross-platform builds (macOS, Linux)

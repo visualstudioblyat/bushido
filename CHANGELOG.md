@@ -2,6 +2,76 @@
 
 ---
 
+## v0.12.0
+
+**2026-02-25**
+
+Ad blocker got a real upgrade and fingerprint protection got hardened. The blocker now runs 10 filter lists including uBlock Origin's own filters, with full cosmetic filtering and scriptlet injection. Fingerprint protection closed 6 bypass categories that fingerprinting services commonly use to detect spoofed values.
+
+### Added
+
+- **Ad blocker Tier 2 — cosmetic filtering + scriptlets** — not just network blocking anymore. CSS cosmetic rules hide ad containers, placeholders, and native ad elements that survive network blocking. Scriptlet injection (`##+js()` rules) runs inline JavaScript that defuses anti-adblock scripts, prevents ad reinsertion, and neutralizes tracking beacons. 173 scriptlet resources from uBlock Origin's library, with full argument parsing and trusted-scriptlet permissions.
+
+- **10 filter lists** — EasyList, EasyPrivacy, uBlock Filters, uBlock Privacy, uBlock Badware, uBlock Quick Fixes, uBlock Unbreak, Peter Lowe's, Fanboy's Annoyance, and URLhaus malware filter. All compiled into one adblock-rust engine.
+
+- **Dynamic cosmetic probe system** — pages send back their DOM class/id lists via `postMessage`, Rust queries the engine for matching hide selectors, and injects them as CSS. This is how uBlock does cosmetic filtering —the engine knows which selectors to apply per-URL, but needs to know what elements exist on the page first.
+
+- **Scriptlet preamble** — `scriptlet_preamble.js` caches pristine native APIs (`Object.defineProperty`, `Reflect.apply`, `Function.prototype.toString`, etc.) at true `document_start` before any page code runs. Scriptlets use these cached references so pages can't break them by overwriting globals.
+
+- **True document_start injection** — `NavigationStarting` COM handler dynamically registers scriptlets via `AddScriptToExecuteOnDocumentCreated`. Scripts run before any page JavaScript exists. `ContentLoading` fallback for first visit timing.
+
+- **Fingerprint v3 — 6 bypass categories closed:**
+
+  - **Web Workers** — workers run in a separate thread with a clean global scope, so our navigator spoofs didn't apply. Now we wrap the `Worker`/`SharedWorker` constructors to inject spoofs + `OffscreenCanvas` noise into a Blob before the real script runs. A fingerprinter spawning a worker to read `navigator.hardwareConcurrency` gets our spoofed value.
+
+  - **iframe srcdoc race** — `srcdoc` content loads synchronously, our old MutationObserver + setTimeout patch fired too late. Now we hook the `srcdoc` setter directly and intercept `appendChild`/`insertBefore`/`append`/`prepend` to patch every iframe's `Function.prototype.toString` and navigator the instant it enters the DOM.
+
+  - **Date.now vs performance.now** — we clamp `performance.now()` to prevent timing fingerprints, but `Date.now()` wasn't clamped. Comparing the two reveals the clamping, which is itself a fingerprint. Now `Date.now()` and `Date.prototype.getTime` return clamped `performance.now()` plus a fixed offset so they stay in sync.
+
+  - **Error stack traces** — `new Error().stack` leaked internal WebView2/Tauri file paths. Now the `stack` getter on `Error.prototype` strips all URLs and paths, keeping only function names and line structure.
+
+  - **Object.getOwnPropertyDescriptor** — calling `Object.getOwnPropertyDescriptor(navigator, 'hardwareConcurrency')` revealed a getter where native props have data descriptors. Dead giveaway. Now `getOwnPropertyDescriptor` and `Reflect.getOwnPropertyDescriptor` return fake data descriptors for every spoofed property.
+
+  - **WebGL parameter consistency** — we spoof Intel UHD 620 but `getParameter(MAX_TEXTURE_SIZE)` was returning real GPU values. Cross-referencing GPU name against known limits outs the spoof. Now `getParameter` returns values that actually match the spoofed Intel iGPU.
+
+### Changed
+
+- **content_blocker.js trimmed** — was doing ad blocking + privacy + cosmetic hiding. Now just CSS cosmetic hiding and WebRTC leak prevention. All fingerprint spoofs already in `fingerprint.js`, all network blocking in Rust, scriptlets injected from blocker engine.
+
+- **source_url made dynamic** — was frozen at tab creation, so SPA navigations kept matching the old URL for cosmetic/scriptlet rules. Now `Arc<Mutex<String>>` updated on every navigation.
+
+- **cosmetic_observer.js as initialization_script** — runs at `document_start` on every page, not just injected on load. Catches elements before first paint.
+
+---
+
+## v0.11.0
+
+**2026-02-21**
+
+Workspace isolation, release infrastructure, polish.
+
+### Added
+
+- **Per-workspace cookie/storage isolation** — each workspace gets its own WebView2 profile (separate cookies, localStorage, cache). Log into Gmail in one workspace, different account in another. Required forking wry and tauri-runtime-wry to expose the `profile` parameter on webview creation.
+
+- **GitHub Actions CI release pipeline** — `.github/workflows/release.yml`, push a version tag and it builds + bundles automatically.
+
+- **NSIS bundle config** — publisher, copyright, icons for the Windows installer.
+
+- **About page** — dynamic version pulled from Cargo.toml, credits, website/GitHub links.
+
+- **Context menu additions** — Save Image, Copy Page URL, Print Page, View Source.
+
+### Changed
+
+- **Forks moved inside repo** — `src-tauri/forks/` contains patched wry, tauri, and tauri-runtime-wry. Reproducible source builds, no external dependency on my fork repos.
+
+- **Debug tools hidden** — sync simulate, LAN debug panel only visible in `import.meta.env.DEV`.
+
+- **Cargo.lock committed** — reproducible builds.
+
+---
+
 ## v0.10.8
 
 **2026-02-20**
