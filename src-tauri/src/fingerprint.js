@@ -20,11 +20,13 @@
     // ── toString hardening ──────────────────────────────────────────────────
     // override Function.prototype.toString to intercept all toString calls
     // including .bind(), Reflect.apply, and iframe cross-realm calls
-    var ns = 'function () { [native code] }';
     var _origFPTS = Function.prototype.toString;
     var _hardenedSet = new WeakSet();
     Function.prototype.toString = function() {
-        if (_hardenedSet.has(this)) return ns;
+        if (_hardenedSet.has(this)) {
+            var name = this.name || '';
+            return 'function ' + name + '() { [native code] }';
+        }
         return _origFPTS.call(this);
     };
     _hardenedSet.add(Function.prototype.toString);
@@ -153,9 +155,26 @@
 
     spoofProp(navigator, 'doNotTrack', '1');
     spoofProp(navigator, 'globalPrivacyControl', true);
+    // spoof plugins to match Chrome 131 (empty = fingerprint red flag)
     try {
-        Object.defineProperty(navigator, 'plugins', { get: function() { return []; }, configurable: true });
-        Object.defineProperty(navigator, 'mimeTypes', { get: function() { return []; }, configurable: true });
+        var fakePlugin = function(name, desc, fname) {
+            return { name: name, description: desc, filename: fname, length: 1, item: function() { return null; }, namedItem: function() { return null; } };
+        };
+        var fakePlugins = [
+            fakePlugin('PDF Viewer', 'Portable Document Format', 'internal-pdf-viewer'),
+            fakePlugin('Chrome PDF Viewer', 'Portable Document Format', 'internal-pdf-viewer'),
+            fakePlugin('Chromium PDF Viewer', 'Portable Document Format', 'internal-pdf-viewer'),
+            fakePlugin('Microsoft Edge PDF Viewer', 'Portable Document Format', 'internal-pdf-viewer'),
+            fakePlugin('WebKit built-in PDF', 'Portable Document Format', 'internal-pdf-viewer'),
+        ];
+        fakePlugins.item = function(i) { return fakePlugins[i] || null; };
+        fakePlugins.namedItem = function(n) { for (var i = 0; i < fakePlugins.length; i++) if (fakePlugins[i].name === n) return fakePlugins[i]; return null; };
+        fakePlugins.refresh = function() {};
+        Object.defineProperty(navigator, 'plugins', { get: function() { return fakePlugins; }, configurable: false });
+        var fakeMimes = [{ type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf', enabledPlugin: fakePlugins[0] }];
+        fakeMimes.item = function(i) { return fakeMimes[i] || null; };
+        fakeMimes.namedItem = function(n) { for (var i = 0; i < fakeMimes.length; i++) if (fakeMimes[i].type === n) return fakeMimes[i]; return null; };
+        Object.defineProperty(navigator, 'mimeTypes', { get: function() { return fakeMimes; }, configurable: false });
     } catch(e) {}
     try { if (navigator.getBattery) navigator.getBattery = undefined; } catch(e) {}
     spoofProp(navigator, 'language', 'en-US');
@@ -170,6 +189,11 @@
     spoofProp(navigator, 'pdfViewerEnabled', true);
     spoofProp(navigator, 'cookieEnabled', true);
     spoofProp(navigator, 'hardwareConcurrency', spoofedHWC);
+    spoofProp(navigator, 'vendor', 'Google Inc.');
+    spoofProp(navigator, 'appVersion', '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+    spoofProp(navigator, 'userAgent', spoofedUA);
+    spoofProp(navigator, 'productSub', '20030107');
+    spoofProp(navigator, 'vendorSub', '');
 
     // screen normalization
     spoofProp(screen, 'width', 1920);
@@ -338,25 +362,33 @@
     } catch(e) {}
 
     // ── timing: performance.now + Date.now clamping ─────────────────────────
+    // clamp to 100μs buckets (like Tor Browser) with monotonic guarantee
     try {
         var origPN = performance.now.bind(performance);
         var origDateNow = Date.now;
         var _dateOffset = origDateNow.call(Date);
         var _perfOffset = origPN();
-        var CL = 16.67;
+        var CL = 0.1; // 100μs clamp — subtle enough to not break sites, enough to defeat μs fingerprinting
+        var _lastPerf = 0;
 
         performance.now = function() {
             var t = origPN();
             var c = Math.floor(t / CL) * CL;
-            c += Math.floor(rng() * 6) * CL;
+            // guarantee monotonic — never return a value less than previous
+            if (c <= _lastPerf) c = _lastPerf;
+            _lastPerf = c;
             return c;
         };
         harden(performance, 'now');
 
         // clamp Date.now to match performance.now so comparison can't detect clamping
+        var _lastDateNow = 0;
         Date.now = function() {
             var perf = performance.now();
-            return Math.round(_dateOffset + (perf - _perfOffset));
+            var d = Math.round(_dateOffset + (perf - _perfOffset));
+            if (d <= _lastDateNow) d = _lastDateNow;
+            _lastDateNow = d;
+            return d;
         };
         harden(Date, 'now');
 
@@ -434,6 +466,65 @@
         }
     } catch(e) {}
 
+    // ── timezone fingerprinting protection ─────────────────────────────────────
+    try {
+        var _origDTF = Intl.DateTimeFormat;
+        var _spoofedTZ = 'America/New_York';
+        var _spoofedLocale = 'en-US';
+        Intl.DateTimeFormat = function() {
+            var instance = _origDTF.apply(this, arguments.length ? arguments : [_spoofedLocale]);
+            var _origResolved = instance.resolvedOptions.bind(instance);
+            instance.resolvedOptions = function() {
+                var opts = _origResolved();
+                opts.timeZone = _spoofedTZ;
+                opts.locale = _spoofedLocale;
+                return opts;
+            };
+            return instance;
+        };
+        Intl.DateTimeFormat.prototype = _origDTF.prototype;
+        Intl.DateTimeFormat.supportedLocalesOf = _origDTF.supportedLocalesOf;
+        harden(Intl, 'DateTimeFormat');
+    } catch(e) {}
+    try {
+        var _origGetTZOffset = Date.prototype.getTimezoneOffset;
+        Date.prototype.getTimezoneOffset = function() {
+            return -300; // EST (UTC-5) = -300 minutes
+        };
+        harden(Date.prototype, 'getTimezoneOffset');
+    } catch(e) {}
+
+    // ── CSS media query fingerprinting protection ────────────────────────────
+    try {
+        var _origMatchMedia = window.matchMedia;
+        window.matchMedia = function(query) {
+            var normalized = query.replace(/\s+/g, ' ').trim().toLowerCase();
+            if (normalized.indexOf('prefers-color-scheme') !== -1) {
+                var light = normalized.indexOf('light') !== -1;
+                var result = _origMatchMedia.call(window, query);
+                return Object.create(result, {
+                    matches: { get: function() { return light; }, configurable: true }
+                });
+            }
+            if (normalized.indexOf('prefers-reduced-motion') !== -1) {
+                var noPref = normalized.indexOf('no-preference') !== -1;
+                var result = _origMatchMedia.call(window, query);
+                return Object.create(result, {
+                    matches: { get: function() { return noPref; }, configurable: true }
+                });
+            }
+            if (normalized.indexOf('prefers-contrast') !== -1) {
+                var noPref = normalized.indexOf('no-preference') !== -1;
+                var result = _origMatchMedia.call(window, query);
+                return Object.create(result, {
+                    matches: { get: function() { return noPref; }, configurable: true }
+                });
+            }
+            return _origMatchMedia.call(window, query);
+        };
+        harden(window, 'matchMedia');
+    } catch(e) {}
+
     // ── Worker/SharedWorker interception ─────────────────────────────────────
     // Workers have a clean global scope — inject navigator spoofs before real script runs
     try {
@@ -446,6 +537,22 @@
             try { Object.defineProperty(navigator, 'platform', { get: function() { return '__PLAT__'; }, configurable: false }); } catch(e) {}
             try { Object.defineProperty(navigator, 'language', { get: function() { return 'en-US'; }, configurable: false }); } catch(e) {}
             try { Object.defineProperty(navigator, 'languages', { get: function() { return ['en-US','en']; }, configurable: false }); } catch(e) {}
+            try {
+                var _origDTF = Intl.DateTimeFormat;
+                Intl.DateTimeFormat = function() {
+                    var instance = _origDTF.apply(this, arguments.length ? arguments : ['en-US']);
+                    var _origResolved = instance.resolvedOptions.bind(instance);
+                    instance.resolvedOptions = function() {
+                        var opts = _origResolved();
+                        opts.timeZone = 'America/New_York';
+                        opts.locale = 'en-US';
+                        return opts;
+                    };
+                    return instance;
+                };
+                Intl.DateTimeFormat.prototype = _origDTF.prototype;
+                Intl.DateTimeFormat.supportedLocalesOf = _origDTF.supportedLocalesOf;
+            } catch(e) {}
             try {
                 if (typeof OffscreenCanvas !== 'undefined') {
                     var origCTB = OffscreenCanvas.prototype.convertToBlob;
