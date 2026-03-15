@@ -82,6 +82,7 @@ interface Props {
   onOpenSettings: () => void;
   activeDownloadCount: number;
   onToggleDownloads: () => void;
+  onToggleNetwork: () => void;
   paneTabIds: string[];
   onSplitWith: (targetId?: string) => void;
   playingTab?: Tab;
@@ -188,7 +189,7 @@ export default memo(function Sidebar({
   onToggleReader, isReaderActive, readerSettings, onUpdateReaderSettings,
   hasVideo, pipActive, onTogglePip,
   onOpenSettings,
-  activeDownloadCount, onToggleDownloads,
+  activeDownloadCount, onToggleDownloads, onToggleNetwork,
   paneTabIds, onSplitWith,
   playingTab, onMediaPlayPause, onMediaMute,
   panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel,
@@ -1216,6 +1217,14 @@ export default memo(function Sidebar({
                 {activeDownloadCount > 0 && (
                   <span className="download-badge">{activeDownloadCount}</span>
                 )}
+              </button>
+              <button className="network-btn" onClick={onToggleNetwork} title="Network Inspector">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M2 4H14M2 8H14M2 12H14" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <circle cx="5" cy="4" r="1" fill="currentColor"/>
+                  <circle cx="9" cy="8" r="1" fill="currentColor"/>
+                  <circle cx="7" cy="12" r="1" fill="currentColor"/>
+                </svg>
               </button>
             </div>
           </>

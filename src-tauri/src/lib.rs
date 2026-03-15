@@ -13,12 +13,13 @@ use tauri::{Manager, WebviewUrl, Emitter};
 use tauri::webview::WebviewBuilder;
 use std::sync::Arc;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::fs;
 use std::path::PathBuf;
 use adblock::request::Request;
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct WebviewState {
     tabs: Mutex<HashMap<String, bool>>,
@@ -41,10 +42,32 @@ struct BlockerState {
     fingerprint_script: String,
     vault_script: String,
     glance_script: String,
+    preload_script: String,
 }
 
 struct WhitelistState {
     sites: Mutex<HashSet<String>>,
+}
+
+struct PreloadState {
+    url: Mutex<Option<String>>,
+    webview_id: Mutex<Option<String>>,
+    source_tab: Mutex<Option<String>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct NetworkLogEntry {
+    url: String,
+    resource_type: String,
+    blocked: bool,
+    filter_rule: Option<String>,
+    timestamp_ms: u64,
+}
+
+struct NetworkLog {
+    entries: Mutex<HashMap<String, VecDeque<NetworkLogEntry>>>,
+    enabled: AtomicBool,
+    pending: Mutex<HashMap<String, Vec<NetworkLogEntry>>>,
 }
 
 struct KeybindingState {
@@ -245,7 +268,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let disable_password_save = disable_password_save.unwrap_or(false);
     let block_service_workers = block_service_workers.unwrap_or(false);
     let block_font_enum = block_font_enum.unwrap_or(false);
-    let spoof_hw_concurrency = spoof_hw_concurrency.unwrap_or(false);
+    let _spoof_hw_concurrency = spoof_hw_concurrency.unwrap_or(false);
 
     // cap at 50 tabs to prevent resource exhaustion
     {
@@ -319,6 +342,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_fingerprint = fingerprint_script.clone();
     let inject_vault = vault_script.clone();
     let inject_glance = glance_script.clone();
+    let inject_preload = bs.preload_script.clone();
 
     // build security hardening JS (only enabled features)
     let mut sec_parts: Vec<&str> = Vec::new();
@@ -326,10 +350,33 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
         sec_parts.push("try{if(navigator.serviceWorker){Object.defineProperty(navigator,'serviceWorker',{get:function(){return{register:function(){return Promise.reject(new DOMException('blocked','SecurityError'))},getRegistration:function(){return Promise.resolve(undefined)},getRegistrations:function(){return Promise.resolve([])},ready:new Promise(function(){}),controller:null}},configurable:false});}}catch(e){}");
     }
     if block_font_enum {
-        sec_parts.push("try{if(document.fonts){Object.defineProperty(document,'fonts',{get:function(){return{forEach:function(){},size:0,ready:Promise.resolve(),check:function(){return false},has:function(){return false}}},configurable:false});}}catch(e){}");
-    }
-    if spoof_hw_concurrency {
-        sec_parts.push("try{var rc=navigator.hardwareConcurrency;var sc=(rc>=8)?8:4;Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return sc},configurable:false});}catch(e){}");
+        sec_parts.push(concat!(
+            "try{if(document.fonts){",
+            "var _origFonts=document.fonts;",
+            "var _safeList=['Arial','Helvetica','Times New Roman','Times','Courier New','Courier','Verdana','Georgia','Palatino','Garamond','Comic Sans MS','Trebuchet MS','Arial Black','Impact','Tahoma','Segoe UI'];",
+            "var fakeSet={",
+              "size:0,",
+              "status:'loaded',",
+              "ready:Promise.resolve(),",
+              "check:function(f){try{var m=f.match(/['\"]([^'\"]+)['\"]/);if(m){for(var i=0;i<_safeList.length;i++)if(_safeList[i].toLowerCase()===m[1].toLowerCase())return true}return false}catch(e){return false}},",
+              "load:function(){return Promise.resolve([])},",
+              "forEach:function(){},",
+              "entries:function(){return[][Symbol.iterator]()},",
+              "keys:function(){return[][Symbol.iterator]()},",
+              "values:function(){return[][Symbol.iterator]()},",
+              "has:function(){return false},",
+              "add:function(){},",
+              "delete:function(){return false},",
+              "clear:function(){},",
+              "addEventListener:function(){},",
+              "removeEventListener:function(){},",
+              "dispatchEvent:function(){return true},",
+              "onloading:null,onloadingdone:null,onloadingerror:null",
+            "};",
+            "fakeSet[Symbol.iterator]=function(){return[][Symbol.iterator]()};",
+            "Object.defineProperty(document,'fonts',{get:function(){return fakeSet},configurable:false});",
+            "}}catch(e){}"
+        ));
     }
     let security_js = if sec_parts.is_empty() { String::new() } else { format!("(function(){{{}}})();", sec_parts.join("")) };
     let inject_security = security_js.clone();
@@ -403,6 +450,31 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 }
             }
 
+            // check for speculative preload match
+            {
+                let ps = app_nav.state::<PreloadState>();
+                let preload_url = ps.url.lock().clone();
+                if let Some(ref purl) = preload_url {
+                    if *purl == url_str {
+                        let preload_id = ps.webview_id.lock().take();
+                        let source_tab = ps.source_tab.lock().take();
+                        *ps.url.lock() = None;
+                        if let (Some(pid), Some(stab)) = (preload_id, source_tab) {
+                            let panel_s = app_nav.state::<PanelState>();
+                            panel_s.ids.lock().remove(&pid);
+                            let ws = app_nav.state::<WebviewState>();
+                            ws.tabs.lock().insert(pid.clone(), false);
+                            let _ = app_nav.emit_to("main", "preload-promoted", serde_json::json!({
+                                "preloadId": pid,
+                                "url": url_str,
+                                "sourceTabId": stab
+                            }));
+                            return false;
+                        }
+                    }
+                }
+            }
+
             // update source URL for third-party request classification
             *source_for_nav.lock() = url_str.clone();
 
@@ -433,6 +505,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = wv.eval(&inject_fingerprint);
                 let _ = wv.eval(&inject_vault);
                 let _ = wv.eval(&inject_glance);
+                let _ = wv.eval(&inject_preload);
                 // blockers only if enabled and not whitelisted
                 if load_ad_blocker && !whitelisted_for_load {
                     let _ = wv.eval(&inject_cosmetic);
@@ -476,6 +549,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     builder = builder.initialization_script(&fingerprint_script);
     builder = builder.initialization_script(&vault_script);
     builder = builder.initialization_script(&glance_script);
+    builder = builder.initialization_script(&bs.preload_script);
 
     // only inject cosmetic scripts if enabled and not whitelisted
     if ad_blocker && !site_whitelisted {
@@ -726,6 +800,27 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         if let Ok(req) = Request::new(&url, &current_source, rtype) {
                                             let result = engine_ref.read().check_network_request(&req);
 
+                                            // network log — only when enabled
+                                            {
+                                                let nl = app_ref.state::<NetworkLog>();
+                                                if nl.enabled.load(Ordering::Relaxed) {
+                                                    let entry = NetworkLogEntry {
+                                                        url: url.clone(),
+                                                        resource_type: rtype.to_string(),
+                                                        blocked: result.matched,
+                                                        filter_rule: if result.matched { result.filter.clone() } else { None },
+                                                        timestamp_ms: std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_millis() as u64,
+                                                    };
+                                                    nl.pending.lock()
+                                                        .entry(tab_ref.clone())
+                                                        .or_insert_with(Vec::new)
+                                                        .push(entry);
+                                                }
+                                            }
+
                                             if !result.matched {
                                                 // handle $removeparam (rewritten URL)
                                                 if let Some(ref rewritten) = result.rewritten_url {
@@ -895,6 +990,82 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                                 );
                                             }
                                         }
+                                    }
+                                    Some("preload") => {
+                                        if let Some(url) = msg.get("url").and_then(|v| v.as_str()) {
+                                            let url = url.to_string();
+                                            let tab_id = tab_ref.to_string();
+                                            let app_clone = (*app_ref).clone();
+                                            std::thread::spawn(move || {
+                                                let old_id = {
+                                                    let ps = app_clone.state::<PreloadState>();
+                                                    let val = ps.webview_id.lock().take();
+                                                    val
+                                                };
+                                                if let Some(old_id) = old_id {
+                                                    let panel_s = app_clone.state::<PanelState>();
+                                                    panel_s.ids.lock().remove(&old_id);
+                                                    if let Some(wv) = app_clone.get_webview(&old_id) {
+                                                        let _ = wv.close();
+                                                    }
+                                                }
+                                                let preload_id = format!("preload-{}", std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+                                                let window = match app_clone.get_window("main") {
+                                                    Some(w) => w,
+                                                    None => return,
+                                                };
+                                                let webview_url = match url.parse::<url::Url>() {
+                                                    Ok(u) => tauri::WebviewUrl::External(u),
+                                                    Err(_) => return,
+                                                };
+                                                {
+                                                    let bs = app_clone.state::<BlockerState>();
+                                                    let mut builder = tauri::WebviewBuilder::new(&preload_id, webview_url);
+                                                    builder = builder.initialization_script(&bs.shortcut_script);
+                                                    builder = builder.initialization_script(&bs.fingerprint_script);
+                                                    match window.add_child(
+                                                        builder,
+                                                        tauri::LogicalPosition::new(-9999.0, -9999.0),
+                                                        tauri::LogicalSize::new(800.0, 600.0),
+                                                    ) {
+                                                        Ok(_) => {
+                                                            let panel_s = app_clone.state::<PanelState>();
+                                                            panel_s.ids.lock().insert(preload_id.clone());
+                                                            let ps = app_clone.state::<PreloadState>();
+                                                            *ps.url.lock() = Some(url);
+                                                            *ps.webview_id.lock() = Some(preload_id);
+                                                            *ps.source_tab.lock() = Some(tab_id);
+                                                        }
+                                                        Err(e) => {
+                                                            crash_log::log_error("preload", &format!("failed to create preload webview: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                    Some("preload-cancel") => {
+                                        let app_clone = (*app_ref).clone();
+                                        std::thread::spawn(move || {
+                                            std::thread::sleep(std::time::Duration::from_secs(2));
+                                            let old_id = {
+                                                let ps = app_clone.state::<PreloadState>();
+                                                let id = ps.webview_id.lock().take();
+                                                if id.is_some() {
+                                                    *ps.url.lock() = None;
+                                                    *ps.source_tab.lock() = None;
+                                                }
+                                                id
+                                            };
+                                            if let Some(old_id) = old_id {
+                                                let panel_s = app_clone.state::<PanelState>();
+                                                panel_s.ids.lock().remove(&old_id);
+                                                if let Some(wv) = app_clone.get_webview(&old_id) {
+                                                    let _ = wv.close();
+                                                }
+                                            }
+                                        });
                                     }
                                     _ => {}
                                 }
@@ -1371,6 +1542,28 @@ async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_network_log(app: tauri::AppHandle, tab_id: String) -> Result<Vec<NetworkLogEntry>, String> {
+    let nl = app.state::<NetworkLog>();
+    let entries = nl.entries.lock();
+    Ok(entries.get(&tab_id).map(|d| d.iter().cloned().collect()).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn set_network_log_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let nl = app.state::<NetworkLog>();
+    nl.enabled.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_network_log(app: tauri::AppHandle, tab_id: String) -> Result<(), String> {
+    let nl = app.state::<NetworkLog>();
+    nl.entries.lock().remove(&tab_id);
+    nl.pending.lock().remove(&tab_id);
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, sidebar_w: f64, top_offset: f64, profile_name: Option<String>) -> Result<(), String> {
     let window = app.get_window("main").ok_or("no main window")?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
@@ -1645,8 +1838,9 @@ async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String
     if let Some(wv) = app.get_webview(&id) {
         wv.with_webview(|webview| {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                let core = webview.controller().CoreWebView2().unwrap();
-                let _ = core.OpenDevToolsWindow();
+                if let Ok(core) = webview.controller().CoreWebView2() {
+                    let _ = core.OpenDevToolsWindow();
+                }
             }));
         }).map_err(|e| e.to_string())?;
     }
@@ -1655,10 +1849,13 @@ async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String
 
 #[tauri::command]
 async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
-    std::thread::spawn(move || {
+    match std::thread::spawn(move || {
         let mut cb = arboard::Clipboard::new().map_err(|e| format!("{}", e))?;
         cb.set_text(text).map_err(|e| format!("{}", e))
-    }).join().unwrap_or(Err("thread panicked".into()))
+    }).join() {
+        Ok(res) => res,
+        Err(_) => Err("thread panicked".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -2162,6 +2359,7 @@ pub fn run() {
     let fingerprint_script = include_str!("fingerprint.js").to_string();
     let vault_script = include_str!("vault_autofill.js").to_string();
     let glance_script = include_str!("glance_listener.js").to_string();
+    let preload_script = include_str!("link_preload.js").to_string();
 
     let sync_data_dir = data_dir.clone();
 
@@ -2210,6 +2408,16 @@ pub fn run() {
         .manage(PanelState {
             ids: Mutex::new(HashSet::new()),
         })
+        .manage(PreloadState {
+            url: Mutex::new(None),
+            webview_id: Mutex::new(None),
+            source_tab: Mutex::new(None),
+        })
+        .manage(NetworkLog {
+            entries: Mutex::new(HashMap::new()),
+            enabled: AtomicBool::new(false),
+            pending: Mutex::new(HashMap::new()),
+        })
         .manage(downloads::DownloadManager::new())
         .manage(std::sync::Arc::new(downloads::RateLimiter::new(0)))
         .manage(keybinding_state)
@@ -2225,6 +2433,7 @@ pub fn run() {
             fingerprint_script,
             vault_script,
             glance_script,
+            preload_script,
         })
         .plugin({
             tauri_plugin_global_shortcut::Builder::new()
@@ -2398,6 +2607,38 @@ pub fn run() {
                 });
             }
 
+            // network log batch emitter — flush pending entries every 500ms
+            {
+                let app_netlog = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+                    loop {
+                        interval.tick().await;
+                        let nl = app_netlog.state::<NetworkLog>();
+                        if !nl.enabled.load(Ordering::Relaxed) { continue; }
+                        let batches: HashMap<String, Vec<NetworkLogEntry>> = {
+                            let mut pending = nl.pending.lock();
+                            if pending.is_empty() { continue; }
+                            std::mem::take(&mut *pending)
+                        };
+                        for (tab_id, entries) in &batches {
+                            let mut main = nl.entries.lock();
+                            let deque = main.entry(tab_id.clone()).or_insert_with(VecDeque::new);
+                            for entry in entries {
+                                deque.push_back(entry.clone());
+                                if deque.len() > 500 { deque.pop_front(); }
+                            }
+                        }
+                        for (tab_id, entries) in batches {
+                            let _ = app_netlog.emit_to("main", "network-request", serde_json::json!({
+                                "tabId": tab_id,
+                                "entries": entries
+                            }));
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2500,6 +2741,9 @@ pub fn run() {
             vault::vault_update_entry,
             vault::vault_generate_password,
             vault_retry_autofill,
+            get_network_log,
+            set_network_log_enabled,
+            clear_network_log,
             open_glance,
             close_glance,
             promote_glance,

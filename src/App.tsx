@@ -6,6 +6,7 @@ import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
 import HistoryPanel from "./components/HistoryPanel";
 import DownloadPanel from "./components/DownloadPanel";
+import NetworkPanel, { NetworkEntry } from "./components/NetworkPanel";
 import NewTabPage from "./components/NewTabPage";
 import SettingsPage from "./components/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
@@ -117,6 +118,8 @@ export default function App() {
   const setCmdOpen = useUiStore(s => s.setCmdOpen);
   const downloadsOpen = useUiStore(s => s.downloadsOpen);
   const setDownloadsOpen = useUiStore(s => s.setDownloadsOpen);
+  const networkOpen = useUiStore(s => s.networkOpen);
+  const setNetworkOpen = useUiStore(s => s.setNetworkOpen);
   const showOnboarding = useUiStore(s => s.showOnboarding);
   const setShowOnboarding = useUiStore(s => s.setShowOnboarding);
   const urlQuery = useUiStore(s => s.urlQuery);
@@ -173,6 +176,9 @@ export default function App() {
   const setSyncTabReceived = useSyncStore(s => s.setSyncTabReceived);
   const syncPairedDevices = useSyncStore(s => s.syncPairedDevices);
   const setSyncPairedDevices = useSyncStore(s => s.setSyncPairedDevices);
+
+  const [networkEntries, setNetworkEntries] = useState<NetworkEntry[]>([]);
+  const networkEntriesRef = useRef<NetworkEntry[]>([]);
 
   const vaultUnlockedRef = useRef(false);
   const vaultSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -664,6 +670,33 @@ export default function App() {
       }),
       listen<{ id: string }>("download-cancelled", (e) => {
         setDownloads(prev => prev.filter(d => d.id !== e.payload.id));
+      }),
+      // speculative preload promotion
+      listen<{ preloadId: string; url: string; sourceTabId: string }>("preload-promoted", (e) => {
+        const { preloadId, url, sourceTabId } = e.payload;
+        setTabs(prev => {
+          // find the source tab to inherit its workspace
+          const sourceTab = prev.find(t => t.id === sourceTabId);
+          const wsId = sourceTab?.workspaceId || activeWorkspaceId;
+          const newTab: Tab = {
+            id: preloadId,
+            url,
+            title: url,
+            loading: true,
+            pinned: false,
+            workspaceId: wsId,
+            parentId: sourceTabId,
+          };
+          return [...prev, newTab];
+        });
+        // set the preloaded tab as active
+        setWorkspaces(prev => prev.map(ws => ws.id === activeWorkspaceId ? { ...ws, activeTabId: preloadId } : ws));
+      }),
+      // network inspector
+      listen<{ tabId: string; entries: NetworkEntry[] }>("network-request", (e) => {
+        const newEntries = e.payload.entries;
+        networkEntriesRef.current = [...networkEntriesRef.current, ...newEntries].slice(-500);
+        setNetworkEntries(networkEntriesRef.current);
       }),
       // sync: reload bookmarks when remote changes arrive
       listen("sync-bookmarks-changed", () => {
@@ -1804,6 +1837,28 @@ export default function App() {
   const toggleDownloads = useCallback(() => setDownloadsOpen(p => !p), []);
   const activeDownloadCount = useMemo(() => downloads.filter(d => d.state === "downloading").length, [downloads]);
 
+  const toggleNetwork = useCallback(() => setNetworkOpen(p => !p), []);
+  const clearNetworkLog = useCallback(() => {
+    if (!activeTab) return;
+    networkEntriesRef.current = [];
+    setNetworkEntries([]);
+    invoke("clear_network_log", { tabId: activeTab });
+  }, [activeTab]);
+
+  useEffect(() => {
+    invoke("set_network_log_enabled", { enabled: networkOpen });
+    if (networkOpen && activeTab) {
+      invoke<NetworkEntry[]>("get_network_log", { tabId: activeTab }).then(entries => {
+        networkEntriesRef.current = entries;
+        setNetworkEntries(entries);
+      });
+    }
+    if (!networkOpen) {
+      networkEntriesRef.current = [];
+      setNetworkEntries([]);
+    }
+  }, [networkOpen, activeTab]);
+
   // media controls
   const mediaPlayPause = useCallback(() => {
     if (playingTab) invoke("media_play_pause", { id: playingTab.id });
@@ -2059,6 +2114,7 @@ export default function App() {
           onOpenSettings={onOpenSettings}
           activeDownloadCount={activeDownloadCount}
           onToggleDownloads={toggleDownloads}
+          onToggleNetwork={toggleNetwork}
           paneTabIds={paneTabIds}
           onSplitWith={toggleSplit}
           playingTab={playingTab}
@@ -2094,6 +2150,13 @@ export default function App() {
             onClearCompleted={clearCompletedDownloads}
             onClose={toggleDownloads}
             onRetry={retryDownload}
+          />
+        )}
+        {networkOpen && (
+          <NetworkPanel
+            entries={networkEntries}
+            onClose={toggleNetwork}
+            onClear={clearNetworkLog}
           />
         )}
         <div className={`sidebar-spacer ${compactMode ? "compact" : sidebarOpen ? "" : "collapsed"}`} />

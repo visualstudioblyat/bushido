@@ -8,6 +8,7 @@ interface UiState {
   historyOpen: boolean;
   cmdOpen: boolean;
   downloadsOpen: boolean;
+  networkOpen: boolean;
   showOnboarding: boolean;
   urlQuery: string;
   draggingDiv: number | null;
@@ -22,6 +23,7 @@ interface UiState {
   setHistoryOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   setCmdOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   setDownloadsOpen: (v: boolean | ((p: boolean) => boolean)) => void;
+  setNetworkOpen: (v: boolean | ((p: boolean) => boolean)) => void;
   setShowOnboarding: (v: boolean) => void;
   setUrlQuery: (v: string) => void;
   setDraggingDiv: (v: number | null) => void;
@@ -41,6 +43,7 @@ export const useUiStore = create<UiState>((set) => ({
   historyOpen: false,
   cmdOpen: false,
   downloadsOpen: false,
+  networkOpen: false,
   showOnboarding: false,
   urlQuery: "",
   draggingDiv: null,
@@ -55,6 +58,7 @@ export const useUiStore = create<UiState>((set) => ({
   setHistoryOpen: (v) => set((s) => ({ historyOpen: toggle(v, s.historyOpen) })),
   setCmdOpen: (v) => set((s) => ({ cmdOpen: toggle(v, s.cmdOpen) })),
   setDownloadsOpen: (v) => set((s) => ({ downloadsOpen: toggle(v, s.downloadsOpen) })),
+  setNetworkOpen: (v) => set((s) => ({ networkOpen: toggle(v, s.networkOpen) })),
   setShowOnboarding: (v) => set({ showOnboarding: v }),
   setUrlQuery: (v) => set({ urlQuery: v }),
   setDraggingDiv: (v) => set({ draggingDiv: v }),
