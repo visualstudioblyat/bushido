@@ -8,7 +8,7 @@
 
   var STORAGE_KEY = '__bushidoVaultUser';
   var pendingSave = null;
-  var DBG = true;
+  var DBG = false;
   // track last known password value — some sites clear the field before our handler runs
   var lastPwValue = '';
   var lastPwDomain = '';

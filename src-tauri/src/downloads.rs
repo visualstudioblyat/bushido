@@ -370,7 +370,7 @@ pub async fn start(app: AppHandle, url: String, file_name: String, download_dir:
             && total_bytes.map_or(false, |t| t >= MIN_CHUNK_SIZE * 2);
 
         if use_chunked {
-            let total = total_bytes.unwrap();
+            let Some(total) = total_bytes else { return; };
             dl_task_chunked(app2, id2, url, file_path, total, cookies2, None, rx, rl).await;
         } else {
             dl_task(app2, id2, url, file_path, cookies2, 0, rx, rl).await;
@@ -410,7 +410,7 @@ pub async fn resume(app: AppHandle, id: String, rate_limiter: Arc<RateLimiter>) 
 
     if has_segments {
         // chunked resume
-        let m = manifest_data.unwrap();
+        let m = manifest_data.ok_or("missing manifest data for chunked resume")?;
         let total = m.total_bytes.unwrap_or(0);
         let cookies = m.cookies.clone();
         let segments = m.segments.clone();
