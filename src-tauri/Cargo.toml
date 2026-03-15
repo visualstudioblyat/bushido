@@ -4,6 +4,7 @@ version = "0.12.0"
 description = "Bushido Browser"
 authors = ["visualstudioblyat"]
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "bushido_lib"

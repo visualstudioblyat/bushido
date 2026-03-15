@@ -37,7 +37,7 @@
       "icons/icon.png"
     ],
     "publisher": "Bushido Browser",
-    "copyright": "Copyright 2026 Bushido Browser contributors. Licensed under MPL-2.0.",
+    "copyright": "Copyright 2026 Bushido Browser contributors. Licensed under GPL-3.0.",
     "shortDescription": "A privacy-first web browser",
     "longDescription": "Bushido is a fast, private web browser with workspaces, split view, ad blocking, fingerprint protection, and LAN sync. Built with Tauri and WebView2.",
     "windows": {
