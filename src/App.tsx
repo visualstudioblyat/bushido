@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import Sidebar from "./components/Sidebar";
 import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
@@ -179,6 +180,8 @@ export default function App() {
 
   const [networkEntries, setNetworkEntries] = useState<NetworkEntry[]>([]);
   const networkEntriesRef = useRef<NetworkEntry[]>([]);
+  const [cookieToast, setCookieToast] = useState(false);
+  const [updateToast, setUpdateToast] = useState<string | null>(null);
 
   const vaultUnlockedRef = useRef(false);
   const vaultSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -194,6 +197,7 @@ export default function App() {
   const prevSettingsRef = useRef<BushidoSettings | null>(null);
   const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
   const zoomRef = useRef<Record<string, number>>({});
+  const [zoomDisplay, setZoomDisplay] = useState<Record<string, number>>({});
   const pageCtxRef = useRef<HTMLDivElement>(null);
   const pageCtxPos = useClampedMenu(pageCtxRef, pageCtx);
   useEffect(() => {
@@ -215,17 +219,7 @@ export default function App() {
 
   const applyTheme = useCallback((accent: string, mode: "dark" | "light") => {
     const root = document.documentElement;
-    root.style.setProperty("--accent", accent);
-    root.style.setProperty("--accent-soft", accent.replace(")", ", 0.1)").replace("rgb", "rgba").replace("#", ""));
-    // derive soft/glow from hex
-    const r = parseInt(accent.slice(1, 3), 16), g = parseInt(accent.slice(3, 5), 16), b = parseInt(accent.slice(5, 7), 16);
-    if (!isNaN(r)) {
-      root.style.setProperty("--accent-soft", `rgba(${r}, ${g}, ${b}, 0.1)`);
-      root.style.setProperty("--accent-glow", `rgba(${r}, ${g}, ${b}, 0.15)`);
-      root.style.setProperty("--accent-mesh-1", `rgba(${r}, ${g}, ${b}, 0.06)`);
-      root.style.setProperty("--accent-mesh-2", `rgba(${r}, ${g}, ${b}, 0.04)`);
-      root.style.setProperty("--accent-mesh-3", `rgba(${r}, ${g}, ${b}, 0.03)`);
-    }
+    root.style.setProperty("--accent-base", accent);
     if (mode === "light") root.classList.add("light");
     else root.classList.remove("light");
   }, []);
@@ -348,7 +342,7 @@ export default function App() {
         const restoredWs: Workspace[] = session.workspaces.map(w => {
           const num = parseInt(w.id.replace("ws-", ""), 10);
           if (num >= wsCounter) wsCounter = num;
-          return { id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, paneLayout: w.paneLayout };
+          return { id: w.id, name: w.name, color: w.color, icon: w.icon, activeTabId: w.activeTabId, paneLayout: w.paneLayout };
         });
 
         // build ID remap: old stored ID → new ID (or reuse if stored)
@@ -461,7 +455,7 @@ export default function App() {
     if (!initialized.current || tabs.length === 0) return;
     const t = setTimeout(() => {
       const session: SessionData = {
-        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, activeTabId: w.activeTabId, paneLayout: w.paneLayout })),
+        workspaces: workspaces.map(w => ({ id: w.id, name: w.name, color: w.color, icon: w.icon, activeTabId: w.activeTabId, paneLayout: w.paneLayout })),
         tabs: tabs.map(tab => ({ id: tab.id, url: tab.url, title: tab.title, pinned: tab.pinned, workspaceId: tab.workspaceId, parentId: tab.parentId, suspended: tab.suspended })),
         activeWorkspaceId,
         compactMode,
@@ -471,6 +465,18 @@ export default function App() {
     }, 1000);
     return () => clearTimeout(t);
   }, [tabs, workspaces, activeWorkspaceId, compactMode, panels]);
+
+  // update notification: show toast when version changes
+  useEffect(() => {
+    getVersion().then(version => {
+      const lastVersion = localStorage.getItem("bushido-last-version");
+      if (lastVersion && lastVersion !== version) {
+        setUpdateToast(version);
+        setTimeout(() => setUpdateToast(null), 8000);
+      }
+      localStorage.setItem("bushido-last-version", version);
+    }).catch(() => {});
+  }, []);
 
   // load history + bookmarks on init
   useEffect(() => {
@@ -634,10 +640,18 @@ export default function App() {
       listen<{ id: string; hasVideo: boolean }>("tab-has-video", (e) => {
         setHasVideo(e.payload.hasVideo);
       }),
-      listen<{ id: string; state: string; title: string }>("tab-media-state", (e) => {
+      listen<{ id: string; state: string; title: string; artist?: string; currentTime?: number; duration?: number; playbackRate?: number; metaTitle?: string }>("tab-media-state", (e) => {
         setTabs(prev => prev.map(t =>
           t.id === e.payload.id
-            ? { ...t, mediaState: e.payload.state === "ended" ? undefined : e.payload.state as "playing" | "paused", mediaTitle: e.payload.title.replace(/<[^>]*>/g, "") }
+            ? {
+                ...t,
+                mediaState: e.payload.state === "ended" ? undefined : e.payload.state as "playing" | "paused",
+                mediaTitle: (e.payload.metaTitle || e.payload.title || "").replace(/<[^>]*>/g, ""),
+                mediaArtist: e.payload.artist || undefined,
+                mediaCurrentTime: e.payload.currentTime ?? t.mediaCurrentTime,
+                mediaDuration: e.payload.duration ?? t.mediaDuration,
+                mediaPlaybackRate: e.payload.playbackRate ?? t.mediaPlaybackRate,
+              }
             : t
         ));
       }),
@@ -658,6 +672,17 @@ export default function App() {
           if (prev.find(d => d.id === e.payload.id)) return prev;
           return [e.payload, ...prev];
         });
+        // download arc animation
+        const dlBtn = document.querySelector(".download-btn");
+        if (dlBtn) {
+          const btnRect = dlBtn.getBoundingClientRect();
+          const dot = document.createElement("div");
+          dot.className = "download-arc-dot";
+          dot.style.setProperty("--arc-end-x", `${btnRect.left + btnRect.width / 2}px`);
+          dot.style.setProperty("--arc-end-y", `${btnRect.top + btnRect.height / 2}px`);
+          document.body.appendChild(dot);
+          dot.addEventListener("animationend", () => dot.remove());
+        }
       }),
       listen<DownloadItem>("download-progress", (e) => {
         setDownloads(prev => prev.map(d => d.id === e.payload.id ? e.payload : d));
@@ -792,6 +817,11 @@ export default function App() {
           setVaultMasterModal("unlock");
         }
       }),
+      // cookie banner auto-rejected
+      listen<{ id: string }>("cookie-rejected", () => {
+        setCookieToast(true);
+        setTimeout(() => setCookieToast(false), 2000);
+      }),
       // popup / window.open from webview — open in same workspace
       listen<{ sourceTabId: string; url: string }>("new-window-requested", (e) => {
         const id = genId();
@@ -874,6 +904,29 @@ export default function App() {
       syncLayout();
     }
   }, [vaultMasterModal, vaultSavePrompt]);
+
+  // vault auto-lock after inactivity
+  useEffect(() => {
+    if (!settings.vaultAutoLock || !settings.vaultLockTimeout || !vaultUnlocked) return;
+    const timeoutMs = settings.vaultLockTimeout * 60_000;
+    let timer = setTimeout(() => {
+      invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(() => {});
+    }, timeoutMs);
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(() => {});
+      }, timeoutMs);
+    };
+    // reset timer on user activity signals
+    window.addEventListener("mousedown", reset);
+    window.addEventListener("keydown", reset);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("mousedown", reset);
+      window.removeEventListener("keydown", reset);
+    };
+  }, [settings.vaultAutoLock, settings.vaultLockTimeout, vaultUnlocked]);
 
   // hide panel webview when entering compact mode
   useEffect(() => {
@@ -985,6 +1038,10 @@ export default function App() {
     setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, color } : w));
   }, []);
 
+  const setWorkspaceIcon = useCallback((wsId: string, icon: string | undefined) => {
+    setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, icon } : w));
+  }, []);
+
   const clearWorkspaceData = useCallback((wsId: string) => {
     // find any active webview tab in this workspace to get a handle
     const wsTab = tabs.find(t => t.workspaceId === wsId && !t.url.startsWith("bushido://") && t.memoryState !== "destroyed");
@@ -1037,6 +1094,37 @@ export default function App() {
       invoke("create_tab", { id: newId, url: savedUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetWsId, ...secArgs(sr) });
     }
   }, [tabs, activeWorkspaceId, syncLayout, layoutOffset, topOffset]);
+
+  const duplicateWorkspace = useCallback((wsId: string) => {
+    const source = workspaces.find(w => w.id === wsId);
+    if (!source) return;
+    const newWsId = genWsId();
+    const tabId = genId();
+    const ws: Workspace = { id: newWsId, name: source.name + " Copy", color: source.color, icon: source.icon, activeTabId: tabId };
+    const tab: Tab = { id: tabId, url: NEW_TAB_URL, title: "New Tab", loading: true, workspaceId: newWsId };
+    setWorkspaces(prev => [...prev, ws]);
+    setTabs(prev => [...prev, tab]);
+    const sr = settingsRef.current;
+    invoke("create_tab", { id: tabId, url: NEW_TAB_URL, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: newWsId, ...secArgs(sr) });
+    clearLoading(tabId);
+  }, [workspaces, clearLoading, layoutOffset, topOffset]);
+
+  const reorderWorkspaces = useCallback((fromIdx: number, toIdx: number) => {
+    setWorkspaces(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const muteTab = useCallback((tabId: string) => {
+    invoke("media_mute", { id: tabId });
+  }, []);
+
+  const renameTab = useCallback((tabId: string, customTitle: string) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, customTitle: customTitle || undefined } : t));
+  }, []);
 
   // --- tab operations (workspace-aware) ---
 
@@ -1108,11 +1196,18 @@ export default function App() {
           return updated;
         }
 
-        // closed the active tab (no split) → switch to adjacent
+        // closed the active tab (no split) → switch to most recent or adjacent
         if (w.activeTabId === id) {
           const wsTabsInNext = next.filter(t => t.workspaceId === wsId);
-          const oldIdx = wsTabs.findIndex(t => t.id === id);
-          const newActive = wsTabsInNext[Math.min(oldIdx, wsTabsInNext.length - 1)];
+          let newActive: Tab | undefined;
+          if (settingsRef.current.selectRecentTabOnClose) {
+            // pick the tab with the highest lastActiveAt timestamp
+            newActive = wsTabsInNext.reduce<Tab | undefined>((best, t) =>
+              !best || (t.lastActiveAt || 0) > (best.lastActiveAt || 0) ? t : best, undefined);
+          } else {
+            const oldIdx = wsTabs.findIndex(t => t.id === id);
+            newActive = wsTabsInNext[Math.min(oldIdx, wsTabsInNext.length - 1)];
+          }
           const updated = { ...w, activeTabId: newActive?.id || "" };
           if (wsId === activeWorkspaceId) syncLayout(updated, next);
           return updated;
@@ -1484,6 +1579,13 @@ export default function App() {
     invoke("sync_remove_bookmark", { id }).catch(() => {});
   }, []);
 
+  const editBookmark = useCallback((id: string, title: string, url: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      bookmarks: prev.bookmarks.map(b => b.id === id ? { ...b, title, url } : b),
+    }));
+  }, []);
+
   const addBookmarkFolder = useCallback((name: string, parentId = "root"): string => {
     const id = `bmf-${Date.now()}`;
     setBookmarkData(prev => ({
@@ -1549,6 +1651,71 @@ export default function App() {
     });
   }, []);
 
+  // --- RSS Live Folders ---
+  const setFolderRss = useCallback((folderId: string, rssUrl: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      folders: prev.folders.map(f => f.id === folderId ? { ...f, rssUrl, lastFetched: 0, autoItems: [] } : f),
+    }));
+  }, []);
+
+  const removeFolderRss = useCallback((folderId: string) => {
+    setBookmarkData(prev => ({
+      ...prev,
+      folders: prev.folders.map(f => f.id === folderId ? { ...f, rssUrl: undefined, lastFetched: undefined, autoItems: undefined } : f),
+    }));
+  }, []);
+
+  // RSS fetch effect — on startup + every 30 min
+  useEffect(() => {
+    const fetchRssForFolder = async (folder: { id: string; rssUrl?: string; lastFetched?: number }) => {
+      if (!folder.rssUrl) return;
+      if (folder.lastFetched && Date.now() - folder.lastFetched < 30 * 60 * 1000) return;
+      try {
+        const res = await fetch(folder.rssUrl);
+        if (!res.ok) return;
+        const text = await res.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, "text/xml");
+        // support both RSS <item> and Atom <entry>
+        const items = doc.querySelectorAll("item, entry");
+        const autoItems: import("./types").Bookmark[] = [];
+        for (let i = 0; i < Math.min(items.length, 20); i++) {
+          const item = items[i];
+          const title = item.querySelector("title")?.textContent || "Untitled";
+          // RSS uses <link> text, Atom uses <link href="">
+          const linkEl = item.querySelector("link");
+          const url = linkEl?.getAttribute("href") || linkEl?.textContent || "";
+          if (!url) continue;
+          autoItems.push({
+            id: `rss-${folder.id}-${i}`,
+            url: url.trim(),
+            title: title.trim(),
+            folderId: folder.id,
+            createdAt: Date.now(),
+            order: i,
+          });
+        }
+        setBookmarkData(prev => ({
+          ...prev,
+          folders: prev.folders.map(f => f.id === folder.id ? { ...f, autoItems, lastFetched: Date.now() } : f),
+        }));
+      } catch {
+        // silently fail for RSS fetch errors
+      }
+    };
+
+    const fetchAll = () => {
+      const folders = bookmarkData.folders.filter(f => f.rssUrl);
+      folders.forEach(f => fetchRssForFolder(f));
+    };
+
+    fetchAll();
+    const interval = setInterval(fetchAll, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookmarkData.folders.filter(f => f.rssUrl).map(f => f.id + f.rssUrl).join(",")]);
+
   const bookmarkedUrls = useMemo(() => new Set(bookmarkData.bookmarks.map(b => b.url)), [bookmarkData.bookmarks]);
 
   const toggleBookmark = useCallback(() => {
@@ -1557,6 +1724,10 @@ export default function App() {
     if (existing) removeBookmark(existing.id);
     else addBookmark(current.url, current.title, current.favicon);
   }, [current, bookmarkData.bookmarks, addBookmark, removeBookmark]);
+
+  const removeHistoryEntry = useCallback((url: string) => {
+    setHistoryEntries(prev => prev.filter(h => h.url !== url));
+  }, []);
 
   const clearHistory = useCallback((range: 'hour' | 'today' | 'all') => {
     if (range === 'all') { setHistoryEntries([]); return; }
@@ -1724,6 +1895,31 @@ export default function App() {
     }
   }, [addTab, closeTab, activeTab, clearHistory, toggleBookmark, onOpenSettings, toggleReader, openScreenshot]);
 
+  const handleQuickAction = useCallback((action: string) => {
+    switch (action) {
+      case "toggleCompact": setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); break;
+      case "splitView": toggleSplit(); break;
+      case "openSettings": onOpenSettings(); break;
+      case "togglePin": pinTab(activeTab); break;
+      case "muteTab": muteTab(activeTab); break;
+      case "addBookmark": toggleBookmark(); break;
+      case "copyUrl": { const t = tabs.find(x => x.id === activeTab); if (t) navigator.clipboard.writeText(t.url); break; }
+      case "screenshot": openScreenshot(); break;
+      case "toggleReader": toggleReader(); break;
+      case "togglePip": togglePip(); break;
+      case "zoomIn": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+      case "zoomOut": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+      case "zoomReset": zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); break;
+      case "findInPage": setFindOpen(true); break;
+      case "printPage": invoke("print_tab", { id: activeTab }); break;
+      case "toggleDevtools": invoke("toggle_devtools", { id: activeTab }); break;
+      case "toggleFullscreen": invoke("toggle_fullscreen"); break;
+      case "clearHistory": clearHistory("all"); break;
+      case "newWorkspace": addWorkspace(); break;
+      case "closeTab": closeTab(activeTab); break;
+    }
+  }, [activeTab, tabs, toggleSplit, onOpenSettings, pinTab, muteTab, toggleBookmark, openScreenshot, toggleReader, togglePip, setFindOpen, clearHistory, addWorkspace, closeTab]);
+
   // keyboard shortcuts (works when React UI has focus)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1743,9 +1939,9 @@ export default function App() {
       if (ctrl && e.key === "p" && !e.shiftKey) { e.preventDefault(); invoke("print_tab", { id: activeTab }); }
       if (ctrl && e.key === "j" && !e.shiftKey) { e.preventDefault(); setDownloadsOpen(p => !p); }
       if (ctrl && e.key === "r" && !e.shiftKey) { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
-      if (ctrl && e.key === "=") { e.preventDefault(); const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); }
-      if (ctrl && e.key === "-") { e.preventDefault(); const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); }
-      if (ctrl && e.key === "0") { e.preventDefault(); zoomRef.current[activeTab] = 1; invoke("zoom_tab", { id: activeTab, factor: 1 }); }
+      if (ctrl && e.key === "=") { e.preventDefault(); const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); }
+      if (ctrl && e.key === "-") { e.preventDefault(); const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); }
+      if (ctrl && e.key === "0") { e.preventDefault(); zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); }
       if (e.key === "F11") { e.preventDefault(); invoke("toggle_fullscreen"); }
       if (e.key === "F5") { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
       // Ctrl+Tab cycles tabs within current workspace
@@ -1793,9 +1989,9 @@ export default function App() {
         case "downloads": setDownloadsOpen(p => !p); break;
         case "devtools": invoke("toggle_devtools", { id: activeTab }); break;
         case "reopen-tab": { const c = closedTabsRef.current.pop(); if (c) addTab(c.url); break; }
-        case "zoom-in": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-        case "zoom-out": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-        case "zoom-reset": { zoomRef.current[activeTab] = 1; invoke("zoom_tab", { id: activeTab, factor: 1 }); break; }
+        case "zoom-in": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+        case "zoom-out": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
+        case "zoom-reset": { zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); break; }
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
@@ -1898,6 +2094,10 @@ export default function App() {
     setPanels(prev => prev.filter(p => p.id !== panelId));
     if (activePanelId === panelId) setActivePanelId(null);
   }, [activePanelId]);
+
+  const reorderPanels = useCallback((reordered: WebPanel[]) => {
+    setPanels(reordered);
+  }, []);
 
   // onboarding handlers
   const handleOnboardingComplete = useCallback(() => {
@@ -2007,6 +2207,7 @@ export default function App() {
         <GlanceOverlay
           url={glance.url}
           title={glance.title}
+          glanceId={glance.id}
           sidebarWidth={layoutOffset}
           topOffset={topOffset}
           onClose={closeGlance}
@@ -2074,9 +2275,14 @@ export default function App() {
           onClearWorkspaceData={clearWorkspaceData}
           onRenameWorkspace={renameWorkspace}
           onRecolorWorkspace={recolorWorkspace}
+          onSetWorkspaceIcon={setWorkspaceIcon}
           onToggleCollapse={toggleCollapse}
           onAddChildTab={addChildTab}
           onMoveTabToWorkspace={moveTabToWorkspace}
+          onDuplicateWorkspace={duplicateWorkspace}
+          onReorderWorkspaces={reorderWorkspaces}
+          onMuteTab={muteTab}
+          onRenameTab={renameTab}
           bookmarks={bookmarkData.bookmarks}
           bookmarkFolders={bookmarkData.folders}
           onSelectBookmark={selectBookmark}
@@ -2087,6 +2293,8 @@ export default function App() {
           onMoveBookmarkToFolder={moveBookmarkToFolder}
           onReorderBookmarks={reorderBookmarks}
           onReorderFolders={reorderFolders}
+          onSetFolderRss={setFolderRss}
+          onRemoveFolderRss={removeFolderRss}
           onToggleHistory={toggleHistory}
           onBack={goBack}
           onForward={goForward}
@@ -2125,11 +2333,16 @@ export default function App() {
           onTogglePanel={togglePanel}
           onAddPanel={addPanel}
           onRemovePanel={removePanel}
+          onReorderPanels={reorderPanels}
           onScreenshot={openScreenshot}
           onShareUrl={() => setShareOpen(true)}
           syncEnabled={settings.syncEnabled}
           pairedDevices={syncPairedDevices}
           onTabSplitDrag={onTabSplitDrag}
+          zoomLevel={zoomDisplay[activeTab] ?? zoomRef.current[activeTab] ?? 1}
+          onZoomReset={() => { zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); }}
+          onEditBookmark={editBookmark}
+          onQuickAction={handleQuickAction}
         />
         {historyOpen && (
           <HistoryPanel
@@ -2137,6 +2350,7 @@ export default function App() {
             onSelect={(url: string) => { selectBookmark(url); setHistoryOpen(false); }}
             onClose={toggleHistory}
             onClear={clearHistory}
+            onRemoveEntry={removeHistoryEntry}
           />
         )}
         {downloadsOpen && (
@@ -2181,6 +2395,8 @@ export default function App() {
               onReloadAllTabs={reloadAllTabs}
               onThemeChange={handleThemeChange}
               onOpenUrl={addTab}
+              onImportBookmarks={handleImportBookmarks}
+              onImportHistory={handleImportHistory}
             />
           ) : (
             <WebviewPanel />
@@ -2211,6 +2427,16 @@ export default function App() {
         </div>
       </div>
     </div>
+    {cookieToast && (
+      <div className="sync-toast sync-toast--success" style={{ pointerEvents: 'none' }}>
+        <svg className="sync-toast-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1L2 4V7.5C2 11.1 4.5 14.4 8 15.2C11.5 14.4 14 11.1 14 7.5V4L8 1Z"
+                stroke="var(--success)" strokeWidth="1.3" strokeLinejoin="round" fill="none"/>
+          <path d="M5.5 8L7 9.5L10.5 6" stroke="var(--success)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        <span>cookie banner rejected</span>
+      </div>
+    )}
     {syncToast && (
       <div className={`sync-toast sync-toast--${syncToast}`}>
         {syncToast === "syncing" && (
@@ -2237,6 +2463,18 @@ export default function App() {
           <path d="M8 4v5M8 11v1" stroke="var(--danger)" strokeWidth="1.5" strokeLinecap="round"/>
         </svg>
         <span>{errorToast}</span>
+      </div>
+    )}
+    {updateToast && (
+      <div className="update-toast" onClick={() => setUpdateToast(null)}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1v10M4.5 7.5L8 11l3.5-3.5" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M3 14h10" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontWeight: 600 }}>Updated to v{updateToast}</span>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>Click to dismiss</span>
+        </div>
       </div>
     )}
     {syncTabReceived && (

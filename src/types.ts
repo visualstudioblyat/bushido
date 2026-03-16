@@ -22,7 +22,12 @@ export interface Tab {
   memoryState?: "active" | "suspended" | "destroyed";
   mediaState?: "playing" | "paused";
   mediaTitle?: string;
+  mediaArtist?: string;
+  mediaCurrentTime?: number;
+  mediaDuration?: number;
+  mediaPlaybackRate?: number;
   crashed?: boolean;
+  customTitle?: string;
 }
 
 // split view layout tree
@@ -51,12 +56,13 @@ export interface Workspace {
   id: string;
   name: string;
   color: string;
+  icon?: string;
   activeTabId: string;
   paneLayout?: PaneSplit;
 }
 
 export interface SessionData {
-  workspaces: { id: string; name: string; color: string; activeTabId: string; paneLayout?: PaneSplit }[];
+  workspaces: { id: string; name: string; color: string; icon?: string; activeTabId: string; paneLayout?: PaneSplit }[];
   tabs: { id: string; url: string; title: string; pinned?: boolean; workspaceId: string; parentId?: string; suspended?: boolean }[];
   activeWorkspaceId: string;
   compactMode?: boolean;
@@ -86,6 +92,9 @@ export interface BookmarkFolder {
   name: string;
   parentId: string;
   order: number;
+  rssUrl?: string;
+  lastFetched?: number;
+  autoItems?: Bookmark[];
 }
 
 export interface BookmarkData {

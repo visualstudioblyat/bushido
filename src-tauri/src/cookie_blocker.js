@@ -49,11 +49,20 @@
         /^no\s*thanks$/i,
     ];
 
+    function notifyCookieRejected() {
+        try {
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage(JSON.stringify({ __bushido: 'cookie-rejected' }));
+            }
+        } catch(e) {}
+    }
+
     function tryReject() {
         for (const sel of REJECT_SELECTORS) {
             const btn = document.querySelector(sel);
             if (btn && btn.offsetParent !== null) {
                 btn.click();
+                notifyCookieRejected();
                 return true;
             }
         }
@@ -67,6 +76,7 @@
                 for (const pattern of REJECT_TEXT) {
                     if (pattern.test(text)) {
                         btn.click();
+                        notifyCookieRejected();
                         return true;
                     }
                 }

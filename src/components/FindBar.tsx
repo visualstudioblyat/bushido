@@ -10,6 +10,7 @@ interface Props {
 export default memo(function FindBar({ tabId, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [matchCount, setMatchCount] = useState<number | null>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -25,17 +26,30 @@ export default memo(function FindBar({ tabId, onClose }: Props) {
 
   const find = useCallback((forward = true) => {
     invoke("find_in_page", { id: tabId, query, forward });
-  }, [tabId, query]);
+    if (matchCount && matchCount > 0) {
+      setActiveIdx(prev => {
+        if (forward) return prev >= matchCount ? 1 : prev + 1;
+        return prev <= 1 ? matchCount : prev - 1;
+      });
+    }
+  }, [tabId, query, matchCount]);
 
   const close = useCallback(() => {
     invoke("find_in_page", { id: tabId, query: "", forward: true });
     setMatchCount(null);
+    setActiveIdx(0);
     onClose();
   }, [tabId, onClose]);
 
+  // reset index when query changes
   useEffect(() => {
-    if (!query) setMatchCount(null);
+    if (!query) { setMatchCount(null); setActiveIdx(0); }
+    else setActiveIdx(1);
   }, [query]);
+
+  const countLabel = matchCount !== null
+    ? (matchCount > 0 ? `${Math.min(activeIdx, matchCount)} of ${matchCount}` : "no matches")
+    : null;
 
   return (
     <div className="find-bar">
@@ -51,8 +65,8 @@ export default memo(function FindBar({ tabId, onClose }: Props) {
         placeholder="find in page..."
         spellCheck={false}
       />
-      {matchCount !== null && (
-        <span className="find-count">{matchCount > 0 ? `${matchCount} found` : "no matches"}</span>
+      {countLabel !== null && (
+        <span className="find-count">{countLabel}</span>
       )}
       <button className="find-btn" onClick={() => find(false)} title="Previous">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">

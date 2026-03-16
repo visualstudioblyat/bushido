@@ -1,8 +1,10 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 interface GlanceOverlayProps {
   url: string;
   title: string;
+  glanceId?: string;
   sidebarWidth: number;
   topOffset: number;
   onClose: () => void;
@@ -10,7 +12,9 @@ interface GlanceOverlayProps {
   onSplit: () => void;
 }
 
-export default function GlanceOverlay({ url, title, sidebarWidth, topOffset, onClose, onExpand, onSplit }: GlanceOverlayProps) {
+export default function GlanceOverlay({ url, title, glanceId, sidebarWidth, topOffset, onClose, onExpand, onSplit }: GlanceOverlayProps) {
+  const [loading, setLoading] = useState(true);
+
   // ESC to close
   const handleKey = useCallback((e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -23,6 +27,18 @@ export default function GlanceOverlay({ url, title, sidebarWidth, topOffset, onC
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [handleKey]);
+
+  // track loading state via tab-loading event
+  useEffect(() => {
+    if (!glanceId) return;
+    setLoading(true);
+    const unlisten = listen<{ id: string; loading: boolean }>("tab-loading", (e) => {
+      if (e.payload.id === glanceId) {
+        setLoading(e.payload.loading);
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, [glanceId]);
 
   // extract domain for display
   let domain = "";
@@ -51,6 +67,19 @@ export default function GlanceOverlay({ url, title, sidebarWidth, topOffset, onC
       <div className="glance-frame" style={frameStyle}>
         <div className="glance-topbar">
           <div className="glance-url">
+            {loading && (
+              <span className="glance-spinner" style={{
+                display: 'inline-block',
+                width: 12,
+                height: 12,
+                border: '2px solid var(--text-dim, #666)',
+                borderTopColor: 'var(--accent, #6366f1)',
+                borderRadius: '50%',
+                animation: 'glance-spin 0.6s linear infinite',
+                marginRight: 6,
+                flexShrink: 0,
+              }} />
+            )}
             <span className="glance-url-domain">{domain}</span>
             {path !== "/" && path}
           </div>
@@ -59,6 +88,7 @@ export default function GlanceOverlay({ url, title, sidebarWidth, topOffset, onC
           <button className="glance-btn close" onClick={onClose} title="Close (Esc)">✕</button>
         </div>
       </div>
+      <style>{`@keyframes glance-spin { to { transform: rotate(360deg); } }`}</style>
     </>
   );
 }

@@ -6,12 +6,18 @@ import { BushidoSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
 import { useUiStore } from "../store/uiStore";
 import PairingWizard from "./PairingWizard";
 
+interface ImportedBookmark { title: string; url: string; folder: string; }
+interface ImportedHistory { title: string; url: string; visit_count: number; last_visit: number; }
+interface BrowserInfo { name: string; has_bookmarks: boolean; has_history: boolean; }
+
 interface Props {
   settings: BushidoSettings;
   onUpdate: (patch: Partial<BushidoSettings>) => void;
   onReloadAllTabs: () => void;
   onThemeChange: (accent: string, mode: "dark" | "light") => void;
   onOpenUrl: (url: string) => void;
+  onImportBookmarks?: (bookmarks: ImportedBookmark[]) => void;
+  onImportHistory?: (history: ImportedHistory[]) => void;
 }
 
 const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[] = [
@@ -128,13 +134,14 @@ const TABS = [
 
 type TabId = typeof TABS[number]["id"];
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button
       className={`settings-toggle ${checked ? "on" : ""}`}
-      onClick={() => onChange(!checked)}
+      onClick={() => !disabled && onChange(!checked)}
       role="switch"
       aria-checked={checked}
+      style={disabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
     >
       <span className="settings-toggle-thumb" />
     </button>
@@ -186,7 +193,7 @@ interface SyncInfo {
   paired_devices: { device_id: string; name: string; fingerprint: string; paired_at: number }[];
 }
 
-export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange, onOpenUrl }: Props) {
+export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs, onThemeChange, onOpenUrl, onImportBookmarks, onImportHistory }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>("general");
   const [securityDirty, setSecurityDirty] = useState(false);
   const [syncInfo, setSyncInfo] = useState<SyncInfo | null>(null);
@@ -207,6 +214,22 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
   const [vaultGenLen, setVaultGenLen] = useState(20);
   const [vaultGenResult, setVaultGenResult] = useState("");
   const [vaultHasMaster, setVaultHasMaster] = useState(false);
+  const [importBrowsers, setImportBrowsers] = useState<BrowserInfo[]>([]);
+  const [importSelected, setImportSelected] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [backups, setBackups] = useState<{ num: number; date: string }[]>([]);
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+
+  // load session backups on mount
+  useEffect(() => {
+    invoke<[number, string][]>("list_session_backups").then(list => {
+      setBackups(list.map(([num, ms]) => {
+        const d = new Date(parseInt(ms, 10));
+        return { num, date: d.toLocaleString() };
+      }));
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
@@ -312,10 +335,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       )}
       <div className="settings-row">
         <div className="settings-label">
-          <span>Search suggestions</span>
+          <span>Search suggestions <span style={{ opacity: 0.5, fontSize: 11 }}>(coming soon)</span></span>
           <span className="settings-hint">Show search suggestions as you type</span>
         </div>
-        <Toggle checked={settings.searchSuggestions} onChange={v => set("searchSuggestions", v)} />
+        <Toggle checked={settings.searchSuggestions} onChange={v => set("searchSuggestions", v)} disabled />
       </div>
       <div className="settings-row">
         <div className="settings-label">
@@ -364,6 +387,83 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         </div>
         <Toggle checked={settings.confirmBeforeQuit} onChange={v => set("confirmBeforeQuit", v)} />
       </div>
+      <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+        <div className="settings-label">
+          <span>Import from another browser</span>
+          <span className="settings-hint">Import bookmarks and history from Chrome, Edge, or Firefox</span>
+        </div>
+        {importBrowsers.length === 0 ? (
+          <button className="settings-btn" onClick={async () => {
+            try {
+              const list = await invoke<BrowserInfo[]>("detect_browsers");
+              setImportBrowsers(list);
+              if (list.length > 0) setImportSelected(list[0].name);
+              else setImportStatus("No browsers detected");
+            } catch { setImportStatus("Failed to detect browsers"); }
+          }}>Detect Browsers</button>
+        ) : (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select
+              className="settings-input"
+              style={{ width: "auto", minWidth: 120 }}
+              value={importSelected || ""}
+              onChange={e => setImportSelected(e.target.value)}
+            >
+              {importBrowsers.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+            <button className="settings-btn" disabled={importLoading || !importSelected} onClick={async () => {
+              if (!importSelected || importLoading) return;
+              setImportLoading(true);
+              setImportStatus("Importing...");
+              try {
+                const bm = await invoke<ImportedBookmark[]>("import_bookmarks", { browser: importSelected });
+                if (onImportBookmarks) onImportBookmarks(bm);
+                const hist = await invoke<ImportedHistory[]>("import_history", { browser: importSelected });
+                if (onImportHistory) onImportHistory(hist);
+                setImportStatus(`Imported ${bm.length} bookmarks and ${hist.length} history entries`);
+              } catch (e: any) {
+                setImportStatus(`Import failed: ${e?.message || e}`);
+              }
+              setImportLoading(false);
+            }}>{importLoading ? "Importing..." : "Import"}</button>
+          </div>
+        )}
+        {importStatus && <span className="settings-hint" style={{ marginTop: 4 }}>{importStatus}</span>}
+      </div>
+      {backups.length > 0 && (
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+          <div className="settings-label">
+            <span>Restore from backup</span>
+            <span className="settings-hint">Restore a previous session. The browser will reload.</span>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select
+              className="settings-input"
+              style={{ width: "auto", minWidth: 240 }}
+              id="backup-select"
+              defaultValue=""
+            >
+              <option value="" disabled>Select a backup...</option>
+              {backups.map(b => (
+                <option key={b.num} value={b.num}>Backup #{b.num} - {b.date}</option>
+              ))}
+            </select>
+            <button className="settings-btn" onClick={async () => {
+              const sel = (document.getElementById("backup-select") as HTMLSelectElement)?.value;
+              if (!sel) return;
+              try {
+                setBackupStatus("Restoring...");
+                await invoke("restore_backup", { backupNum: parseInt(sel, 10) });
+                setBackupStatus("Restored. Reloading...");
+                setTimeout(() => window.location.reload(), 800);
+              } catch (e: any) {
+                setBackupStatus(`Restore failed: ${e?.message || e}`);
+              }
+            }}>Restore</button>
+          </div>
+          {backupStatus && <span className="settings-hint" style={{ marginTop: 4 }}>{backupStatus}</span>}
+        </div>
+      )}
     </section>
   );
 
@@ -690,6 +790,21 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               onClick={() => onThemeChange(c, settings.themeMode)}
             />
           ))}
+          <label className="settings-color-custom" title="Custom color">
+            <input
+              type="color"
+              value={settings.accentColor || "#6366f1"}
+              onChange={e => onThemeChange(e.target.value, settings.themeMode)}
+              style={{ position: "absolute", width: 0, height: 0, opacity: 0, pointerEvents: "none" }}
+            />
+            <span
+              className={`settings-color-dot${!ACCENT_COLORS.includes(settings.accentColor) && settings.accentColor ? " active" : ""}`}
+              style={{
+                background: ACCENT_COLORS.includes(settings.accentColor) ? "conic-gradient(#f43f5e, #f59e0b, #22c55e, #06b6d4, #6366f1, #a855f7, #ec4899, #f43f5e)" : settings.accentColor,
+                cursor: "pointer",
+              }}
+            />
+          </label>
         </div>
       </div>
       <div className="settings-row">

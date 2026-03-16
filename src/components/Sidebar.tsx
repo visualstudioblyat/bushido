@@ -13,6 +13,16 @@ const GearIcon = () => (
 
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
 
+const EMOJI_CATEGORIES = [
+  { label: "Work", emojis: "\uD83D\uDCBC \uD83D\uDCCA \uD83D\uDCC8 \uD83D\uDCA1 \uD83C\uDFAF \u2705 \uD83D\uDCDD \uD83D\uDCCB \uD83D\uDCCC \uD83D\uDDC2\uFE0F".split(" ") },
+  { label: "Tech", emojis: "\uD83D\uDCBB \uD83D\uDDA5\uFE0F \u2328\uFE0F \uD83D\uDD27 \u2699\uFE0F \uD83D\uDEE0\uFE0F \uD83D\uDD0C \uD83D\uDCF1 \uD83C\uDF10 \uD83D\uDD12".split(" ") },
+  { label: "Social", emojis: "\uD83D\uDCAC \uD83D\uDCE7 \uD83C\uDFB5 \uD83C\uDFAE \uD83D\uDCFA \uD83C\uDFAC \uD83D\uDCF8 \uD83C\uDFA8 \u2708\uFE0F \uD83C\uDFE0".split(" ") },
+  { label: "Nature", emojis: "\uD83C\uDF19 \u2B50 \uD83D\uDD25 \uD83C\uDF0A \uD83C\uDF3F \uD83C\uDF38 \uD83C\uDF40 \u2600\uFE0F \uD83C\uDF08 \u2744\uFE0F".split(" ") },
+  { label: "Objects", emojis: "\uD83D\uDCDA \uD83C\uDF93 \uD83D\uDCB0 \uD83C\uDFE6 \uD83D\uDED2 \uD83C\uDF55 \u2615 \uD83C\uDF81 \uD83C\uDFC6 \uD83D\uDC8E".split(" ") },
+  { label: "Symbols", emojis: "\u26A1 \uD83D\uDC9C \uD83D\uDC99 \uD83D\uDC9A \u2764\uFE0F \uD83E\uDDE1 \uD83D\uDC9B \uD83D\uDDA4 \u2B1B \u2B1C".split(" ") },
+  { label: "Fun", emojis: "\uD83D\uDE80 \uD83D\uDC7E \uD83E\uDD16 \uD83C\uDFAA \uD83C\uDFAD \uD83E\uDD8A \uD83D\uDC31 \uD83E\uDD84 \uD83D\uDC19 \uD83D\uDC7B".split(" ") },
+];
+
 const PANEL_PRESETS = [
   { name: "ChatGPT", url: "https://chatgpt.com", favicon: "https://www.google.com/s2/favicons?domain=chatgpt.com&sz=32" },
   { name: "Spotify", url: "https://open.spotify.com", favicon: "https://www.google.com/s2/favicons?domain=spotify.com&sz=32" },
@@ -21,6 +31,98 @@ const PANEL_PRESETS = [
   { name: "YouTube Music", url: "https://music.youtube.com", favicon: "https://www.google.com/s2/favicons?domain=music.youtube.com&sz=32" },
   { name: "Twitter / X", url: "https://x.com", favicon: "https://www.google.com/s2/favicons?domain=x.com&sz=32" },
 ] as const;
+
+// --- Quick Actions ---
+interface QuickAction {
+  id: string;
+  label: string;
+  keywords: string[];
+  shortcut?: string;
+  action: string;
+}
+
+const QUICK_ACTIONS: QuickAction[] = [
+  { id: "compact", label: "Toggle Compact Mode", keywords: ["compact", "hide", "sidebar"], shortcut: "Ctrl+Shift+B", action: "toggleCompact" },
+  { id: "split", label: "New Split View", keywords: ["split", "side"], shortcut: "Ctrl+\\", action: "splitView" },
+  { id: "settings", label: "Open Settings", keywords: ["settings", "preferences", "options"], action: "openSettings" },
+  { id: "pin", label: "Pin/Unpin Tab", keywords: ["pin", "unpin", "stick"], action: "togglePin" },
+  { id: "mute", label: "Mute/Unmute Tab", keywords: ["mute", "unmute", "sound", "audio"], action: "muteTab" },
+  { id: "bookmark", label: "Bookmark This Page", keywords: ["bookmark", "save", "star"], shortcut: "Ctrl+D", action: "addBookmark" },
+  { id: "copy-url", label: "Copy Page URL", keywords: ["copy", "url", "link"], action: "copyUrl" },
+  { id: "screenshot", label: "Take Screenshot", keywords: ["screenshot", "capture", "snap"], shortcut: "Ctrl+Shift+S", action: "screenshot" },
+  { id: "reader", label: "Toggle Reader Mode", keywords: ["reader", "read", "article"], shortcut: "Ctrl+Shift+R", action: "toggleReader" },
+  { id: "pip", label: "Picture in Picture", keywords: ["pip", "picture", "video", "float"], action: "togglePip" },
+  { id: "zoom-in", label: "Zoom In", keywords: ["zoom", "bigger", "larger"], shortcut: "Ctrl+=", action: "zoomIn" },
+  { id: "zoom-out", label: "Zoom Out", keywords: ["zoom", "smaller"], shortcut: "Ctrl+-", action: "zoomOut" },
+  { id: "zoom-reset", label: "Reset Zoom", keywords: ["zoom", "reset", "100"], shortcut: "Ctrl+0", action: "zoomReset" },
+  { id: "find", label: "Find in Page", keywords: ["find", "search", "ctrl+f"], shortcut: "Ctrl+F", action: "findInPage" },
+  { id: "print", label: "Print Page", keywords: ["print"], shortcut: "Ctrl+P", action: "printPage" },
+  { id: "devtools", label: "Toggle DevTools", keywords: ["devtools", "inspect", "developer"], shortcut: "Ctrl+Shift+I", action: "toggleDevtools" },
+  { id: "fullscreen", label: "Toggle Fullscreen", keywords: ["fullscreen", "f11"], shortcut: "F11", action: "toggleFullscreen" },
+  { id: "clear-history", label: "Clear History", keywords: ["clear", "history", "delete"], action: "clearHistory" },
+  { id: "new-workspace", label: "New Workspace", keywords: ["workspace", "space", "new"], action: "newWorkspace" },
+  { id: "close-tab", label: "Close Tab", keywords: ["close", "tab"], shortcut: "Ctrl+W", action: "closeTab" },
+];
+
+const ACTION_SCORES_KEY = "bushido-action-scores";
+
+function getActionScores(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(ACTION_SCORES_KEY) || "{}"); } catch { return {}; }
+}
+
+function bumpActionScore(actionId: string) {
+  const scores = getActionScores();
+  scores[actionId] = (scores[actionId] || 0) + 1;
+  localStorage.setItem(ACTION_SCORES_KEY, JSON.stringify(scores));
+}
+
+// Decay scores on session start (called once)
+let _actionScoresDecayed = false;
+function decayActionScores() {
+  if (_actionScoresDecayed) return;
+  _actionScoresDecayed = true;
+  const scores = getActionScores();
+  const decayed: Record<string, number> = {};
+  for (const [k, v] of Object.entries(scores)) {
+    const d = Math.round(v * 0.95 * 100) / 100;
+    if (d > 0.01) decayed[k] = d;
+  }
+  localStorage.setItem(ACTION_SCORES_KEY, JSON.stringify(decayed));
+}
+decayActionScores();
+
+function matchQuickActions(query: string): (QuickAction & { matchScore: number })[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+  const scores = getActionScores();
+  return QUICK_ACTIONS
+    .map(a => {
+      let matchScore = 0;
+      const label = a.label.toLowerCase();
+      // keyword matching
+      for (const kw of a.keywords) {
+        if (kw.startsWith(q)) matchScore = Math.max(matchScore, 100);
+        else if (kw.includes(q)) matchScore = Math.max(matchScore, 50);
+      }
+      // label matching
+      if (label.startsWith(q)) matchScore = Math.max(matchScore, 100);
+      else if (label.includes(q)) matchScore = Math.max(matchScore, 50);
+      // subsequence match on label
+      if (matchScore === 0) {
+        let qi = 0;
+        for (let li = 0; li < label.length && qi < q.length; li++) {
+          if (label[li] === q[qi]) qi++;
+        }
+        if (qi === q.length) matchScore = 25;
+      }
+      // boost from learned scores
+      matchScore += (scores[a.id] || 0) * 2;
+      return { ...a, matchScore };
+    })
+    .filter(a => a.matchScore > 0)
+    .sort((a, b) => b.matchScore - a.matchScore)
+    .slice(0, 6);
+}
 
 interface Props {
   tabs: Tab[];
@@ -42,9 +144,14 @@ interface Props {
   onClearWorkspaceData: (id: string) => void;
   onRenameWorkspace: (id: string, name: string) => void;
   onRecolorWorkspace: (id: string, color: string) => void;
+  onSetWorkspaceIcon: (id: string, icon: string | undefined) => void;
   onToggleCollapse: (id: string) => void;
   onAddChildTab: (parentId: string) => void;
   onMoveTabToWorkspace: (tabId: string, targetWsId: string) => void;
+  onDuplicateWorkspace: (wsId: string) => void;
+  onReorderWorkspaces: (fromIdx: number, toIdx: number) => void;
+  onMuteTab: (tabId: string) => void;
+  onRenameTab: (tabId: string, customTitle: string) => void;
   bookmarks: Bookmark[];
   bookmarkFolders: BookmarkFolder[];
   onSelectBookmark: (url: string) => void;
@@ -55,6 +162,8 @@ interface Props {
   onMoveBookmarkToFolder: (bookmarkId: string, folderId: string) => void;
   onReorderBookmarks: (bookmarkId: string, targetId: string, position: "before" | "after") => void;
   onReorderFolders: (folderId: string, targetFolderId: string, position: "before" | "after") => void;
+  onSetFolderRss?: (folderId: string, rssUrl: string) => void;
+  onRemoveFolderRss?: (folderId: string) => void;
   onToggleHistory: () => void;
   onBack: () => void;
   onForward: () => void;
@@ -93,11 +202,16 @@ interface Props {
   onTogglePanel: (id: string) => void;
   onAddPanel: (url: string) => void;
   onRemovePanel: (id: string) => void;
+  onReorderPanels: (panels: WebPanel[]) => void;
   onScreenshot: () => void;
   onShareUrl: () => void;
   syncEnabled?: boolean;
   pairedDevices?: { device_id: string; name: string }[];
   onTabSplitDrag?: (tabId: string) => void;
+  zoomLevel?: number;
+  onZoomReset?: () => void;
+  onEditBookmark?: (id: string, title: string, url: string) => void;
+  onQuickAction?: (action: string) => void;
 }
 
 interface CtxMenu {
@@ -175,11 +289,12 @@ export default memo(function Sidebar({
   tabs, pinnedTabs, activeTab, open, compact,
   onSelect, onClose, onPin, onNew, onToggle, onReorder,
   workspaces, activeWorkspaceId,
-  onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onClearWorkspaceData, onRenameWorkspace, onRecolorWorkspace,
-  onToggleCollapse, onAddChildTab, onMoveTabToWorkspace,
+  onSwitchWorkspace, onAddWorkspace, onDeleteWorkspace, onClearWorkspaceData, onRenameWorkspace, onRecolorWorkspace, onSetWorkspaceIcon,
+  onToggleCollapse, onAddChildTab, onMoveTabToWorkspace, onDuplicateWorkspace, onReorderWorkspaces, onMuteTab, onRenameTab,
   bookmarks, bookmarkFolders, onSelectBookmark, onRemoveBookmark,
   onAddBookmarkFolder, onRenameBookmarkFolder, onDeleteBookmarkFolder, onMoveBookmarkToFolder,
   onReorderBookmarks, onReorderFolders,
+  onSetFolderRss, onRemoveFolderRss,
   onToggleHistory,
   onBack, onForward, onReload,
   url, onNavigate, loading, inputRef,
@@ -192,13 +307,15 @@ export default memo(function Sidebar({
   activeDownloadCount, onToggleDownloads, onToggleNetwork,
   paneTabIds, onSplitWith,
   playingTab, onMediaPlayPause, onMediaMute,
-  panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel,
+  panels, activePanelId, onTogglePanel, onAddPanel, onRemovePanel, onReorderPanels,
   onScreenshot, onShareUrl,
   syncEnabled, pairedDevices,
   onTabSplitDrag,
+  zoomLevel, onZoomReset, onEditBookmark, onQuickAction,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
+  const [emojiPicker, setEmojiPicker] = useState<{ wsId: string; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameRef = useRef<HTMLInputElement>(null);
@@ -220,16 +337,37 @@ export default memo(function Sidebar({
   const folderCtxPos = useClampedMenu(folderCtxMenuRef, folderCtx);
   const [bmDragId, setBmDragId] = useState<string | null>(null);
   const [bmDropId, setBmDropId] = useState<string | null>(null);
+  const [editingBookmark, setEditingBookmark] = useState<{ id: string; title: string; url: string } | null>(null);
+  const editBmTitleRef = useRef<HTMLInputElement>(null);
   const [bmDragType, setBmDragType] = useState<"bookmark" | "folder" | null>(null);
   const bmListRef = useRef<HTMLDivElement>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [renameFolderValue, setRenameFolderValue] = useState("");
   const renameFolderRef = useRef<HTMLInputElement>(null);
+  const [mediaDismissed, setMediaDismissed] = useState(false);
+  const [panelDragIdx, setPanelDragIdx] = useState<number | null>(null);
+  const [panelDropIdx, setPanelDropIdx] = useState<number | null>(null);
+  const prevPlayingTabId = useRef<string | undefined>(undefined);
+
+  // Reset dismiss when a different tab starts playing
+  useEffect(() => {
+    if (playingTab?.id !== prevPlayingTabId.current) {
+      prevPlayingTabId.current = playingTab?.id;
+      setMediaDismissed(false);
+    }
+  }, [playingTab?.id]);
+
   const [panelPickerOpen, setPanelPickerOpen] = useState(false);
   const [panelCustomUrl, setPanelCustomUrl] = useState("");
   const panelPickerRef = useRef<HTMLDivElement>(null);
   const [syncedTabsOpen, setSyncedTabsOpen] = useState(false);
   const [syncedTabs, setSyncedTabs] = useState<{ device_id: string; device_name?: string; tabs: SyncTab[]; timestamp: number }[]>([]);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameTabValue, setRenameTabValue] = useState("");
+  const renameTabRef = useRef<HTMLInputElement>(null);
+  const [wsDragIdx, setWsDragIdx] = useState<number | null>(null);
+  const [wsDropIdx, setWsDropIdx] = useState<number | null>(null);
+  const wsScrollCooldown = useRef(false);
 
   // url bar state (absorbed from Toolbar)
   const [urlInput, setUrlInput] = useState(url);
@@ -288,14 +426,31 @@ export default memo(function Sidebar({
     return () => document.removeEventListener("mousedown", handler);
   }, [panelPickerOpen]);
 
+  // Quick actions matching
+  const isCommandMode = urlInput.startsWith(">");
+  const actionQuery = isCommandMode ? urlInput.slice(1) : urlInput;
+  const quickActions = useMemo(() => {
+    if (!urlFocused || !actionQuery.trim()) return [];
+    return matchQuickActions(actionQuery);
+  }, [urlFocused, actionQuery]);
+
+  // Total selectable items = suggestions + quick actions
+  const totalItems = suggestions.length + quickActions.length;
+
   useEffect(() => {
     setSelectedIdx(-1);
-  }, [suggestions]);
+  }, [suggestions, quickActions.length]);
 
   const handleUrlChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setUrlInput(e.target.value);
     onInputChange(e.target.value);
   }, [onInputChange]);
+
+  const executeQuickAction = useCallback((qa: QuickAction) => {
+    bumpActionScore(qa.id);
+    onQuickAction?.(qa.action);
+    inputRef.current?.blur();
+  }, [onQuickAction, inputRef]);
 
   const handleUrlSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
@@ -304,22 +459,31 @@ export default memo(function Sidebar({
       inputRef.current?.blur();
       return;
     }
+    if (selectedIdx >= suggestions.length && selectedIdx < totalItems) {
+      const qa = quickActions[selectedIdx - suggestions.length];
+      if (qa) { executeQuickAction(qa); return; }
+    }
+    // If in command mode and there are actions, execute the top one
+    if (isCommandMode && quickActions.length > 0) {
+      executeQuickAction(quickActions[0]);
+      return;
+    }
     if (urlInput.trim()) {
       onNavigate(urlInput.trim());
       inputRef.current?.blur();
     }
-  }, [urlInput, onNavigate, inputRef, selectedIdx, suggestions, onSuggestionSelect]);
+  }, [urlInput, onNavigate, inputRef, selectedIdx, suggestions, onSuggestionSelect, totalItems, quickActions, isCommandMode, executeQuickAction]);
 
   const handleUrlKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!urlFocused || suggestions.length === 0) return;
+    if (!urlFocused || totalItems === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIdx(p => Math.min(p + 1, suggestions.length - 1));
+      setSelectedIdx(p => Math.min(p + 1, totalItems - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIdx(p => Math.max(p - 1, -1));
     }
-  }, [urlFocused, suggestions.length]);
+  }, [urlFocused, totalItems]);
 
   const displayUrl = useMemo(() => {
     if (urlFocused) return urlInput;
@@ -389,6 +553,13 @@ export default memo(function Sidebar({
       renameFolderRef.current.select();
     }
   }, [renamingFolder]);
+
+  useEffect(() => {
+    if (renamingTabId && renameTabRef.current) {
+      renameTabRef.current.focus();
+      renameTabRef.current.select();
+    }
+  }, [renamingTabId]);
 
   const toggleFolderExpand = useCallback((folderId: string) => {
     setExpandedFolders(prev => {
@@ -528,11 +699,29 @@ export default memo(function Sidebar({
           <div className="tab-favicon">
             {tab.favicon
               ? <img src={tab.favicon} alt="" width={14} height={14} />
-              : <span className="tab-favicon-placeholder" />
+              : <span className="tab-favicon-placeholder">{(tab.title || tab.url || '?')[0]}</span>
             }
           </div>
         )}
-        {!isPinned && <span className="tab-title">{tab.title}</span>}
+        {!isPinned && (
+          renamingTabId === tab.id ? (
+            <input
+              ref={renameTabRef}
+              className="tab-rename-input"
+              value={renameTabValue}
+              onChange={e => setRenameTabValue(e.target.value)}
+              onBlur={() => { onRenameTab(tab.id, renameTabValue.trim()); setRenamingTabId(null); }}
+              onKeyDown={e => {
+                if (e.key === "Enter") { onRenameTab(tab.id, renameTabValue.trim()); setRenamingTabId(null); }
+                if (e.key === "Escape") setRenamingTabId(null);
+              }}
+              onClick={e => e.stopPropagation()}
+              spellCheck={false}
+            />
+          ) : (
+            <span className="tab-title">{tab.customTitle || tab.title}</span>
+          )
+        )}
       </div>
       {!isPinned && (
         <button
@@ -636,12 +825,22 @@ export default memo(function Sidebar({
                   className="url-input"
                   value={urlFocused ? urlInput : displayUrl}
                   onChange={handleUrlChange}
-                  onFocus={() => { setUrlFocused(true); setUrlInput(""); onInputChange(""); }}
+                  onFocus={(e) => { setUrlFocused(true); setUrlInput(url); onInputChange(""); e.target.select(); }}
                   onBlur={() => { setUrlFocused(false); onInputChange(""); }}
                   onKeyDown={handleUrlKeyDown}
                   placeholder="search or enter url"
                   spellCheck={false}
                 />
+                {!urlFocused && zoomLevel != null && Math.round(zoomLevel * 100) !== 100 && (
+                  <button
+                    className="zoom-badge"
+                    onClick={(e) => { e.preventDefault(); onZoomReset?.(); }}
+                    title="Reset zoom to 100%"
+                    type="button"
+                  >
+                    {Math.round(zoomLevel * 100)}%
+                  </button>
+                )}
                 {!urlFocused && (
                   <button
                     className={`ext-trigger ${extPanelOpen ? "open" : ""}`}
@@ -756,7 +955,7 @@ export default memo(function Sidebar({
               )}
               {loading && <div className="url-progress" />}
               {/* Top sites grid — shows on focus with no typed query */}
-              {urlFocused && suggestions.length === 0 && topSites.length > 0 && (
+              {urlFocused && suggestions.length === 0 && quickActions.length === 0 && topSites.length > 0 && (
                 <div className="url-topsites">
                   {topSites.map(s => {
                     let domain = "";
@@ -779,35 +978,61 @@ export default memo(function Sidebar({
                   })}
                 </div>
               )}
-              {/* Typed suggestions list */}
-              {urlFocused && suggestions.length > 0 && (
+              {/* Typed suggestions + quick actions */}
+              {urlFocused && totalItems > 0 && (
                 <div className="url-suggestions">
-                  {suggestions.map((s, i) => (
+                  {!isCommandMode && suggestions.map((s, i) => (
                     <div
                       key={s.url}
                       className={`suggestion-item ${i === selectedIdx ? "selected" : ""}`}
                       onMouseDown={(e) => { e.preventDefault(); onSuggestionSelect(s.url); }}
                     >
                       <div className="suggestion-favicon">
-                        {s.favicon ? <img src={s.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                        {s.favicon ? <img src={s.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder">{(s.title || s.url || '?')[0]}</span>}
                       </div>
                       <div className="suggestion-text">
                         <span className="suggestion-title">{s.title || s.url}</span>
                         <span className="suggestion-url">{s.url}</span>
                       </div>
-                      <span className="suggestion-type">{s.type === 'bookmark' ? '★' : '◷'}</span>
+                      <span className="suggestion-type">{s.type === 'bookmark' ? '\u2605' : '\u25F7'}</span>
                     </div>
                   ))}
+                  {quickActions.map((qa, i) => {
+                    const idx = isCommandMode ? i : suggestions.length + i;
+                    return (
+                      <div
+                        key={qa.id}
+                        className={`suggestion-item suggestion-action ${idx === selectedIdx ? "selected" : ""}`}
+                        onMouseDown={(e) => { e.preventDefault(); executeQuickAction(qa); }}
+                      >
+                        <div className="suggestion-favicon action-icon">{"\u26A1"}</div>
+                        <div className="suggestion-text">
+                          <span className="suggestion-title">{qa.label}</span>
+                        </div>
+                        {qa.shortcut && <span className="suggestion-shortcut">{qa.shortcut}</span>}
+                        <span className="suggestion-type">action</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </form>
 
             {/* workspace switcher */}
-            <div className="workspace-switcher">
+            <div className="workspace-switcher" onWheel={e => {
+              if (wsScrollCooldown.current || workspaces.length <= 1) return;
+              wsScrollCooldown.current = true;
+              setTimeout(() => { wsScrollCooldown.current = false; }, 200);
+              const curIdx = workspaces.findIndex(w => w.id === activeWorkspaceId);
+              const nextIdx = e.deltaY > 0
+                ? Math.min(curIdx + 1, workspaces.length - 1)
+                : Math.max(curIdx - 1, 0);
+              if (nextIdx !== curIdx) onSwitchWorkspace(workspaces[nextIdx].id);
+            }}>
               {workspaces.map((ws, i) => (
                 <button
                   key={ws.id}
-                  className={`ws-dot ${ws.id === activeWorkspaceId ? "active" : ""} ${wsDropTarget === ws.id ? "ws-drop-target" : ""}`}
+                  className={`ws-dot ${ws.id === activeWorkspaceId ? "active" : ""} ${wsDropTarget === ws.id ? "ws-drop-target" : ""} ${wsDragIdx === i ? "ws-dragging" : ""} ${wsDropIdx === i ? "ws-reorder-target" : ""}`}
                   style={{ "--ws-color": ws.color } as React.CSSProperties}
                   onClick={() => onSwitchWorkspace(ws.id)}
                   onContextMenu={e => handleWsCtx(e, ws.id)}
@@ -823,6 +1048,43 @@ export default memo(function Sidebar({
                     }
                     setWsDropTarget(null);
                   }}
+                  onMouseDown={e => {
+                    if (e.button !== 0 || renaming === ws.id) return;
+                    const startX = e.clientX;
+                    const startY = e.clientY;
+                    const fromIdx = i;
+                    let dragging = false;
+                    let currentDrop = -1;
+                    const onMove = (me: MouseEvent) => {
+                      const dx = me.clientX - startX;
+                      const dy = me.clientY - startY;
+                      if (!dragging && dx * dx + dy * dy < 25) return;
+                      if (!dragging) { dragging = true; setWsDragIdx(fromIdx); }
+                      const container = (e.target as HTMLElement).closest(".workspace-switcher");
+                      if (container) {
+                        const dots = container.querySelectorAll(".ws-dot:not(.ws-add)");
+                        for (let di = 0; di < dots.length; di++) {
+                          const r = dots[di].getBoundingClientRect();
+                          if (me.clientX >= r.left && me.clientX < r.right) {
+                            currentDrop = di;
+                            setWsDropIdx(di);
+                            break;
+                          }
+                        }
+                      }
+                    };
+                    const onUp = () => {
+                      document.removeEventListener("mousemove", onMove);
+                      document.removeEventListener("mouseup", onUp);
+                      if (dragging && currentDrop >= 0 && currentDrop !== fromIdx) {
+                        onReorderWorkspaces(fromIdx, currentDrop);
+                      }
+                      setWsDragIdx(null);
+                      setWsDropIdx(null);
+                    };
+                    document.addEventListener("mousemove", onMove);
+                    document.addEventListener("mouseup", onUp);
+                  }}
                 >
                   {renaming === ws.id ? (
                     <input
@@ -837,6 +1099,8 @@ export default memo(function Sidebar({
                       }}
                       onClick={e => e.stopPropagation()}
                     />
+                  ) : ws.icon ? (
+                    <span className="ws-dot-emoji">{ws.icon}</span>
                   ) : (
                     ws.name.charAt(0).toUpperCase()
                   )}
@@ -852,13 +1116,40 @@ export default memo(function Sidebar({
             </div>
 
             <div className="panel-icons">
-              {panels.map(p => (
+              {panels.map((p, i) => (
                 <button
                   key={p.id}
-                  className={`panel-icon${activePanelId === p.id ? " active" : ""}`}
+                  className={`panel-icon${activePanelId === p.id ? " active" : ""}${panelDragIdx === i ? " dragging" : ""}`}
+                  style={{
+                    opacity: panelDragIdx === i ? 0.6 : 1,
+                    ...(panelDropIdx !== null && panelDragIdx !== null && panelDropIdx === i && panelDragIdx !== i
+                      ? { [panelDragIdx < panelDropIdx ? 'marginBottom' : 'marginTop']: 24 }
+                      : {}),
+                    transition: panelDragIdx !== null ? 'margin 0.15s' : undefined,
+                  }}
                   onClick={() => onTogglePanel(p.id)}
                   onContextMenu={e => { e.preventDefault(); onRemovePanel(p.id); }}
                   title={p.title}
+                  draggable
+                  onDragStart={e => {
+                    setPanelDragIdx(i);
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragOver={e => {
+                    e.preventDefault();
+                    if (panelDragIdx !== null && panelDragIdx !== i) setPanelDropIdx(i);
+                  }}
+                  onDragEnd={() => {
+                    if (panelDragIdx !== null && panelDropIdx !== null && panelDragIdx !== panelDropIdx) {
+                      const next = [...panels];
+                      const [moved] = next.splice(panelDragIdx, 1);
+                      next.splice(panelDropIdx, 0, moved);
+                      onReorderPanels(next);
+                    }
+                    setPanelDragIdx(null);
+                    setPanelDropIdx(null);
+                  }}
+                  onDragLeave={() => setPanelDropIdx(null)}
                 >
                   {p.favicon ? <img src={p.favicon} alt="" width={18} height={18} /> : <span className="panel-icon-fallback">{(p.title || "?")[0]}</span>}
                 </button>
@@ -984,7 +1275,8 @@ export default memo(function Sidebar({
                               ) : (
                                 <span className="bm-folder-name">{folder.name}</span>
                               )}
-                              <span className="bm-folder-count">{folderBookmarks.length}</span>
+                              {folder.rssUrl && <span className="bm-rss-icon" title="Live Folder (RSS)">&#128225;</span>}
+                              <span className="bm-folder-count">{folderBookmarks.length + (folder.autoItems?.length || 0)}</span>
                             </div>
                             {isExpanded && folderBookmarks.map(b => (
                               <div
@@ -1037,11 +1329,28 @@ export default memo(function Sidebar({
                                 }}
                               >
                                 <div className="tab-favicon">
-                                  {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                                  {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder">{(b.title || b.url || '?')[0]}</span>}
                                 </div>
                                 <span className="tab-title">{b.title || b.url}</span>
                               </div>
                             ))}
+                            {/* RSS auto-items */}
+                            {isExpanded && folder.autoItems && folder.autoItems.length > 0 && (
+                              <>
+                                {folderBookmarks.length > 0 && <div className="bm-rss-separator" />}
+                                {folder.autoItems.map(item => (
+                                  <div
+                                    key={item.id}
+                                    className="bookmark-item bm-indented bm-rss-item"
+                                    onClick={() => onSelectBookmark(item.url)}
+                                    title={item.url}
+                                  >
+                                    <span className="bm-rss-dot" />
+                                    <span className="tab-title">{item.title}</span>
+                                  </div>
+                                ))}
+                              </>
+                            )}
                           </div>
                         );
                       })}
@@ -1097,7 +1406,7 @@ export default memo(function Sidebar({
                           }}
                         >
                           <div className="tab-favicon">
-                            {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                            {b.favicon ? <img src={b.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder">{(b.title || b.url || '?')[0]}</span>}
                           </div>
                           <span className="tab-title">{b.title || b.url}</span>
                         </div>
@@ -1161,21 +1470,23 @@ export default memo(function Sidebar({
               </div>
             </div>
 
-            {playingTab && (
+            {playingTab && !mediaDismissed && (
               <div className="media-bar" onClick={() => onSelect(playingTab.id)}>
-                <div className="media-bar-info">
+                <button className="media-bar-dismiss" onClick={e => { e.stopPropagation(); setMediaDismissed(true); }} title="Dismiss">
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2 2L8 8M8 2L2 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  </svg>
+                </button>
+                <div className="media-bar-compact">
                   <div className="media-bar-favicon">
                     {playingTab.favicon
                       ? <img src={playingTab.favicon} alt="" width={14} height={14} />
-                      : <span className="tab-favicon-placeholder" />
+                      : <span className="tab-favicon-placeholder">{(playingTab.title || '?')[0]}</span>
                     }
                   </div>
-                  <div className="media-bar-text">
+                  <div className="media-bar-title-wrap">
                     <span className="media-bar-title">{playingTab.mediaTitle || playingTab.title}</span>
-                    <span className={`media-bar-state ${playingTab.mediaState}`}>{playingTab.mediaState}</span>
                   </div>
-                </div>
-                <div className="media-bar-controls">
                   <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaPlayPause(); }} title={playingTab.mediaState === "playing" ? "Pause" : "Play"}>
                     {playingTab.mediaState === "playing" ? (
                       <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -1188,12 +1499,69 @@ export default memo(function Sidebar({
                       </svg>
                     )}
                   </button>
-                  <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaMute(); }} title="Mute/Unmute">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                      <path d="M2 5H4L7 2V12L4 9H2V5Z" fill="currentColor"/>
-                      <path d="M9.5 4.5C10.3 5.3 10.8 6.6 10.8 7S10.3 8.7 9.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                    </svg>
-                  </button>
+                </div>
+                <div className="media-bar-expanded">
+                  {playingTab.mediaArtist && (
+                    <span className="media-bar-artist">{playingTab.mediaArtist}</span>
+                  )}
+                  {(playingTab.mediaDuration != null && playingTab.mediaDuration > 0) && (
+                    <div
+                      className="media-bar-progress"
+                      onClick={e => {
+                        e.stopPropagation();
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        const targetTime = pct * (playingTab.mediaDuration || 0);
+                        invoke("media_seek", { id: playingTab.id, time: targetTime });
+                      }}
+                      onMouseMove={e => {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        const indicator = (e.currentTarget as HTMLElement).querySelector('.media-bar-progress-hover') as HTMLElement;
+                        if (indicator) { indicator.style.left = `${pct * 100}%`; indicator.style.opacity = '1'; }
+                      }}
+                      onMouseLeave={e => {
+                        const indicator = (e.currentTarget as HTMLElement).querySelector('.media-bar-progress-hover') as HTMLElement;
+                        if (indicator) indicator.style.opacity = '0';
+                      }}
+                      style={{ cursor: 'pointer', position: 'relative' }}
+                    >
+                      <div className="media-bar-progress-fill" style={{ width: `${((playingTab.mediaCurrentTime || 0) / playingTab.mediaDuration) * 100}%` }} />
+                      <div className="media-bar-progress-hover" style={{ position: 'absolute', top: 0, width: '1px', height: '100%', background: 'var(--text-primary, #fff)', opacity: 0, pointerEvents: 'none', transition: 'opacity 0.15s' }} />
+                    </div>
+                  )}
+                  <div className="media-bar-controls">
+                    <button className="media-bar-btn" onClick={e => { e.stopPropagation(); invoke("media_command", { id: playingTab.id, cmd: "prev" }); }} title="Previous track">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <rect x="2" y="3" width="2" height="8" rx="0.5" fill="currentColor"/>
+                        <path d="M12 3L6 7L12 11V3Z" fill="currentColor"/>
+                      </svg>
+                    </button>
+                    <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaPlayPause(); }} title={playingTab.mediaState === "playing" ? "Pause" : "Play"}>
+                      {playingTab.mediaState === "playing" ? (
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <rect x="3" y="2" width="3" height="10" rx="0.5" fill="currentColor"/>
+                          <rect x="8" y="2" width="3" height="10" rx="0.5" fill="currentColor"/>
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <path d="M4 2L12 7L4 12V2Z" fill="currentColor"/>
+                        </svg>
+                      )}
+                    </button>
+                    <button className="media-bar-btn" onClick={e => { e.stopPropagation(); invoke("media_command", { id: playingTab.id, cmd: "next" }); }} title="Next track">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M2 3L8 7L2 11V3Z" fill="currentColor"/>
+                        <rect x="10" y="3" width="2" height="8" rx="0.5" fill="currentColor"/>
+                      </svg>
+                    </button>
+                    <button className="media-bar-btn" onClick={e => { e.stopPropagation(); onMediaMute(); }} title="Mute/Unmute">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M2 5H4L7 2V12L4 9H2V5Z" fill="currentColor"/>
+                        <path d="M9.5 4.5C10.3 5.3 10.8 6.6 10.8 7S10.3 8.7 9.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -1226,6 +1594,14 @@ export default memo(function Sidebar({
                   <circle cx="7" cy="12" r="1" fill="currentColor"/>
                 </svg>
               </button>
+              {hasVideo && (
+                <button className={`pip-shortcut-btn${pipActive ? " pip-active" : ""}`} onClick={onTogglePip} title="Picture in Picture">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="2.5" width="14" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                    <rect x="8" y="7" width="6" height="5" rx="1" fill="currentColor" opacity="0.3" stroke="currentColor" strokeWidth="1"/>
+                  </svg>
+                </button>
+              )}
             </div>
           </>
         )}
@@ -1274,6 +1650,32 @@ export default memo(function Sidebar({
             }}>
               duplicate tab
             </button>
+            <button className="ctx-item" onClick={() => { onMuteTab(ctx.tabId); closeCtx(); }}>
+              mute tab
+            </button>
+            {!ctx.pinned && (
+              <button className="ctx-item" onClick={() => {
+                const tab = [...tabs, ...pinnedTabs].find(t => t.id === ctx.tabId);
+                setRenameTabValue(tab?.customTitle || tab?.title || "");
+                setRenamingTabId(ctx.tabId);
+                closeCtx();
+              }}>
+                rename tab
+              </button>
+            )}
+            {workspaces.length > 1 && (
+              <>
+                <div className="ctx-divider" />
+                <div className="ctx-label">move to workspace</div>
+                {workspaces.filter(ws => ws.id !== (
+                  [...tabs, ...pinnedTabs].find(t => t.id === ctx.tabId)?.workspaceId || activeWorkspaceId
+                )).map(ws => (
+                  <button key={ws.id} className="ctx-item" onClick={() => { onMoveTabToWorkspace(ctx.tabId, ws.id); closeCtx(); }}>
+                    <span className="ctx-ws-dot" style={{ background: ws.color }} />{ws.name}
+                  </button>
+                ))}
+              </>
+            )}
             <div className="ctx-divider" />
             <button className="ctx-item" onClick={() => {
               tabs.filter(t => t.id !== ctx.tabId).forEach(t => onClose(t.id));
@@ -1310,9 +1712,56 @@ export default memo(function Sidebar({
                 <div className="ctx-divider" />
               </>
             )}
+            {onEditBookmark && (
+              <button className="ctx-item" onClick={() => {
+                const bm = bookmarks.find(b => b.id === bmCtx.id);
+                if (bm) setEditingBookmark({ id: bm.id, title: bm.title, url: bm.url });
+                setBmCtx(null);
+              }}>
+                edit bookmark
+              </button>
+            )}
             <button className="ctx-item ctx-danger" onClick={() => { onRemoveBookmark(bmCtx.id); setBmCtx(null); }}>
               remove bookmark
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* bookmark edit modal */}
+      {editingBookmark && (
+        <div className="ctx-overlay" onClick={() => setEditingBookmark(null)}>
+          <div className="bm-edit-modal" onClick={e => e.stopPropagation()}>
+            <div className="bm-edit-title">edit bookmark</div>
+            <label className="bm-edit-label">
+              title
+              <input
+                ref={editBmTitleRef}
+                className="bm-edit-input"
+                value={editingBookmark.title}
+                onChange={e => setEditingBookmark(prev => prev ? { ...prev, title: e.target.value } : null)}
+                spellCheck={false}
+                autoFocus
+              />
+            </label>
+            <label className="bm-edit-label">
+              url
+              <input
+                className="bm-edit-input"
+                value={editingBookmark.url}
+                onChange={e => setEditingBookmark(prev => prev ? { ...prev, url: e.target.value } : null)}
+                spellCheck={false}
+              />
+            </label>
+            <div className="bm-edit-actions">
+              <button className="bm-edit-cancel" onClick={() => setEditingBookmark(null)}>cancel</button>
+              <button className="bm-edit-save" onClick={() => {
+                if (editingBookmark && onEditBookmark) {
+                  onEditBookmark(editingBookmark.id, editingBookmark.title, editingBookmark.url);
+                }
+                setEditingBookmark(null);
+              }}>save</button>
+            </div>
           </div>
         </div>
       )}
@@ -1329,6 +1778,22 @@ export default memo(function Sidebar({
             }}>
               rename folder
             </button>
+            {onSetFolderRss && (() => {
+              const f = bookmarkFolders.find(f => f.id === folderCtx.folderId);
+              return f?.rssUrl ? (
+                <button className="ctx-item" onClick={() => { onRemoveFolderRss?.(folderCtx.folderId); setFolderCtx(null); }}>
+                  remove RSS feed
+                </button>
+              ) : (
+                <button className="ctx-item" onClick={() => {
+                  const url = window.prompt("Enter RSS feed URL:");
+                  if (url?.trim()) onSetFolderRss(folderCtx.folderId, url.trim());
+                  setFolderCtx(null);
+                }}>
+                  set RSS feed...
+                </button>
+              );
+            })()}
             <button className="ctx-item ctx-danger" onClick={() => { onDeleteBookmarkFolder(folderCtx.folderId); setFolderCtx(null); }}>
               delete folder
             </button>
@@ -1357,12 +1822,27 @@ export default memo(function Sidebar({
             </div>
             <div className="ctx-divider" />
             <button className="ctx-item" onClick={() => {
+              setEmojiPicker({ wsId: wsCtx.wsId, x: wsCtxPos.left + 190, y: wsCtxPos.top });
+              closeWsCtx();
+            }}>
+              set icon...
+            </button>
+            {workspaces.find(w => w.id === wsCtx.wsId)?.icon && (
+              <button className="ctx-item" onClick={() => { onSetWorkspaceIcon(wsCtx.wsId, undefined); closeWsCtx(); }}>
+                clear icon
+              </button>
+            )}
+            <div className="ctx-divider" />
+            <button className="ctx-item" onClick={() => {
               if (window.confirm("Clear all browsing data for this workspace? You will be logged out of all sites.")) {
                 onClearWorkspaceData(wsCtx.wsId);
               }
               closeWsCtx();
             }}>
               clear workspace data
+            </button>
+            <button className="ctx-item" onClick={() => { onDuplicateWorkspace(wsCtx.wsId); closeWsCtx(); }}>
+              duplicate workspace
             </button>
             {workspaces.length > 1 && (
               <>
@@ -1372,6 +1852,33 @@ export default memo(function Sidebar({
                 </button>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* emoji picker for workspace icon */}
+      {emojiPicker && (
+        <div className="ctx-overlay" onClick={() => setEmojiPicker(null)}>
+          <div className="emoji-picker" style={{ top: Math.min(emojiPicker.y, window.innerHeight - 360), left: Math.min(emojiPicker.x, window.innerWidth - 220) }} onClick={e => e.stopPropagation()}>
+            {EMOJI_CATEGORIES.map(cat => (
+              <div key={cat.label} className="emoji-picker-category">
+                <div className="emoji-picker-label">{cat.label}</div>
+                <div className="emoji-picker-grid">
+                  {cat.emojis.map(emoji => (
+                    <button
+                      key={emoji}
+                      className="emoji-picker-item"
+                      onClick={() => {
+                        onSetWorkspaceIcon(emojiPicker.wsId, emoji);
+                        setEmojiPicker(null);
+                      }}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

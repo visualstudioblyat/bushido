@@ -6,6 +6,7 @@ interface Props {
   onSelect: (url: string) => void;
   onClose: () => void;
   onClear: (range: 'hour' | 'today' | 'all') => void;
+  onRemoveEntry?: (url: string) => void;
 }
 
 function groupByDate(entries: HistoryEntry[]): { label: string; entries: HistoryEntry[] }[] {
@@ -43,7 +44,7 @@ function formatTime(ms: number): string {
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-export default memo(function HistoryPanel({ history, onSelect, onClose, onClear }: Props) {
+export default memo(function HistoryPanel({ history, onSelect, onClose, onClear, onRemoveEntry }: Props) {
   const [search, setSearch] = useState("");
   const [clearOpen, setClearOpen] = useState(false);
 
@@ -112,13 +113,24 @@ export default memo(function HistoryPanel({ history, onSelect, onClose, onClear 
                 onClick={() => onSelect(entry.url)}
               >
                 <div className="tab-favicon">
-                  {entry.favicon ? <img src={entry.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder" />}
+                  {entry.favicon ? <img src={entry.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder">{(entry.title || entry.url || '?')[0]}</span>}
                 </div>
                 <div className="history-entry-text">
                   <span className="history-entry-title">{entry.title || entry.url}</span>
                   <span className="history-entry-url">{entry.url}</span>
                 </div>
                 <span className="history-entry-time">{formatTime(entry.lastVisitAt)}</span>
+                {onRemoveEntry && (
+                  <button
+                    className="history-entry-delete"
+                    onClick={(e) => { e.stopPropagation(); onRemoveEntry(entry.url); }}
+                    title="Remove from history"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                )}
               </div>
             ))}
           </div>
