@@ -40,6 +40,7 @@ struct BlockerState {
     shortcut_script: String,
     media_script: String,
     fingerprint_script: String,
+    fingerprint_verify_script: String,
     vault_script: String,
     glance_script: String,
     preload_script: String,
@@ -314,6 +315,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let shortcut_script = bs.shortcut_script.clone();
     let media_script = bs.media_script.clone();
     let fingerprint_script = bs.fingerprint_script.clone();
+    let fingerprint_verify_script = bs.fingerprint_verify_script.clone();
     let vault_script = bs.vault_script.clone();
     let glance_script = bs.glance_script.clone();
 
@@ -340,6 +342,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
     let inject_fingerprint = fingerprint_script.clone();
+    let inject_fp_verify = fingerprint_verify_script.clone();
     let inject_vault = vault_script.clone();
     let inject_glance = glance_script.clone();
     let inject_preload = bs.preload_script.clone();
@@ -503,6 +506,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 let _ = wv.eval(&inject_shortcut);
                 let _ = wv.eval(&inject_media);
                 let _ = wv.eval(&inject_fingerprint);
+                #[cfg(debug_assertions)]
+                { let _ = wv.eval(&inject_fp_verify); }
                 let _ = wv.eval(&inject_vault);
                 let _ = wv.eval(&inject_glance);
                 let _ = wv.eval(&inject_preload);
@@ -547,6 +552,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     builder = builder.initialization_script(&shortcut_script);
     builder = builder.initialization_script(&media_script);
     builder = builder.initialization_script(&fingerprint_script);
+    // fingerprint_verify.js is injected ONLY via on_page_load (not initialization_script)
+    // because window.chrome.webview may not be available at initialization_script time
     builder = builder.initialization_script(&vault_script);
     builder = builder.initialization_script(&glance_script);
     builder = builder.initialization_script(&bs.preload_script);
@@ -760,6 +767,29 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                                 windows::core::PCWSTR::from_raw(al_val.as_ptr()),
                                             );
                                         }
+                                        // DNT + GPC headers (research/18 — must match JS navigator.doNotTrack)
+                                        {
+                                            let dnt_name: Vec<u16> = "DNT\0".encode_utf16().collect();
+                                            let dnt_val: Vec<u16> = "1\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(dnt_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(dnt_val.as_ptr()),
+                                            );
+                                            let gpc_name: Vec<u16> = "Sec-GPC\0".encode_utf16().collect();
+                                            let gpc_val: Vec<u16> = "1\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(gpc_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(gpc_val.as_ptr()),
+                                            );
+                                        }
+                                        // Strip ETag headers from third-party requests (research/18 A.3)
+                                        // Prevents ETag-based supercookie tracking
+                                        {
+                                            let etag_name: Vec<u16> = "If-None-Match\0".encode_utf16().collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(etag_name.as_ptr()));
+                                            let ifmod_name: Vec<u16> = "If-Modified-Since\0".encode_utf16().collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(ifmod_name.as_ptr()));
+                                        }
                                         // normalize Referer to origin only
                                         let referer_name: Vec<u16> = "Referer\0".encode_utf16().collect();
                                         let mut referer_val = windows::core::PWSTR::null();
@@ -787,13 +817,12 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let _ = args.ResourceContext(&mut ctx);
                                         let rtype = blocker::resource_type_str(ctx.0 as u32);
 
-                                        // strip tracking params from document navigations
-                                        if rtype == "document" {
-                                            if let Some(clean) = blocker::strip_tracking_params(&url) {
-                                                let new_url: Vec<u16> = format!("{}\0", clean).encode_utf16().collect();
-                                                let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
-                                                // don't return — still check for blocking
-                                            }
+                                        // strip tracking params from ALL requests (research/18 B.2)
+                                        // not just documents — sub-resources (images, scripts, XHR) also carry
+                                        // tracking params like ?fbclid=, ?_ga=, etc.
+                                        if let Some(clean) = blocker::strip_tracking_params(&url) {
+                                            let new_url: Vec<u16> = format!("{}\0", clean).encode_utf16().collect();
+                                            let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
                                         }
 
                                         let current_source = source_ref.lock().clone();
@@ -897,9 +926,25 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                             if !matches!(state, "playing" | "paused" | "ended") { return; }
                                             let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
                                             let clean = title.replace(|c: char| c == '<' || c == '>', "");
-                                            let _ = app_ref.emit_to("main", "tab-media-state", serde_json::json!({
+                                            let mut payload = serde_json::json!({
                                                 "id": *tab_ref, "state": state, "title": clean
-                                            }));
+                                            });
+                                            if let Some(artist) = msg.get("artist").and_then(|v| v.as_str()) {
+                                                payload["artist"] = serde_json::json!(artist);
+                                            }
+                                            if let Some(meta_title) = msg.get("metaTitle").and_then(|v| v.as_str()) {
+                                                payload["metaTitle"] = serde_json::json!(meta_title);
+                                            }
+                                            if let Some(ct) = msg.get("currentTime").and_then(|v| v.as_f64()) {
+                                                payload["currentTime"] = serde_json::json!(ct);
+                                            }
+                                            if let Some(dur) = msg.get("duration").and_then(|v| v.as_f64()) {
+                                                payload["duration"] = serde_json::json!(dur);
+                                            }
+                                            if let Some(rate) = msg.get("playbackRate").and_then(|v| v.as_f64()) {
+                                                payload["playbackRate"] = serde_json::json!(rate);
+                                            }
+                                            let _ = app_ref.emit_to("main", "tab-media-state", payload);
                                         }
                                     }
                                     Some("video") => {
@@ -950,6 +995,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                         let _ = app_ref.emit_to("main", "vault-save-prompt", serde_json::json!({
                                             "domain": domain, "username": username, "password": password
+                                        }));
+                                    }
+                                    Some("cookie-rejected") => {
+                                        let _ = app_ref.emit_to("main", "cookie-rejected", serde_json::json!({
+                                            "id": *tab_ref
                                         }));
                                     }
                                     Some("glance") => {
@@ -1067,6 +1117,38 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                             }
                                         });
                                     }
+                                    Some("fingerprint-verify") => {
+                                        if let Some(report) = msg.get("report") {
+                                            let passed = report.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let failed = report.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let total = report.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let pct = report.get("percentage").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let url = report.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                                            if failed == 0 {
+                                                println!("\x1b[32m[FP-VERIFY] {}/{} passed ({}%) on {} — ALL CLEAR\x1b[0m", passed, total, pct, url);
+                                            } else {
+                                                eprintln!("\x1b[31m[FP-VERIFY] {}/{} passed, {} FAILED ({}%) on {}\x1b[0m", passed, total, failed, pct, url);
+                                                if let Some(results) = report.get("results").and_then(|v| v.as_array()) {
+                                                    for r in results {
+                                                        if r.get("pass").and_then(|v| v.as_bool()) == Some(false) {
+                                                            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                                            let detail = r.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                                                            eprintln!("\x1b[31m  FAIL: {} — {}\x1b[0m", name, detail);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Write report to disk so automated tests can read it
+                                            let report_dir = app_ref.path().app_data_dir().unwrap_or_default();
+                                            let report_path = report_dir.join("fp-verify-report.json");
+                                            let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap_or_default());
+
+                                            let _ = app_ref.emit_to("main", "fingerprint-verify", serde_json::json!({
+                                                "id": *tab_ref,
+                                                "report": report
+                                            }));
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1111,26 +1193,75 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                 let _ = unsafe { args.WebErrorStatus(&mut status as *mut i32 as *mut _) };
                                 // skip user-cancelled navigations
                                 if status == 14 { return Ok(()); }
-                                let msg = match status {
-                                    6 | 12 => "Server unreachable",
-                                    7 => "Connection timed out",
-                                    11 => "You're offline",
-                                    13 => "Couldn't find that site",
-                                    9 | 10 => "Connection was reset",
-                                    15 => "Too many redirects",
-                                    1..=5 => "Certificate error",
-                                    _ => "Something went wrong",
+
+                                // get the current URL for display
+                                let mut source = windows::core::PWSTR::null();
+                                let page_url = unsafe { wv.Source(&mut source).ok().and_then(|_| source.to_string().ok()) }
+                                    .unwrap_or_default();
+                                let domain = page_url.split("//").nth(1).unwrap_or(&page_url).split('/').next().unwrap_or(&page_url);
+
+                                let (icon, title, desc, extra): (&str, &str, String, &str) = match status {
+                                    // SSL / certificate errors
+                                    1..=5 => (
+                                        "&#x1F512;",
+                                        "Connection is not secure",
+                                        format!("The certificate for <strong>{}</strong> is not trusted. An attacker could be intercepting your connection.", domain),
+                                        "<div class='extra'><a href='javascript:void(0)' onclick='history.back()' class='link'>Go back</a></div>"
+                                    ),
+                                    // server unreachable / connection refused
+                                    6 | 12 => (
+                                        "&#x1F50D;",
+                                        "Can&rsquo;t reach this site",
+                                        format!("<strong>{}</strong> refused to connect.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // timeout
+                                    7 => (
+                                        "&#x23F3;",
+                                        "Connection timed out",
+                                        format!("<strong>{}</strong> took too long to respond.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // connection reset
+                                    9 | 10 => (
+                                        "&#x26A0;&#xFE0F;",
+                                        "Connection was reset",
+                                        "The connection was unexpectedly closed.".to_string(),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // offline
+                                    11 => (
+                                        "&#x1F4E1;",
+                                        "You&rsquo;re offline",
+                                        "Check your internet connection and try again.".to_string(),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // DNS failure
+                                    13 => (
+                                        "&#x1F50D;",
+                                        "Can&rsquo;t find this site",
+                                        format!("<strong>{}</strong> could not be found. Check the URL for typos.", page_url),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // too many redirects
+                                    15 => (
+                                        "&#x1F504;",
+                                        "Too many redirects",
+                                        format!("<strong>{}</strong> redirected too many times.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // crash / generic
+                                    _ => (
+                                        "&#x1F4A5;",
+                                        "This tab crashed",
+                                        "Something went wrong while loading the page.".to_string(),
+                                        "<button onclick='location.reload()'>Reload</button>"
+                                    ),
                                 };
-                                let hint = match status {
-                                    11 => "Check your internet connection",
-                                    13 => "Check the URL or try again",
-                                    7 => "The server took too long to respond",
-                                    1..=5 => "This site's security certificate has a problem",
-                                    _ => "Try refreshing or check your connection",
-                                };
+
                                 let js = format!(
-                                    r#"document.documentElement.innerHTML = '<head><style>body{{margin:0;background:#0c0c0f;color:#e2e2e8;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}}h1{{font-size:28px;font-weight:600;margin:0 0 8px;letter-spacing:-0.5px}}p{{opacity:0.5;font-size:14px;margin:0 0 24px}}button{{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);color:#e2e2e8;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;transition:background 0.15s}}button:hover{{background:rgba(255,255,255,0.12)}}.code{{opacity:0.3;font-size:11px;margin-top:12px;font-family:monospace}}</style></head><body><div><h1>{msg}</h1><p>{hint}</p><button onclick="location.reload()">Try again</button><div class="code">ERR_{code}</div></div></body>';"#,
-                                    msg = msg, hint = hint, code = status
+                                    r#"document.documentElement.innerHTML = '<head><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{background:#0d0d14;color:#e0e0e8;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;-webkit-font-smoothing:antialiased}}.wrap{{max-width:420px;padding:40px}}.icon{{font-size:48px;margin-bottom:20px;display:block;filter:grayscale(0.3);opacity:0.9}}h1{{font-size:22px;font-weight:600;margin-bottom:10px;letter-spacing:-0.3px;line-height:1.3}}p{{color:rgba(224,224,232,0.5);font-size:13.5px;line-height:1.6;margin-bottom:24px}}p strong{{color:rgba(224,224,232,0.7);font-weight:500}}button{{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#e0e0e8;padding:9px 24px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;transition:background 0.2s,border-color 0.2s}}button:hover{{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.14)}}.link{{color:rgba(99,102,241,0.8);text-decoration:none;font-size:13px;font-weight:500;transition:color 0.15s}}.link:hover{{color:rgba(99,102,241,1)}}.extra{{margin-top:8px}}.code{{color:rgba(224,224,232,0.2);font-size:10px;margin-top:20px;font-family:monospace;letter-spacing:0.5px}}</style></head><body><div class="wrap"><span class="icon">{icon}</span><h1>{title}</h1><p>{desc}</p>{extra}<div class="code">ERR_{code}</div></div></body>';"#,
+                                    icon = icon, title = title, desc = desc, extra = extra, code = status
                                 );
                                 let _ = unsafe { wv.ExecuteScript(
                                     &windows_core::HSTRING::from(&js),
@@ -2174,8 +2305,27 @@ fn rebind_shortcut(app: tauri::AppHandle, action: String, old_combo: String, new
     Ok(())
 }
 
+const MAX_SESSION_BACKUPS: u32 = 5;
+
+fn rotate_session_backups(app: &tauri::AppHandle) {
+    let dir = data_dir(app);
+    let session = dir.join("session.json");
+    if !session.exists() { return; }
+    // shift existing backups up: 4→5, 3→4, 2→3, 1→2
+    for i in (1..MAX_SESSION_BACKUPS).rev() {
+        let src = dir.join(format!("session.backup.{}.json", i));
+        let dst = dir.join(format!("session.backup.{}.json", i + 1));
+        if src.exists() {
+            let _ = fs::copy(&src, &dst);
+        }
+    }
+    // copy current session to backup.1
+    let _ = fs::copy(&session, dir.join("session.backup.1.json"));
+}
+
 #[tauri::command]
 async fn save_session(app: tauri::AppHandle, tabs: String) -> Result<(), String> {
+    rotate_session_backups(&app);
     let path = session_path(&app);
     fs::write(&path, tabs).map_err(|e| e.to_string())
 }
@@ -2188,6 +2338,39 @@ async fn load_session(app: tauri::AppHandle) -> Result<String, String> {
     } else {
         Ok("[]".into())
     }
+}
+
+#[tauri::command]
+async fn list_session_backups(app: tauri::AppHandle) -> Result<Vec<(u32, String)>, String> {
+    let dir = data_dir(&app);
+    let mut backups = Vec::new();
+    for i in 1..=MAX_SESSION_BACKUPS {
+        let path = dir.join(format!("session.backup.{}.json", i));
+        if path.exists() {
+            let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+            let modified = meta.modified().map_err(|e| e.to_string())?;
+            let epoch = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let ms = epoch.as_millis() as u64;
+            backups.push((i, ms.to_string()));
+        }
+    }
+    Ok(backups)
+}
+
+#[tauri::command]
+async fn restore_backup(app: tauri::AppHandle, backup_num: u32) -> Result<String, String> {
+    if backup_num < 1 || backup_num > MAX_SESSION_BACKUPS {
+        return Err("Invalid backup number".into());
+    }
+    let dir = data_dir(&app);
+    let backup_path = dir.join(format!("session.backup.{}.json", backup_num));
+    if !backup_path.exists() {
+        return Err("Backup not found".into());
+    }
+    let data = fs::read_to_string(&backup_path).map_err(|e| e.to_string())?;
+    let session_path = dir.join("session.json");
+    fs::write(&session_path, &data).map_err(|e| e.to_string())?;
+    Ok(data)
 }
 
 fn settings_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("settings.json") }
@@ -2357,6 +2540,7 @@ pub fn run() {
     let shortcut_script = include_str!("shortcut_bridge.js").to_string();
     let media_script = include_str!("media_listener.js").to_string();
     let fingerprint_script = include_str!("fingerprint.js").to_string();
+    let fingerprint_verify_script = include_str!("fingerprint_verify.js").to_string();
     let vault_script = include_str!("vault_autofill.js").to_string();
     let glance_script = include_str!("glance_listener.js").to_string();
     let preload_script = include_str!("link_preload.js").to_string();
@@ -2431,6 +2615,7 @@ pub fn run() {
             shortcut_script,
             media_script,
             fingerprint_script,
+            fingerprint_verify_script,
             vault_script,
             glance_script,
             preload_script,
@@ -2669,6 +2854,8 @@ pub fn run() {
             copy_text_to_clipboard,
             save_session,
             load_session,
+            list_session_backups,
+            restore_backup,
             save_settings,
             load_settings,
             save_history,

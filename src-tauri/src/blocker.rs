@@ -331,7 +331,10 @@ pub fn resource_type_str(ctx: u32) -> &'static str {
 }
 
 // ── tracking parameter stripping ────────────────────────────────────────────
+// FIX #4: Expanded tracking param stripping (research/18 B.2)
+// Brave strips 60+ params. Our old list had 31 — now 62.
 const TRACKING_PARAMS: &[&str] = &[
+    // Google Analytics / Ads
     "utm_source",
     "utm_medium",
     "utm_campaign",
@@ -342,28 +345,82 @@ const TRACKING_PARAMS: &[&str] = &[
     "utm_reader",
     "utm_viz_id",
     "utm_pubreferrer",
-    "fbclid",
     "gclid",
     "gclsrc",
     "dclid",
     "gbraid",
     "wbraid",
+    "_ga",
+    "_gl",
+    "_gac",
+    // Facebook / Meta
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    "fb_source",
+    "fb_ref",
+    // Microsoft
     "msclkid",
+    // Twitter / X
     "twclid",
+    // TikTok
     "ttclid",
+    // Mailchimp
     "mc_cid",
     "mc_eid",
+    // Yandex
     "yclid",
     "ymclid",
+    "_ym_uid",
+    "_ym_d",
+    // HubSpot
     "_hsenc",
     "_hsmi",
     "__hsfp",
     "__hssc",
     "__hstc",
+    "hsa_cam",
+    "hsa_grp",
+    "hsa_mt",
+    "hsa_src",
+    "hsa_ad",
+    "hsa_acc",
+    "hsa_net",
+    "hsa_ver",
+    // Marketo
     "mkt_tok",
+    // Adobe
     "s_cid",
+    "s_kwcid",
+    // Vero
     "vero_id",
+    // Instagram
     "igshid",
+    // Outbrain / Taboola
+    "obOrigUrl",
+    "ob_click_id",
+    // Omnisend
+    "oly_enc_id",
+    "oly_anon_id",
+    // Drip
+    "__s",
+    // Wicked Reports
+    "wickedid",
+    // SourcePoint
+    "spm",
+    // Reddit
+    "rb_clickid",
+    // Snapchat
+    "ScCid",
+    // Pinterest
+    "epik",
+    // LinkedIn
+    "li_fat_id",
+    // OpenStat
+    "_openstat",
+    // Pardot
+    "pi_campaign_id",
+    "piCId",
 ];
 
 /// Strip tracking parameters from a URL, return new URL if modified
