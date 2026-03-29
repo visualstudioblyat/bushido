@@ -522,7 +522,13 @@ export default function App() {
   // save settings debounced
   useEffect(() => {
     if (!settingsLoaded.current) return;
-    const t = setTimeout(() => invoke("save_settings", { data: JSON.stringify(settings) }), 500);
+    const t = setTimeout(() => {
+      invoke("save_settings", { data: JSON.stringify(settings) });
+      // update dns resolver level if changed
+      if (prevSettingsRef.current && settings.dnsLevel !== prevSettingsRef.current.dnsLevel) {
+        invoke("set_dns_level", { level: settings.dnsLevel }).catch(() => {});
+      }
+    }, 500);
     return () => clearTimeout(t);
   }, [settings]);
 

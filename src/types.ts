@@ -147,6 +147,7 @@ export interface BushidoSettings {
   searchSuggestions: boolean;
   blockPopups: boolean;
   autoplayPolicy: "block-all" | "block-audio" | "allow";
+  dnsLevel: "standard" | "strict" | "maximum";
   showMediaControls: boolean;
   showDomainOnly: boolean;
   keybindings: Record<string, string>;
@@ -265,6 +266,7 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   searchSuggestions: true,
   blockPopups: true,
   autoplayPolicy: "block-audio",
+  dnsLevel: "strict",
   showMediaControls: true,
   showDomainOnly: false,
   bandwidthLimit: 0,

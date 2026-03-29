@@ -4,6 +4,7 @@ version = "0.12.0"
 description = "Bushido Browser"
 authors = ["visualstudioblyat"]
 edition = "2021"
+default-run = "bushido-browser"
 license = "GPL-3.0-or-later"
 
 [lib]
@@ -29,6 +30,11 @@ dirs = "5"
 tokio = { version = "1", features = ["fs", "macros", "rt", "net", "io-util", "time", "sync"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 base64 = "0.22"
+axum = { version = "0.8", features = ["http2"] }
+hickory-proto = "0.25"
+moka = { version = "0.12", features = ["future"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 qrcode = "0.14"
 chrono = "0.4"

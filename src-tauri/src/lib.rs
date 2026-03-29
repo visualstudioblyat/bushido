@@ -1,5 +1,6 @@
 mod blocker;
 mod crash_log;
+pub mod dns_resolver;
 mod downloads;
 mod import;
 mod screenshot;
@@ -2383,6 +2384,19 @@ async fn save_settings(app: tauri::AppHandle, data: String) -> Result<(), String
 }
 
 #[tauri::command]
+async fn set_dns_level(app: tauri::AppHandle, level: String) -> Result<(), String> {
+    let port = app.state::<DnsPort>().0;
+    if port == 0 { return Err("dns resolver not running".into()); }
+    let client = reqwest::Client::new();
+    client.post(format!("http://127.0.0.1:{}/level", port))
+        .body(format!("\"{}\"", level))
+        .send().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+struct DnsPort(u16);
+
+#[tauri::command]
 async fn load_settings(app: tauri::AppHandle) -> Result<String, String> {
     let p = settings_path(&app);
     if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok("{}".into()) }
@@ -2503,12 +2517,26 @@ async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), S
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebView2 browser args — must be set before any webview creation
-    // SECURITY: clear first to prevent injection from pre-existing env (e.g. --remote-debugging-port)
+    // start local DoH resolver before any webview creation
+    let (dns_flags, dns_port) = {
+        let rt = tokio::runtime::Runtime::new().expect("tokio rt for dns");
+        match rt.block_on(dns_resolver::start()) {
+            Ok(port) => {
+                println!("DoH resolver on port {}", port);
+                std::thread::spawn(move || { rt.block_on(std::future::pending::<()>()); });
+                (dns_resolver::flags(port), port)
+            }
+            Err(e) => {
+                eprintln!("dns resolver failed: {}", e);
+                (String::new(), 0)
+            }
+        }
+    };
+
     #[cfg(windows)]
     {
         std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
-        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        let base_args = format!(
             "--enable-quic --site-per-process --origin-agent-cluster=true \
              --disable-dns-prefetch --disable-background-networking \
              --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
@@ -2519,7 +2547,10 @@ pub fn run() {
              --disable-low-res-tiling \
              --gpu-rasterization-msaa-sample-count=0 \
              --enable-zero-copy \
-             --decoded-image-working-set-budget-mb=128");
+             --decoded-image-working-set-budget-mb=128 \
+             {}", dns_flags
+        );
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &base_args);
     }
 
     // init data dir and crash logging FIRST
@@ -2645,8 +2676,9 @@ pub fn run() {
             })
             .build()
         })
-        .setup(|app| {
-            // boost process priority for UI responsiveness during heavy filtering
+        .setup(move |app| {
+            app.manage(DnsPort(dns_port));
+
             #[cfg(windows)]
             {
                 use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS};
@@ -2857,6 +2889,7 @@ pub fn run() {
             list_session_backups,
             restore_backup,
             save_settings,
+            set_dns_level,
             load_settings,
             save_history,
             load_history,

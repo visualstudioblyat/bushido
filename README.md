@@ -35,6 +35,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 - **Fingerprint Protection** —Canvas, WebGL, audio, navigator, screen, timing —all spoofed with realistic per-session randomized values. Hardened against common detection techniques: `Function.prototype.toString` inspection, iframe cross-realm access, Web Worker clean scope, `Object.getOwnPropertyDescriptor` probing, `Date.now` vs `performance.now` comparison, error stack trace sanitization, WebGL parameter consistency. Init script runs before any page JS exists —the page never gets a reference to the original functions.
 - **Cookie Banner Rejection** —Automatically clicks "Reject All" on consent popups across 8+ frameworks. You never see them.
 - **HTTPS-Only Mode** —All traffic upgraded to HTTPS. HTTP connections are refused.
+- **DNS-over-HTTPS** —Built-in encrypted DNS resolver. Three levels: Standard (encrypted + tracker blocking), Strict (+ CNAME uncloaking to catch hidden trackers), Maximum (fail-closed, no fallback). Cloudflare primary, Google DNS fallback. 10k entry cache. Your ISP sees nothing.
 - **Download Manager** —Parallel chunked downloads (up to 6 segments), crash recovery via manifest files, cookie-aware authenticated downloads. Pause, resume, retry. Built into the browser, no extension needed.
 - **Zen-Style Vertical Sidebar** —Nav buttons, URL bar, workspaces, tabs —all in one vertical sidebar. Drag, pin, reorder, tree tabs. Session restore built in.
 - **Command Palette** (`Ctrl+K`) —Fuzzy search tabs, bookmarks, history, and actions from one input.
@@ -56,6 +57,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care 
 | Rendering | System WebView (WebView2 / WebKit) |
 | Ad Blocking | adblock-rust engine + WebView2 COM interception + cosmetic filtering + scriptlet injection |
 | Fingerprint Resistance | JS-level spoofing at document_start, hardened against cross-realm and introspection attacks |
+| DNS | Built-in DoH resolver with CNAME uncloaking + tracker blocklist |
 | Downloads | Rust async + parallel chunked byte-range segments |
 | LAN Sync | mDNS discovery + SPAKE2 pairing + Noise Protocol (XChaCha20) |
 
@@ -77,7 +79,7 @@ The installer lands in `src-tauri/target/release/bundle/`.
 
 ## Contributing
 
-Bushido is open source under the [MPL 2.0](LICENSE) license. Contributions welcome —open an issue or submit a PR.
+Bushido is open source under the [GPL-3.0](LICENSE) license. Contributions welcome —open an issue or submit a PR.
 
 Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-BY-SA 3.0).
 
@@ -99,6 +101,10 @@ Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-
 - [x] ~~Workspace Isolation (per-workspace cookies/storage)~~ —shipped in v0.11.0
 - [x] ~~Ad Blocker Tier 2 (cosmetic filtering + scriptlet injection)~~ —shipped in v0.12.0
 - [x] ~~Fingerprint Protection v3 (6 bypass categories closed)~~ —shipped in v0.12.0
+- [x] ~~Fingerprint Protection v5 (per-site PRNG, cross-realm hardening, timing attacks, worker protection)~~ —shipped in v0.13.0
+- [x] ~~Network Inspector (real-time request logging, blocked/allowed, filter by type)~~ —shipped in v0.13.0
+- [x] ~~Speculative Preloading (hover-to-preload, same-origin only, 300ms debounce)~~ —shipped in v0.13.0
+- [x] ~~DNS-over-HTTPS (encrypted resolver, CNAME uncloaking, 3 privacy levels)~~ —shipped in v0.14.0
 - [ ] Boosts —per-site CSS/JS injection
 - [ ] Custom themes
 - [ ] Cross-platform builds (macOS, Linux)
