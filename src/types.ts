@@ -155,6 +155,7 @@ export interface BushidoSettings {
   mimeRouting: MimeRoute[];
   vaultAutoLock: boolean;
   vaultLockTimeout: number;
+  syncDataTypes: { bookmarks: boolean; history: boolean; settings: boolean; tabs: boolean };
 }
 
 export type PermissionKindType = "microphone" | "camera" | "geolocation" | "notifications" | "othersensors" | "clipboardread" | "filereadwrite" | "autoplay" | "localfonts" | "midi" | "windowmanagement" | "unknown";
@@ -278,6 +279,7 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   ],
   vaultAutoLock: true,
   vaultLockTimeout: 0,
+  syncDataTypes: { bookmarks: true, history: true, settings: true, tabs: true },
   keybindings: {
     "new-tab": "Ctrl+T",
     "close-tab": "Ctrl+W",

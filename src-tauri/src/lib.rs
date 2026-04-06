@@ -262,7 +262,7 @@ fn is_blocked_scheme(url: &str) -> bool {
 }
 
 #[tauri::command]
-async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>) -> Result<(), String> {
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>, block_popups: Option<bool>, default_zoom: Option<f64>) -> Result<(), String> {
     crash_log::log_info("create_tab", &format!("id={} url={}", id, url));
     let disable_dev_tools = disable_dev_tools.unwrap_or(false);
     let disable_status_bar = disable_status_bar.unwrap_or(false);
@@ -271,6 +271,8 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let block_service_workers = block_service_workers.unwrap_or(false);
     let block_font_enum = block_font_enum.unwrap_or(false);
     let _spoof_hw_concurrency = spoof_hw_concurrency.unwrap_or(false);
+    let block_popups = block_popups.unwrap_or(false);
+    let default_zoom = default_zoom.unwrap_or(100.0);
 
     // cap at 50 tabs to prevent resource exhaustion
     {
@@ -619,6 +621,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                         let _ = s4.SetIsGeneralAutofillEnabled(!disable_autofill);
                         let _ = s4.SetIsPasswordAutosaveEnabled(!disable_password_save);
                     }
+                }
+
+                // apply default zoom level
+                if (default_zoom - 100.0).abs() > 0.5 {
+                    let _ = controller.SetZoomFactor(default_zoom / 100.0);
                 }
 
                 // try to get cookie manager for authenticated downloads
@@ -1374,6 +1381,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                 // intercept popups (window.open, target="_blank") — open in same workspace
                 let app_nw = app_for_block.clone();
                 let tab_id_nw = tab_id_block.clone();
+                let block_popups_nw = block_popups;
                 let nw_handler = webview2_com::NewWindowRequestedEventHandler::create(Box::new(
                     move |_sender, args| {
                         let args_ref = AssertUnwindSafe(&args);
@@ -1382,6 +1390,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                         let _ = catch_unwind(move || {
                             if let Some(args) = args_ref.as_ref() {
                                 let _ = args.SetHandled(true);
+                                if block_popups_nw { return; } // silently block
                                 let mut uri = windows::core::PWSTR::null();
                                 if args.Uri(&mut uri).is_ok() && !uri.is_null() {
                                     if let Ok(url_str) = uri.to_string() {
@@ -2533,6 +2542,23 @@ pub fn run() {
         }
     };
 
+    // read saved settings for browser args that need to be set before webview creation
+    let autoplay_arg = {
+        let settings_path = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("com.bushido.browser")
+            .join("settings.json");
+        let policy = std::fs::read_to_string(&settings_path).ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("autoplayPolicy")?.as_str().map(String::from))
+            .unwrap_or_else(|| "block-audio".into());
+        match policy.as_str() {
+            "block-all" => "--autoplay-policy=no-user-gesture-required",
+            "allow" => "--autoplay-policy=no-user-gesture-required",
+            _ => "--autoplay-policy=document-user-activation-required",
+        }
+    };
+
     #[cfg(windows)]
     {
         std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
@@ -2548,7 +2574,7 @@ pub fn run() {
              --gpu-rasterization-msaa-sample-count=0 \
              --enable-zero-copy \
              --decoded-image-working-set-budget-mb=128 \
-             {}", dns_flags
+             {} {}", dns_flags, autoplay_arg
         );
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &base_args);
     }

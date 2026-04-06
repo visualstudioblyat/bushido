@@ -212,6 +212,8 @@ interface Props {
   onZoomReset?: () => void;
   onEditBookmark?: (id: string, title: string, url: string) => void;
   onQuickAction?: (action: string) => void;
+  showDomainOnly?: boolean;
+  showMediaControls?: boolean;
 }
 
 interface CtxMenu {
@@ -312,6 +314,7 @@ export default memo(function Sidebar({
   syncEnabled, pairedDevices,
   onTabSplitDrag,
   zoomLevel, onZoomReset, onEditBookmark, onQuickAction,
+  showDomainOnly, showMediaControls,
 }: Props) {
   const [ctx, setCtx] = useState<CtxMenu | null>(null);
   const [wsCtx, setWsCtx] = useState<WsCtxMenu | null>(null);
@@ -394,7 +397,7 @@ export default memo(function Sidebar({
             timestamp: d.timestamp,
           })));
         } catch {}
-      }).catch(() => {});
+      }).catch(e => console.warn("[bushido]", e));
     };
     fetch();
     const iv = setInterval(fetch, 10000);
@@ -489,9 +492,10 @@ export default memo(function Sidebar({
     if (urlFocused) return urlInput;
     try {
       const u = new URL(urlInput);
+      if (showDomainOnly) return u.hostname;
       return u.hostname + (u.pathname !== "/" ? u.pathname : "");
     } catch { return urlInput; }
-  }, [urlFocused, urlInput]);
+  }, [urlFocused, urlInput, showDomainOnly]);
 
   // memoize tree building + filtering — URL bar input filters tabs when focused
   const tabFilter = urlFocused ? urlInput : "";
@@ -723,6 +727,11 @@ export default memo(function Sidebar({
           )
         )}
       </div>
+      {tab.mediaState === "playing" && (
+        <svg className="tab-audio-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ flexShrink: 0, opacity: 0.5 }}>
+          <path d="M8 1.5a.5.5 0 0 0-.5.5v12a.5.5 0 0 0 1 0V2a.5.5 0 0 0-.5-.5zM5 4.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 1 0V5a.5.5 0 0 0-.5-.5zM11 4.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 1 0V5a.5.5 0 0 0-.5-.5zM2 6.5a.5.5 0 0 0-.5.5v2a.5.5 0 0 0 1 0V7a.5.5 0 0 0-.5-.5zM14 6.5a.5.5 0 0 0-.5.5v2a.5.5 0 0 0 1 0V7a.5.5 0 0 0-.5-.5z"/>
+        </svg>
+      )}
       {!isPinned && (
         <button
           className="tab-close"
@@ -893,14 +902,12 @@ export default memo(function Sidebar({
                     </button>
                   </div>
 
-                  {/* Extensions section */}
+                  {/* Built-in protections */}
                   <div className="ext-section">
                     <div className="ext-section-header">
-                      <span className="ext-section-label">Extensions</span>
-                      <span className="ext-section-manage">Manage</span>
+                      <span className="ext-section-label">Protections</span>
                     </div>
                     <div className="ext-grid">
-                      {/* Shield/blocker as a built-in "extension" */}
                       <button
                         className={`ext-tile ${!whitelisted && blockedCount > 0 ? "active" : ""}`}
                         onClick={onToggleWhitelist}
@@ -912,12 +919,6 @@ export default memo(function Sidebar({
                           {!whitelisted && blockedCount > 0 && (
                             <path d="M5.5 8L7 9.5L10.5 6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
                           )}
-                        </svg>
-                      </button>
-                      {/* + button */}
-                      <button className="ext-tile ext-add" title="Find extensions">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                          <path d="M7 2V12M2 7H12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                         </svg>
                       </button>
                     </div>
@@ -1470,7 +1471,7 @@ export default memo(function Sidebar({
               </div>
             </div>
 
-            {playingTab && !mediaDismissed && (
+            {playingTab && !mediaDismissed && showMediaControls !== false && (
               <div className="media-bar" onClick={() => onSelect(playingTab.id)}>
                 <button className="media-bar-dismiss" onClick={e => { e.stopPropagation(); setMediaDismissed(true); }} title="Dismiss">
                   <svg width="10" height="10" viewBox="0 0 10 10" fill="none">

@@ -215,6 +215,7 @@ export default function App() {
     disableAutofill: sr.disableAutofill, disablePasswordSave: sr.disablePasswordSave,
     blockServiceWorkers: sr.blockServiceWorkers, blockFontEnum: sr.blockFontEnumeration,
     spoofHwConcurrency: sr.spoofHardwareConcurrency,
+    blockPopups: sr.blockPopups, defaultZoom: sr.defaultZoom,
   }), []);
 
   const applyTheme = useCallback((accent: string, mode: "dark" | "light") => {
@@ -475,7 +476,7 @@ export default function App() {
         setTimeout(() => setUpdateToast(null), 8000);
       }
       localStorage.setItem("bushido-last-version", version);
-    }).catch(() => {});
+    }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   // load history + bookmarks on init
@@ -526,7 +527,7 @@ export default function App() {
       invoke("save_settings", { data: JSON.stringify(settings) });
       // update dns resolver level if changed
       if (prevSettingsRef.current && settings.dnsLevel !== prevSettingsRef.current.dnsLevel) {
-        invoke("set_dns_level", { level: settings.dnsLevel }).catch(() => {});
+        invoke("set_dns_level", { level: settings.dnsLevel }).catch(e => console.warn("[bushido]", e));
       }
     }, 500);
     return () => clearTimeout(t);
@@ -540,7 +541,7 @@ export default function App() {
       const keys = Object.keys(settings) as (keyof BushidoSettings)[];
       keys.forEach(key => {
         if (settings[key] !== prev[key]) {
-          invoke("sync_write_setting", { key, value: JSON.stringify(settings[key]) }).catch(() => {});
+          invoke("sync_write_setting", { key, value: JSON.stringify(settings[key]) }).catch(e => console.warn("[bushido]", e));
         }
       });
     }
@@ -553,7 +554,7 @@ export default function App() {
     const fetch = () => {
       invoke<{ enabled: boolean; paired_devices: { device_id: string; name: string }[] }>("get_sync_status")
         .then(info => setSyncPairedDevices(info.paired_devices || []))
-        .catch(() => {});
+        .catch(e => console.warn("[bushido]", e));
     };
     fetch();
     const unlisten = listen("pair-complete", fetch);
@@ -566,7 +567,7 @@ export default function App() {
     const sync = () => {
       const tabsForSync = tabs.filter(t => t.memoryState !== "destroyed")
         .map(t => ({ id: t.id, url: t.url, title: t.title, favicon: t.favicon }));
-      invoke("sync_write_tabs", { tabs: JSON.stringify(tabsForSync) }).catch(() => {});
+      invoke("sync_write_tabs", { tabs: JSON.stringify(tabsForSync) }).catch(e => console.warn("[bushido]", e));
     };
     sync();
     const iv = setInterval(sync, 30000);
@@ -590,7 +591,7 @@ export default function App() {
     });
     // sync history to CRDT (fire-and-forget)
     if (settingsRef.current.syncEnabled) {
-      invoke("sync_add_history", { url, title: title || "", favicon: favicon || null, timestamp: now }).catch(() => {});
+      invoke("sync_add_history", { url, title: title || "", favicon: favicon || null, timestamp: now }).catch(e => console.warn("[bushido]", e));
     }
   }, []);
 
@@ -769,7 +770,7 @@ export default function App() {
               return merged;
             });
           } catch {}
-        }).catch(() => {});
+        }).catch(e => console.warn("[bushido]", e));
       }),
       // sync: tab received from another device
       listen<{ from_device: string; url: string; title: string }>("tab-received", (e) => {
@@ -846,10 +847,10 @@ export default function App() {
     // load existing downloads on init
     invoke<DownloadItem[]>("get_downloads").then(items => {
       if (items.length > 0) setDownloads(items);
-    }).catch(() => {});
+    }).catch(e => console.warn("[bushido]", e));
 
     // check vault lock state
-    invoke<boolean>("vault_is_unlocked").then(setVaultUnlocked).catch(() => {});
+    invoke<boolean>("vault_is_unlocked").then(setVaultUnlocked).catch(e => console.warn("[bushido]", e));
 
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
@@ -857,7 +858,7 @@ export default function App() {
   // EcoQoS + memory priority: low-power mode when window hidden/minimized
   useEffect(() => {
     const onVisChange = () => {
-      invoke("set_power_mode", { low: document.hidden }).catch(() => {});
+      invoke("set_power_mode", { low: document.hidden }).catch(e => console.warn("[bushido]", e));
     };
     document.addEventListener("visibilitychange", onVisChange);
     return () => document.removeEventListener("visibilitychange", onVisChange);
@@ -916,12 +917,12 @@ export default function App() {
     if (!settings.vaultAutoLock || !settings.vaultLockTimeout || !vaultUnlocked) return;
     const timeoutMs = settings.vaultLockTimeout * 60_000;
     let timer = setTimeout(() => {
-      invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(() => {});
+      invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[bushido]", e));
     }, timeoutMs);
     const reset = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(() => {});
+        invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[bushido]", e));
       }, timeoutMs);
     };
     // reset timer on user activity signals
@@ -1020,8 +1021,14 @@ export default function App() {
     // can't delete last workspace
     if (workspaces.length <= 1) return;
 
-    // close all webviews in this workspace
     const wsTabs = tabs.filter(t => t.workspaceId === wsId);
+
+    // confirm before closing workspace with multiple tabs
+    if (settings.confirmCloseMultiple && wsTabs.length > 1) {
+      if (!window.confirm(`Close workspace with ${wsTabs.length} tabs?`)) return;
+    }
+
+    // close all webviews in this workspace
     wsTabs.forEach(t => invoke("close_tab", { id: t.id }));
 
     setTabs(prev => prev.filter(t => t.workspaceId !== wsId));
@@ -1052,7 +1059,7 @@ export default function App() {
     // find any active webview tab in this workspace to get a handle
     const wsTab = tabs.find(t => t.workspaceId === wsId && !t.url.startsWith("bushido://") && t.memoryState !== "destroyed");
     if (wsTab) {
-      invoke("clear_workspace_data", { tabId: wsTab.id }).catch(() => {});
+      invoke("clear_workspace_data", { tabId: wsTab.id }).catch(e => console.warn("[bushido]", e));
     }
   }, [tabs]);
 
@@ -1161,7 +1168,7 @@ export default function App() {
   const closeTab = useCallback((id: string) => {
     // if source tab of glance is being closed, close glance too
     if (glanceRef.current?.sourceTabId === id) {
-      invoke("close_glance", { glanceId: glanceRef.current.id }).catch(() => {});
+      invoke("close_glance", { glanceId: glanceRef.current.id }).catch(e => console.warn("[bushido]", e));
       glanceRef.current = null;
       setGlance(null);
     }
@@ -1278,7 +1285,7 @@ export default function App() {
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
       const willPin = tab ? !tab.pinned : true;
-      invoke("set_tab_pinned", { id, pinned: willPin }).catch(() => {});
+      invoke("set_tab_pinned", { id, pinned: willPin }).catch(e => console.warn("[bushido]", e));
       return prev.map(t => t.id === id ? { ...t, pinned: willPin } : t);
     });
   }, []);
@@ -1574,7 +1581,7 @@ export default function App() {
       const order = prev.bookmarks.filter(b => b.folderId === folderId).length;
       return { ...prev, bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt, order }] };
     });
-    invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(() => {});
+    invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   const removeBookmark = useCallback((id: string) => {
@@ -1582,7 +1589,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.filter(b => b.id !== id),
     }));
-    invoke("sync_remove_bookmark", { id }).catch(() => {});
+    invoke("sync_remove_bookmark", { id }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   const editBookmark = useCallback((id: string, title: string, url: string) => {
@@ -1598,7 +1605,7 @@ export default function App() {
       ...prev,
       folders: [...prev.folders, { id, name, parentId, order: prev.folders.length }],
     }));
-    invoke("sync_add_folder", { id, name, parentId, order: 0 }).catch(() => {});
+    invoke("sync_add_folder", { id, name, parentId, order: 0 }).catch(e => console.warn("[bushido]", e));
     return id;
   }, []);
 
@@ -1607,7 +1614,7 @@ export default function App() {
       ...prev,
       folders: prev.folders.map(f => f.id === folderId ? { ...f, name } : f),
     }));
-    invoke("sync_rename_folder", { id: folderId, name }).catch(() => {});
+    invoke("sync_rename_folder", { id: folderId, name }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   const deleteBookmarkFolder = useCallback((folderId: string) => {
@@ -1616,7 +1623,7 @@ export default function App() {
       folders: prev.folders.filter(f => f.id !== folderId),
       bookmarks: prev.bookmarks.map(b => b.folderId === folderId ? { ...b, folderId: "" } : b),
     }));
-    invoke("sync_remove_folder", { id: folderId }).catch(() => {});
+    invoke("sync_remove_folder", { id: folderId }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   const moveBookmarkToFolder = useCallback((bookmarkId: string, folderId: string) => {
@@ -1624,7 +1631,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.map(b => b.id === bookmarkId ? { ...b, folderId } : b),
     }));
-    invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(() => {});
+    invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   const reorderBookmarks = useCallback((bookmarkId: string, targetId: string, position: "before" | "after") => {
@@ -2184,7 +2191,15 @@ export default function App() {
   }, [compactMode]);
   const minimizeWindow = useCallback(() => invoke("minimize_window"), []);
   const maximizeWindow = useCallback(() => invoke("maximize_window"), []);
-  const closeWindow = useCallback(() => invoke("close_window"), []);
+  const closeWindow = useCallback(async () => {
+    if (settings.confirmBeforeQuit && tabs.length > 1) {
+      if (!window.confirm(`Quit with ${tabs.length} tabs open?`)) return;
+    }
+    if (settings.clearDataOnExit) {
+      await invoke("save_history", { data: "[]" }).catch(e => console.warn("[bushido]", e));
+    }
+    invoke("close_window");
+  }, [settings.confirmBeforeQuit, settings.clearDataOnExit, tabs.length]);
 
   return (
     <>
@@ -2349,6 +2364,8 @@ export default function App() {
           onZoomReset={() => { zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); }}
           onEditBookmark={editBookmark}
           onQuickAction={handleQuickAction}
+          showDomainOnly={settings.showDomainOnly}
+          showMediaControls={settings.showMediaControls}
         />
         {historyOpen && (
           <HistoryPanel
@@ -2541,7 +2558,7 @@ export default function App() {
             setVaultUnlocked(true);
             setVaultMasterModal(null);
             // retry autofill on all tabs now that vault is unlocked
-            invoke("vault_retry_autofill").catch(() => {});
+            invoke("vault_retry_autofill").catch(e => console.warn("[bushido]", e));
             // retry save if pending
             if (vaultSavePrompt) {
               await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => showError("Failed to save password"));

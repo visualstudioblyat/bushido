@@ -205,7 +205,8 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     code?: string;
   } | null>(null);
   const [simulateCode, setSimulateCode] = useState<string | null>(null);
-  const [syncTypes, setSyncTypes] = useState({ bookmarks: true, history: true, settings: true, tabs: true });
+  const syncTypes = settings.syncDataTypes || { bookmarks: true, history: true, settings: true, tabs: true };
+  const setSyncTypes = (next: typeof syncTypes) => set("syncDataTypes", next);
   const [recordingAction, setRecordingAction] = useState<string | null>(null);
   const [vaultEntries, setVaultEntries] = useState<VaultEntry[]>([]);
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
@@ -228,20 +229,20 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         const d = new Date(parseInt(ms, 10));
         return { num, date: d.toLocaleString() };
       }));
-    }).catch(() => {});
+    }).catch(e => console.warn("[bushido]", e));
   }, []);
 
   useEffect(() => {
-    invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+    invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
   }, [settings.syncEnabled]);
 
   useEffect(() => {
     const unsubs: Promise<() => void>[] = [];
     unsubs.push(listen<SyncPeer>("peer-discovered", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
     }));
     unsubs.push(listen<string>("peer-removed", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
     }));
     unsubs.push(listen<{ device_id: string; device_name: string }>("pair-request-received", e => {
       setPairingWizard({
@@ -251,7 +252,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       });
     }));
     unsubs.push(listen("pair-complete", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
       setSimulateCode(null);
     }));
     return () => { unsubs.forEach(p => p.then(fn => fn())); };
@@ -641,7 +642,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Block autoplay</span>
-          <span className="settings-hint">Control media autoplay behavior</span>
+          <span className="settings-hint">Control media autoplay behavior (takes effect on restart)</span>
         </div>
         <Select
           value={settings.autoplayPolicy}
@@ -661,7 +662,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
             { value: "strict", label: "Strict — + CNAME uncloaking (recommended)" },
             { value: "maximum", label: "Maximum — No fallback, fail-closed" },
           ]}
-          onChange={(v: string) => set("dnsLevel", v)}
+          onChange={(v: BushidoSettings["dnsLevel"]) => set("dnsLevel", v)}
         />
       </div>
     </section>
@@ -744,11 +745,11 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
 
   useEffect(() => {
     if (activeTab === "passwords") {
-      invoke<boolean>("vault_has_master_password").then(setVaultHasMaster).catch(() => {});
+      invoke<boolean>("vault_has_master_password").then(setVaultHasMaster).catch(e => console.warn("[bushido]", e));
       invoke<boolean>("vault_is_unlocked").then(u => {
         setVaultUnlocked(u);
-        if (u) invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(() => {});
-      }).catch(() => {});
+        if (u) invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[bushido]", e));
+      }).catch(e => console.warn("[bushido]", e));
     }
   }, [activeTab]);
 
@@ -900,7 +901,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               value={settings.syncDeviceName}
               onChange={e => {
                 onUpdate({ syncDeviceName: e.target.value });
-                invoke("set_device_name", { name: e.target.value }).catch(() => {});
+                invoke("set_device_name", { name: e.target.value }).catch(e => console.warn("[bushido]", e));
               }}
               placeholder="My PC"
               spellCheck={false}
@@ -979,7 +980,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                   <button className="settings-remove-btn" onClick={async () => {
                     try {
                       await invoke("remove_device", { deviceId: d.device_id });
-                      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+                      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
                     } catch (e) {
                       console.error("Failed to remove device:", e);
                     }
@@ -997,7 +998,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.bookmarks} onChange={v => {
                 const next = { ...syncTypes, bookmarks: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(() => {});
+                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1005,7 +1006,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.history} onChange={v => {
                 const next = { ...syncTypes, history: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(() => {});
+                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1013,7 +1014,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.settings} onChange={v => {
                 const next = { ...syncTypes, settings: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(() => {});
+                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1021,7 +1022,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.tabs} onChange={v => {
                 const next = { ...syncTypes, tabs: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(() => {});
+                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
               }} />
             </div>
           </div>
@@ -1036,7 +1037,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                 if (!confirm("Reset all sync data? Local data is preserved, but the CRDT history is wiped.")) return;
                 try {
                   await invoke("reset_sync_data");
-                  invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(() => {});
+                  invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
                 } catch (e) {
                   console.error("Reset failed:", e);
                 }
@@ -1161,7 +1162,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     try {
       await invoke("vault_unlock", { masterPassword: pw });
       setVaultUnlocked(true);
-      invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(() => {});
+      invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[bushido]", e));
     } catch (e) { useUiStore.getState().showError(String(e)); }
   };
 
@@ -1279,7 +1280,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         </div>
         <div style={{ marginTop: 20, fontSize: 12, opacity: 0.5, lineHeight: 1.8 }}>
           <div>Built with Tauri, React, and WebView2</div>
-          <div>Licensed under MPL-2.0</div>
+          <div>Licensed under GPL-3.0</div>
           <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
             <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://bushido-browser.app")}>Website</span>
             <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/visualstudioblyat/bushido")}>GitHub</span>
