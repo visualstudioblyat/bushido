@@ -653,14 +653,14 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>DNS protection</span>
-          <span className="settings-hint">All DNS encrypted via built-in resolver. CNAME uncloaking catches hidden trackers.</span>
+          <span className="settings-hint">Encrypted DNS with tracker blocking. Strict adds CNAME uncloaking.</span>
         </div>
         <Select
           value={settings.dnsLevel || "strict"}
           options={[
-            { value: "standard", label: "Standard — Encrypted DNS + tracker blocking" },
-            { value: "strict", label: "Strict — + CNAME uncloaking (recommended)" },
-            { value: "maximum", label: "Maximum — No fallback, fail-closed" },
+            { value: "standard", label: "Standard" },
+            { value: "strict", label: "Strict (recommended)" },
+            { value: "maximum", label: "Maximum" },
           ]}
           onChange={(v: BushidoSettings["dnsLevel"]) => set("dnsLevel", v)}
         />
