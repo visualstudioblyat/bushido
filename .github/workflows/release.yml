@@ -51,3 +51,4 @@ jobs:
             **Windows SmartScreen Note:** This build is not code-signed. Windows may show a SmartScreen warning — click "More info" then "Run anyway" to proceed.
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
