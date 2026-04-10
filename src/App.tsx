@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 import Sidebar from "./components/Sidebar";
 import WebviewPanel from "./components/WebviewPanel";
 import FindBar from "./components/FindBar";
@@ -182,6 +183,7 @@ export default function App() {
   const networkEntriesRef = useRef<NetworkEntry[]>([]);
   const [cookieToast, setCookieToast] = useState(false);
   const [updateToast, setUpdateToast] = useState<string | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<{ version: string; downloading: boolean } | null>(null);
 
   const vaultUnlockedRef = useRef(false);
   const vaultSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -477,6 +479,21 @@ export default function App() {
       }
       localStorage.setItem("bushido-last-version", version);
     }).catch(e => console.warn("[bushido]", e));
+  }, []);
+
+  // auto-update check on startup
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try {
+        const update = await checkUpdate();
+        if (update) {
+          setPendingUpdate({ version: update.version, downloading: false });
+        }
+      } catch (e) {
+        console.warn("[bushido] update check failed:", e);
+      }
+    }, 5000); // delay 5s to not block startup
+    return () => clearTimeout(t);
   }, []);
 
   // load history + bookmarks on init
@@ -2497,6 +2514,31 @@ export default function App() {
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <span style={{ fontWeight: 600 }}>Updated to v{updateToast}</span>
           <span style={{ fontSize: 11, opacity: 0.6 }}>Click to dismiss</span>
+        </div>
+      </div>
+    )}
+    {pendingUpdate && (
+      <div className="update-toast" onClick={async () => {
+        if (pendingUpdate.downloading) return;
+        setPendingUpdate({ ...pendingUpdate, downloading: true });
+        try {
+          const update = await checkUpdate();
+          if (update) {
+            await update.downloadAndInstall();
+            await invoke("close_window");
+          }
+        } catch (e) {
+          console.warn("[bushido] update install failed:", e);
+          setPendingUpdate(null);
+        }
+      }}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1v10M4.5 7.5L8 11l3.5-3.5" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M3 14h10" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontWeight: 600 }}>{pendingUpdate.downloading ? "Downloading..." : `v${pendingUpdate.version} available`}</span>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>{pendingUpdate.downloading ? "Installing update" : "Click to update"}</span>
         </div>
       </div>
     )}
