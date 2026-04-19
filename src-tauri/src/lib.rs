@@ -2678,13 +2678,8 @@ pub fn run() {
             glance_script,
             preload_script,
         })
-        .plugin({
+        .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-            .with_shortcuts(shortcut_combos.iter().map(|s| s.as_str()))
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: failed to register global shortcuts: {}", e);
-                tauri_plugin_global_shortcut::Builder::new()
-            })
             .with_handler(|app, shortcut, event| {
                 use tauri_plugin_global_shortcut::ShortcutState;
                 if event.state != ShortcutState::Pressed { return; }
@@ -2702,7 +2697,7 @@ pub fn run() {
                 }
             })
             .build()
-        })
+        )
         .setup(move |app| {
             app.manage(DnsPort(dns_port));
 
@@ -2710,6 +2705,20 @@ pub fn run() {
             {
                 use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS};
                 unsafe { let _ = SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS); }
+            }
+
+            // Register global shortcuts one-by-one, skipping any that fail (e.g., already registered by another app)
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                for combo in &shortcut_combos {
+                    match app.global_shortcut().register(combo.as_str()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Warning: failed to register shortcut '{}': {}", combo, e);
+                            crash_log::log_warn("shortcuts", &format!("Failed to register '{}': {}", combo, e));
+                        }
+                    }
+                }
             }
 
             let sites = load_whitelist(&app.handle());
