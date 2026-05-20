@@ -262,7 +262,7 @@ fn is_blocked_scheme(url: &str) -> bool {
 }
 
 #[tauri::command]
-async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>, block_popups: Option<bool>, default_zoom: Option<f64>) -> Result<(), String> {
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>, block_popups: Option<bool>, default_zoom: Option<f64>, max_tabs: Option<u32>) -> Result<(), String> {
     crash_log::log_info("create_tab", &format!("id={} url={}", id, url));
     let disable_dev_tools = disable_dev_tools.unwrap_or(false);
     let disable_status_bar = disable_status_bar.unwrap_or(false);
@@ -274,11 +274,11 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let block_popups = block_popups.unwrap_or(false);
     let default_zoom = default_zoom.unwrap_or(100.0);
 
-    // cap at 50 tabs to prevent resource exhaustion
+    let tab_limit = max_tabs.unwrap_or(50) as usize;
     {
         let ws = app.state::<WebviewState>();
         let tabs = ws.tabs.lock();
-        if tabs.len() >= 50 { return Err("Max 50 tabs".into()); }
+        if tabs.len() >= tab_limit { return Err(format!("Max {} tabs", tab_limit)); }
     }
 
     let window = app.get_window("main").ok_or("no main window")?;

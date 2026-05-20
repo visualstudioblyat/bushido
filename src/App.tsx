@@ -222,6 +222,7 @@ export default function App() {
     blockServiceWorkers: sr.blockServiceWorkers, blockFontEnum: sr.blockFontEnumeration,
     spoofHwConcurrency: sr.spoofHardwareConcurrency,
     blockPopups: sr.blockPopups, defaultZoom: sr.defaultZoom,
+    maxTabs: sr.maxTabs || 50,
   }), []);
 
   const applyTheme = useCallback((accent: string, mode: "dark" | "light") => {

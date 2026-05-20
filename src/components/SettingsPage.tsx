@@ -598,6 +598,23 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         </div>
         <Toggle checked={settings.confirmCloseMultiple} onChange={v => set("confirmCloseMultiple", v)} />
       </div>
+      <div className="settings-row">
+        <div className="settings-label">
+          <span>Maximum open tabs</span>
+          <span className="settings-hint">Limit how many tabs can be open at once (10–200)</span>
+        </div>
+        <input
+          type="number"
+          className="settings-number-input"
+          min={10}
+          max={200}
+          value={settings.maxTabs}
+          onChange={e => {
+            const v = Math.max(10, Math.min(200, parseInt(e.target.value) || 50));
+            set("maxTabs", v);
+          }}
+        />
+      </div>
     </section>
   );
 

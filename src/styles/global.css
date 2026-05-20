@@ -956,9 +956,18 @@ html, body, #root {
 }
 .find-count {
   font-size: 11px;
-  color: var(--text-secondary);
   white-space: nowrap;
-  padding: 0 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.find-count-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.find-count-none {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .webview-container {
@@ -3229,6 +3238,21 @@ html, body, #root {
 
 .settings-textarea::placeholder {
   color: var(--text-dim);
+}
+
+.settings-number-input {
+  width: 72px;
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.settings-number-input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.35);
 }
 
 .settings-info-text {

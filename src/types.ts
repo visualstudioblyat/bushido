@@ -156,6 +156,7 @@ export interface BushidoSettings {
   showMediaControls: boolean;
   showDomainOnly: boolean;
   keybindings: Record<string, string>;
+  maxTabs: number;
   bandwidthLimit: number;
   mimeRouting: MimeRoute[];
   vaultAutoLock: boolean;
@@ -280,6 +281,7 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   dnsLevel: "strict",
   showMediaControls: true,
   showDomainOnly: false,
+  maxTabs: 50,
   bandwidthLimit: 0,
   mimeRouting: [
     { mimePrefix: "image/", folder: "" },

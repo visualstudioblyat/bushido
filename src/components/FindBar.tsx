@@ -66,7 +66,7 @@ export default memo(function FindBar({ tabId, onClose }: Props) {
         spellCheck={false}
       />
       {countLabel !== null && (
-        <span className="find-count">{countLabel}</span>
+        <span className={`find-count ${matchCount === 0 ? "find-count-none" : "find-count-active"}`}>{countLabel}</span>
       )}
       <button className="find-btn" onClick={() => find(false)} title="Previous">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
