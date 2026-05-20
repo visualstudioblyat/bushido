@@ -740,6 +740,9 @@ export default function App() {
       listen<{ id: string }>("download-cancelled", (e) => {
         setDownloads(prev => prev.filter(d => d.id !== e.payload.id));
       }),
+      listen<{ id: string; reason: string }>("download-resume-failed", (e) => {
+        showError(e.payload.reason);
+      }),
       // speculative preload promotion
       listen<{ preloadId: string; url: string; sourceTabId: string }>("preload-promoted", (e) => {
         const { preloadId, url, sourceTabId } = e.payload;

@@ -533,8 +533,12 @@ async fn dl_task(
         }
     };
 
-    // if resuming and server doesn't honor range, restart from 0
+    // if resuming and server doesn't honor range, warn user and restart from 0
     let actual_offset = if resume_offset > 0 && resp.status() == 200 {
+        let _ = app.emit("download-resume-failed", serde_json::json!({
+            "id": id,
+            "reason": "Server does not support resuming. Download restarted from the beginning."
+        }));
         0u64
     } else {
         resume_offset

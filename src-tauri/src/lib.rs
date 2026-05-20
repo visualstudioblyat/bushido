@@ -1829,9 +1829,16 @@ struct PaneRectArg {
 
 #[tauri::command]
 async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
+    let vs = app.state::<crate::vault::VaultState>();
+    if vs.derived_key.lock().is_none() {
+        return Ok(());
+    }
     let state = app.state::<WebviewState>();
     let tabs = state.tabs.lock().clone();
     for (tab_id, _) in &tabs {
+        if vs.derived_key.lock().is_none() {
+            break;
+        }
         if let Some(wv) = app.get_webview(tab_id) {
             let _ = wv.eval("if(window.__bushidoVaultRetry)window.__bushidoVaultRetry()");
         }
