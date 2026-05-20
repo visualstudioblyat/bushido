@@ -29,6 +29,10 @@ import { useSyncStore } from "./store/syncStore";
 
 // blocked URL schemes — defense-in-depth (Rust side also blocks these)
 const BLOCKED_SCHEMES = ["javascript:", "data:", "file:", "vbscript:", "blob:", "ms-msdt:", "search-ms:", "ms-officecmd:"];
+
+function extractDomain(url: string): string | null {
+  try { return new URL(url).hostname; } catch { return null; }
+}
 const isSafeUrl = (url: string) => !BLOCKED_SCHEMES.some(s => url.toLowerCase().startsWith(s));
 
 // clamp a popup menu to viewport edges
@@ -294,6 +298,16 @@ export default function App() {
 
       // apply saved theme
       applyTheme(s.accentColor || "#6366f1", s.themeMode || "dark");
+
+      // restore reader settings from persisted settings
+      if (s.readerFontSize || s.readerFont || s.readerTheme || s.readerLineWidth) {
+        setReaderSettings({
+          fontSize: s.readerFontSize || 18,
+          font: s.readerFont || "serif",
+          theme: s.readerTheme || "dark",
+          lineWidth: s.readerLineWidth || 680,
+        });
+      }
 
       // apply bandwidth limit from settings
       if (s.bandwidthLimit) {
@@ -635,6 +649,12 @@ export default function App() {
           invoke<boolean>("is_whitelisted", { domain }).then(wl => {
             setTabs(prev => prev.map(t => t.id === e.payload.id ? { ...t, whitelisted: wl } : t));
           });
+          const savedZoom = settingsRef.current.zoomHistory?.[domain];
+          if (savedZoom && savedZoom !== 1) {
+            zoomRef.current[e.payload.id] = savedZoom;
+            setZoomDisplay(p => ({ ...p, [e.payload.id]: savedZoom }));
+            invoke("zoom_tab", { id: e.payload.id, factor: savedZoom });
+          }
         }
       }),
       listen<{ id: string; title: string }>("tab-title-changed", (e) => {
@@ -1572,6 +1592,25 @@ export default function App() {
   useEffect(() => { dropZoneRef.current = dropZone; }, [dropZone]);
 
   const current = useMemo(() => tabs.find(t => t.id === activeTab), [tabs, activeTab]);
+
+  const setZoom = useCallback((tabId: string, factor: number) => {
+    zoomRef.current[tabId] = factor;
+    setZoomDisplay(p => ({ ...p, [tabId]: factor }));
+    invoke("zoom_tab", { id: tabId, factor });
+    const tab = tabs.find(t => t.id === tabId);
+    if (tab) {
+      const domain = extractDomain(tab.url);
+      if (domain) {
+        setSettings(s => {
+          const zh = { ...s.zoomHistory };
+          if (factor === 1) delete zh[domain];
+          else zh[domain] = factor;
+          return { ...s, zoomHistory: zh };
+        });
+      }
+    }
+  }, [tabs]);
+
   const showNtp = current?.url === NTP_URL;
   const showSettings = current?.url === SETTINGS_URL;
   const showInternalPage = showNtp || showSettings;
@@ -1859,7 +1898,17 @@ export default function App() {
   }, [activeTab, tabs, readerSettings]);
 
   const updateReaderSettings = useCallback((update: Partial<typeof readerSettings>) => {
-    setReaderSettings(prev => ({ ...prev, ...update }));
+    setReaderSettings(prev => {
+      const next = { ...prev, ...update };
+      setSettings(s => ({
+        ...s,
+        readerFontSize: next.fontSize,
+        readerFont: next.font,
+        readerTheme: next.theme,
+        readerLineWidth: next.lineWidth,
+      }));
+      return next;
+    });
   }, []);
 
   // --- picture in picture ---
@@ -1937,9 +1986,9 @@ export default function App() {
       case "screenshot": openScreenshot(); break;
       case "toggleReader": toggleReader(); break;
       case "togglePip": togglePip(); break;
-      case "zoomIn": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-      case "zoomOut": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-      case "zoomReset": zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); break;
+      case "zoomIn": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); setZoom(activeTab, z); break; }
+      case "zoomOut": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); setZoom(activeTab, z); break; }
+      case "zoomReset": setZoom(activeTab, 1); break;
       case "findInPage": setFindOpen(true); break;
       case "printPage": invoke("print_tab", { id: activeTab }); break;
       case "toggleDevtools": invoke("toggle_devtools", { id: activeTab }); break;
@@ -1969,9 +2018,9 @@ export default function App() {
       if (ctrl && e.key === "p" && !e.shiftKey) { e.preventDefault(); invoke("print_tab", { id: activeTab }); }
       if (ctrl && e.key === "j" && !e.shiftKey) { e.preventDefault(); setDownloadsOpen(p => !p); }
       if (ctrl && e.key === "r" && !e.shiftKey) { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
-      if (ctrl && e.key === "=") { e.preventDefault(); const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); }
-      if (ctrl && e.key === "-") { e.preventDefault(); const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); }
-      if (ctrl && e.key === "0") { e.preventDefault(); zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); }
+      if (ctrl && e.key === "=") { e.preventDefault(); const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); setZoom(activeTab, z); }
+      if (ctrl && e.key === "-") { e.preventDefault(); const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); setZoom(activeTab, z); }
+      if (ctrl && e.key === "0") { e.preventDefault(); setZoom(activeTab, 1); }
       if (e.key === "F11") { e.preventDefault(); invoke("toggle_fullscreen"); }
       if (e.key === "F5") { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
       // Ctrl+Tab cycles tabs within current workspace
@@ -2019,9 +2068,9 @@ export default function App() {
         case "downloads": setDownloadsOpen(p => !p); break;
         case "devtools": invoke("toggle_devtools", { id: activeTab }); break;
         case "reopen-tab": { const c = closedTabsRef.current.pop(); if (c) addTab(c.url); break; }
-        case "zoom-in": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-        case "zoom-out": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); zoomRef.current[activeTab] = z; setZoomDisplay(p => ({ ...p, [activeTab]: z })); invoke("zoom_tab", { id: activeTab, factor: z }); break; }
-        case "zoom-reset": { zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); break; }
+        case "zoom-in": { const z = Math.min((zoomRef.current[activeTab] || 1) + 0.1, 3); setZoom(activeTab, z); break; }
+        case "zoom-out": { const z = Math.max((zoomRef.current[activeTab] || 1) - 0.1, 0.3); setZoom(activeTab, z); break; }
+        case "zoom-reset": { setZoom(activeTab, 1); break; }
       }
     };
     return () => { delete (window as any).__bushidoGlobalShortcut; };
@@ -2378,7 +2427,7 @@ export default function App() {
           pairedDevices={syncPairedDevices}
           onTabSplitDrag={onTabSplitDrag}
           zoomLevel={zoomDisplay[activeTab] ?? zoomRef.current[activeTab] ?? 1}
-          onZoomReset={() => { zoomRef.current[activeTab] = 1; setZoomDisplay(p => ({ ...p, [activeTab]: 1 })); invoke("zoom_tab", { id: activeTab, factor: 1 }); }}
+          onZoomReset={() => setZoom(activeTab, 1)}
           onEditBookmark={editBookmark}
           onQuickAction={handleQuickAction}
           showDomainOnly={settings.showDomainOnly}

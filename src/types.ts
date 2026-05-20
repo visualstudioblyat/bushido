@@ -143,6 +143,11 @@ export interface BushidoSettings {
   confirmCloseMultiple: boolean;
   customHomepageUrl: string;
   defaultZoom: number;
+  zoomHistory: Record<string, number>;
+  readerFontSize: number;
+  readerFont: "serif" | "sans";
+  readerTheme: "dark" | "light" | "sepia";
+  readerLineWidth: number;
   confirmBeforeQuit: boolean;
   searchSuggestions: boolean;
   blockPopups: boolean;
@@ -263,6 +268,11 @@ export const DEFAULT_SETTINGS: BushidoSettings = {
   confirmCloseMultiple: true,
   customHomepageUrl: "",
   defaultZoom: 100,
+  zoomHistory: {},
+  readerFontSize: 18,
+  readerFont: "serif",
+  readerTheme: "dark",
+  readerLineWidth: 680,
   confirmBeforeQuit: false,
   searchSuggestions: true,
   blockPopups: true,
