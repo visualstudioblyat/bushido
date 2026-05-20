@@ -1796,6 +1796,7 @@ export default function App() {
 
   const removeHistoryEntry = useCallback((url: string) => {
     setHistoryEntries(prev => prev.filter(h => h.url !== url));
+    invoke("delete_history_entry", { url }).catch(e => console.warn("[bushido] delete history entry:", e));
   }, []);
 
   const clearHistory = useCallback((range: 'hour' | 'today' | 'all') => {

@@ -2423,6 +2423,19 @@ async fn load_history(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn delete_history_entry(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let p = history_path(&app);
+    if !p.exists() { return Ok(()); }
+    let data = fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
+    let filtered: Vec<&serde_json::Value> = entries.iter().filter(|e| {
+        e.get("url").and_then(|u| u.as_str()) != Some(url.as_str())
+    }).collect();
+    let out = serde_json::to_string(&filtered).map_err(|e| e.to_string())?;
+    fs::write(&p, out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn save_bookmarks(app: tauri::AppHandle, data: String) -> Result<(), String> {
     // if sync enabled, write through SyncDoc
     let state = app.try_state::<sync::SyncState>();
@@ -2929,6 +2942,7 @@ pub fn run() {
             load_settings,
             save_history,
             load_history,
+            delete_history_entry,
             save_bookmarks,
             load_bookmarks,
             toggle_whitelist,
