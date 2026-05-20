@@ -995,7 +995,7 @@ export default memo(function Sidebar({
                         <span className="suggestion-title">{s.title || s.url}</span>
                         <span className="suggestion-url">{s.url}</span>
                       </div>
-                      <span className="suggestion-type">{s.type === 'bookmark' ? '\u2605' : '\u25F7'}</span>
+                      <span className="suggestion-type">{s.type === 'bookmark' ? '\u2605' : s.type === 'search' ? '\uD83D\uDD0D' : '\u25F7'}</span>
                     </div>
                   ))}
                   {quickActions.map((qa, i) => {

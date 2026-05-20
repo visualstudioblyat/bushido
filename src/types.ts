@@ -107,7 +107,7 @@ export interface FrecencyResult {
   title: string;
   favicon?: string;
   score: number;
-  type: 'history' | 'bookmark';
+  type: 'history' | 'bookmark' | 'search';
 }
 
 export interface BushidoSettings {

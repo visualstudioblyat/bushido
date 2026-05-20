@@ -1847,6 +1847,22 @@ export default function App() {
     return sites;
   }, [historyEntries]);
 
+  // search suggestions from engine API
+  const [searchSugs, setSearchSugs] = useState<string[]>([]);
+  useEffect(() => {
+    if (!urlQuery || urlQuery.length < 2 || !settings.searchSuggestions) {
+      setSearchSugs([]);
+      return;
+    }
+    if (/^https?:\/\//.test(urlQuery) || urlQuery.startsWith(">")) return;
+    const timer = setTimeout(() => {
+      invoke<string[]>("fetch_search_suggestions", { query: urlQuery, engine: settings.searchEngine })
+        .then(setSearchSugs)
+        .catch(() => setSearchSugs([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [urlQuery, settings.searchSuggestions, settings.searchEngine]);
+
   // frecency suggestions for URL bar
   const suggestions = useMemo((): FrecencyResult[] => {
     if (!urlQuery || urlQuery.length < 2) return [];
@@ -1866,8 +1882,16 @@ export default function App() {
       }
     }
 
-    return Array.from(map.values()).sort((a, b) => b.score - a.score).slice(0, 8);
-  }, [urlQuery, historyEntries, bookmarkData.bookmarks]);
+    const frecency = Array.from(map.values()).sort((a, b) => b.score - a.score).slice(0, 6);
+
+    for (const s of searchSugs) {
+      if (!map.has(s)) {
+        frecency.push({ url: s, title: s, score: 0, type: 'search' });
+      }
+    }
+
+    return frecency.slice(0, 10);
+  }, [urlQuery, historyEntries, bookmarkData.bookmarks, searchSugs]);
 
   const onSuggestionSelect = useCallback((url: string) => {
     navigate(url);

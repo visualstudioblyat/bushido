@@ -2443,6 +2443,44 @@ async fn delete_history_entry(app: tauri::AppHandle, url: String) -> Result<(), 
 }
 
 #[tauri::command]
+async fn fetch_search_suggestions(query: String, engine: String) -> Result<Vec<String>, String> {
+    if query.len() < 2 { return Ok(vec![]); }
+    let url = match engine.as_str() {
+        "google" => format!("https://suggestqueries.google.com/complete/search?client=firefox&q={}", urlencoding::encode(&query)),
+        "duckduckgo" => format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding::encode(&query)),
+        "brave" => format!("https://search.brave.com/api/suggest?q={}&rich=false", urlencoding::encode(&query)),
+        "bing" => format!("https://api.bing.com/osjson.aspx?query={}", urlencoding::encode(&query)),
+        _ => return Ok(vec![]),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let suggestions = match parsed {
+        serde_json::Value::Array(ref arr) if arr.len() >= 2 => {
+            arr[1].as_array().map(|a| {
+                a.iter().filter_map(|v| {
+                    if let Some(s) = v.as_str() { return Some(s.to_string()); }
+                    if let Some(obj) = v.as_object() {
+                        return obj.get("phrase").and_then(|p| p.as_str()).map(|s| s.to_string());
+                    }
+                    None
+                }).take(6).collect::<Vec<_>>()
+            }).unwrap_or_default()
+        }
+        _ => vec![],
+    };
+    Ok(suggestions)
+}
+
+#[tauri::command]
 async fn save_bookmarks(app: tauri::AppHandle, data: String) -> Result<(), String> {
     // if sync enabled, write through SyncDoc
     let state = app.try_state::<sync::SyncState>();
@@ -2950,6 +2988,7 @@ pub fn run() {
             save_history,
             load_history,
             delete_history_entry,
+            fetch_search_suggestions,
             save_bookmarks,
             load_bookmarks,
             toggle_whitelist,

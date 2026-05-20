@@ -336,10 +336,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       )}
       <div className="settings-row">
         <div className="settings-label">
-          <span>Search suggestions <span style={{ opacity: 0.5, fontSize: 11 }}>(coming soon)</span></span>
+          <span>Search suggestions</span>
           <span className="settings-hint">Show search suggestions as you type</span>
         </div>
-        <Toggle checked={settings.searchSuggestions} onChange={v => set("searchSuggestions", v)} disabled />
+        <Toggle checked={settings.searchSuggestions} onChange={v => set("searchSuggestions", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
