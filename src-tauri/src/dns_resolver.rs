@@ -260,3 +260,47 @@ pub async fn start() -> Result<u16, String> {
 pub fn flags(port: u16) -> String {
     format!("--enable-features=DnsOverHttps --dns-over-https-mode=secure --dns-over-https-templates=http://localhost:{}/dns-query", port)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_resolver() -> Arc<Resolver> {
+        Resolver::new()
+    }
+
+    #[test]
+    fn is_blocked_exact_match() {
+        let r = make_resolver();
+        assert!(r.is_blocked("data.adobedc.net"));
+        assert!(r.is_blocked("demdex.net"));
+    }
+
+    #[test]
+    fn is_blocked_subdomain() {
+        let r = make_resolver();
+        assert!(r.is_blocked("foo.data.adobedc.net"));
+        assert!(r.is_blocked("sub.demdex.net"));
+    }
+
+    #[test]
+    fn is_blocked_trailing_dot() {
+        let r = make_resolver();
+        assert!(r.is_blocked("data.adobedc.net."));
+    }
+
+    #[test]
+    fn is_blocked_non_match() {
+        let r = make_resolver();
+        assert!(!r.is_blocked("example.com"));
+        assert!(!r.is_blocked("google.com"));
+        assert!(!r.is_blocked("notdemdex.net"));
+    }
+
+    #[test]
+    fn flags_contains_port() {
+        let f = flags(8053);
+        assert!(f.contains("8053"));
+        assert!(f.contains("DnsOverHttps"));
+    }
+}

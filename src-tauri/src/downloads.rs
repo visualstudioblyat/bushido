@@ -1109,3 +1109,51 @@ fn fail(app: &AppHandle, id: &str, error: &str) {
         let _ = app.emit_to("main", "download-failed", item.clone());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_filename_from_disposition_quoted() {
+        assert_eq!(parse_filename("https://example.com/dl", "attachment; filename=\"report.pdf\""), "report.pdf");
+    }
+
+    #[test]
+    fn parse_filename_from_disposition_unquoted() {
+        assert_eq!(parse_filename("https://example.com/dl", "attachment; filename=image.png"), "image.png");
+    }
+
+    #[test]
+    fn parse_filename_from_disposition_utf8() {
+        assert_eq!(parse_filename("https://example.com/dl", "attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf"), "résumé.pdf");
+    }
+
+    #[test]
+    fn parse_filename_utf8_takes_priority() {
+        assert_eq!(
+            parse_filename("https://example.com/dl", "attachment; filename*=UTF-8''fancy.pdf; filename=\"fallback.pdf\""),
+            "fancy.pdf"
+        );
+    }
+
+    #[test]
+    fn parse_filename_from_url() {
+        assert_eq!(parse_filename("https://example.com/files/document.docx", ""), "document.docx");
+    }
+
+    #[test]
+    fn parse_filename_url_encoded() {
+        assert_eq!(parse_filename("https://example.com/files/my%20file.zip", ""), "my file.zip");
+    }
+
+    #[test]
+    fn parse_filename_fallback() {
+        assert_eq!(parse_filename("https://example.com/", ""), "download");
+    }
+
+    #[test]
+    fn parse_filename_empty_disposition_uses_url() {
+        assert_eq!(parse_filename("https://example.com/path/archive.tar.gz", ""), "archive.tar.gz");
+    }
+}

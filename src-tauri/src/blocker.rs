@@ -460,3 +460,63 @@ pub fn strip_tracking_params(url_str: &str) -> Option<String> {
 
     Some(parsed.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_type_known_codes() {
+        assert_eq!(resource_type_str(2), "document");
+        assert_eq!(resource_type_str(3), "stylesheet");
+        assert_eq!(resource_type_str(4), "image");
+        assert_eq!(resource_type_str(5), "media");
+        assert_eq!(resource_type_str(6), "font");
+        assert_eq!(resource_type_str(7), "script");
+        assert_eq!(resource_type_str(8), "xmlhttprequest");
+        assert_eq!(resource_type_str(9), "fetch");
+        assert_eq!(resource_type_str(10), "ping");
+        assert_eq!(resource_type_str(13), "websocket");
+    }
+
+    #[test]
+    fn resource_type_unknown_returns_other() {
+        assert_eq!(resource_type_str(0), "other");
+        assert_eq!(resource_type_str(1), "other");
+        assert_eq!(resource_type_str(99), "other");
+    }
+
+    #[test]
+    fn strip_tracking_removes_utm() {
+        let result = strip_tracking_params("https://example.com/page?utm_source=twitter&ref=home");
+        assert_eq!(result, Some("https://example.com/page?ref=home".to_string()));
+    }
+
+    #[test]
+    fn strip_tracking_removes_fbclid() {
+        let result = strip_tracking_params("https://example.com/?fbclid=abc123");
+        assert_eq!(result, Some("https://example.com/".to_string()));
+    }
+
+    #[test]
+    fn strip_tracking_removes_multiple() {
+        let result = strip_tracking_params("https://example.com/p?utm_source=x&gclid=y&utm_medium=z&keep=1");
+        assert_eq!(result, Some("https://example.com/p?keep=1".to_string()));
+    }
+
+    #[test]
+    fn strip_tracking_no_change_clean_url() {
+        assert_eq!(strip_tracking_params("https://example.com/page?q=rust&lang=en"), None);
+    }
+
+    #[test]
+    fn strip_tracking_no_query() {
+        assert_eq!(strip_tracking_params("https://example.com/page"), None);
+    }
+
+    #[test]
+    fn strip_tracking_all_removed() {
+        let result = strip_tracking_params("https://example.com/?utm_source=x&utm_medium=y");
+        assert_eq!(result, Some("https://example.com/".to_string()));
+    }
+}
