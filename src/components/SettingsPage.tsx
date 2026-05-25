@@ -83,6 +83,7 @@ const SHORTCUT_GROUPS: { group: string; items: { action: string; desc: string }[
     { action: "bookmark", desc: "Bookmark page" },
     { action: "history", desc: "History" },
     { action: "downloads", desc: "Downloads" },
+    { action: "toggle-sidebar", desc: "Toggle sidebar" },
     { action: "toggle-compact", desc: "Compact mode" },
     { action: "reader-mode", desc: "Reader mode" },
     { action: "devtools", desc: "Developer tools" },
@@ -171,7 +172,7 @@ const ACCENT_COLORS = [
 ];
 
 const SECURITY_KEYS: (keyof BushidoSettings)[] = [
-  "disableDevTools", "disableStatusBar", "disableAutofill", "disablePasswordSave",
+  "disableDevTools", "disableAutofill", "disablePasswordSave",
   "blockServiceWorkers", "blockFontEnumeration", "spoofHardwareConcurrency",
 ];
 
@@ -312,6 +313,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Search engine</span>
+          <span className="settings-hint">Used for URL bar searches and suggestions</span>
         </div>
         <Select
           value={settings.searchEngine}
@@ -344,6 +346,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>On startup</span>
+          <span className="settings-hint">What to show when the browser opens</span>
         </div>
         <Select
           value={settings.onStartup}
@@ -472,14 +475,17 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     <section className="settings-section">
       <h2 className="settings-section-title">New Tab</h2>
       <div className="settings-row">
-        <div className="settings-label"><span>Show top sites</span></div>
+        <div className="settings-label">
+          <span>Show top sites</span>
+          <span className="settings-hint">Display your most visited sites as a grid</span>
+        </div>
         <Toggle checked={settings.showTopSites} onChange={v => set("showTopSites", v)} />
       </div>
       {settings.showTopSites && (
         <div className="settings-row">
           <div className="settings-label">
             <span>Top sites rows</span>
-            <span className="settings-hint">Number of rows in the frecency grid</span>
+            <span className="settings-hint">Number of rows shown in the top sites grid</span>
           </div>
           <Select
             value={settings.topSiteRows}
@@ -489,11 +495,17 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         </div>
       )}
       <div className="settings-row">
-        <div className="settings-label"><span>Show clock</span></div>
+        <div className="settings-label">
+          <span>Show clock</span>
+          <span className="settings-hint">Display the current time on new tab page</span>
+        </div>
         <Toggle checked={settings.showClock} onChange={v => set("showClock", v)} />
       </div>
       <div className="settings-row">
-        <div className="settings-label"><span>Show greeting</span></div>
+        <div className="settings-label">
+          <span>Show greeting</span>
+          <span className="settings-hint">Display a time-based greeting message</span>
+        </div>
         <Toggle checked={settings.showGreeting} onChange={v => set("showGreeting", v)} />
       </div>
     </section>
@@ -505,7 +517,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Download location</span>
-          <span className="settings-hint">{settings.downloadLocation || "System default"}</span>
+          <span className="settings-hint">Folder where files are saved</span>
         </div>
         <input
           className="settings-input"
@@ -516,7 +528,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         />
       </div>
       <div className="settings-row">
-        <div className="settings-label"><span>Ask where to save</span></div>
+        <div className="settings-label">
+          <span>Ask where to save</span>
+          <span className="settings-hint">Prompt for a save location before each download</span>
+        </div>
         <Toggle checked={settings.askDownloadLocation} onChange={v => set("askDownloadLocation", v)} />
       </div>
       <div className="settings-row">
@@ -594,7 +609,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Confirm before closing multiple tabs</span>
-          <span className="settings-hint">Show a warning when closing more than one tab at once</span>
+          <span className="settings-hint">Warn when closing a workspace or window with multiple tabs</span>
         </div>
         <Toggle checked={settings.confirmCloseMultiple} onChange={v => set("confirmCloseMultiple", v)} />
       </div>
@@ -610,8 +625,13 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
           max={200}
           value={settings.maxTabs}
           onChange={e => {
-            const v = Math.max(10, Math.min(200, parseInt(e.target.value) || 50));
-            set("maxTabs", v);
+            const raw = parseInt(e.target.value);
+            if (isNaN(raw)) return;
+            set("maxTabs", raw);
+          }}
+          onBlur={() => {
+            const clamped = Math.max(10, Math.min(200, settings.maxTabs));
+            if (clamped !== settings.maxTabs) set("maxTabs", clamped);
           }}
         />
       </div>
@@ -645,7 +665,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Clear data on exit</span>
-          <span className="settings-hint">Clear history and cookies when closing the browser</span>
+          <span className="settings-hint">Clear browsing history, cookies, cache, and local storage on close</span>
         </div>
         <Toggle checked={settings.clearDataOnExit} onChange={v => set("clearDataOnExit", v)} />
       </div>
@@ -658,8 +678,8 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Block autoplay</span>
-          <span className="settings-hint">Control media autoplay behavior (takes effect on restart)</span>
+          <span>Autoplay policy</span>
+          <span className="settings-hint">Control media autoplay behavior. Requires restart to apply.</span>
         </div>
         <Select
           value={settings.autoplayPolicy}
@@ -670,7 +690,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>DNS protection</span>
-          <span className="settings-hint">Encrypted DNS with tracker blocking. Strict adds CNAME uncloaking.</span>
+          <span className="settings-hint">Standard: encrypted DNS. Strict: also detects hidden trackers. Maximum: no fallback, may break some sites.</span>
         </div>
         <Select
           value={settings.dnsLevel || "strict"}
@@ -697,49 +717,42 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Disable DevTools</span>
-          <span className="settings-hint">Prevents F12 / Inspect Element in tabs</span>
+          <span className="settings-hint">Prevents opening developer tools in tabs</span>
         </div>
         <Toggle checked={settings.disableDevTools} onChange={v => set("disableDevTools", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Disable status bar</span>
-          <span className="settings-hint">Hides URL preview on link hover</span>
-        </div>
-        <Toggle checked={settings.disableStatusBar} onChange={v => set("disableStatusBar", v)} />
-      </div>
-      <div className="settings-row">
-        <div className="settings-label">
-          <span>Disable autofill</span>
-          <span className="settings-hint">Prevents form auto-completion</span>
+          <span>Disable form autofill</span>
+          <span className="settings-hint">Prevents auto-completion of addresses, emails, and other form fields</span>
         </div>
         <Toggle checked={settings.disableAutofill} onChange={v => set("disableAutofill", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Disable password autosave</span>
-          <span className="settings-hint">Browser won't offer to save passwords</span>
+          <span>Disable password save prompts</span>
+          <span className="settings-hint">Never prompt to save or update passwords (vault is unaffected)</span>
         </div>
         <Toggle checked={settings.disablePasswordSave} onChange={v => set("disablePasswordSave", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Block service workers</span>
-          <span className="settings-hint">Prevents sites from registering service workers (breaks PWAs)</span>
+          <span>Block background scripts</span>
+          <span className="settings-hint">Prevents sites from running code in the background (disables offline apps and push notifications)</span>
         </div>
         <Toggle checked={settings.blockServiceWorkers} onChange={v => set("blockServiceWorkers", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Block font enumeration</span>
-          <span className="settings-hint">Prevents sites from detecting installed fonts</span>
+          <span>Block font detection</span>
+          <span className="settings-hint">Prevents sites from listing your installed fonts to fingerprint you</span>
         </div>
         <Toggle checked={settings.blockFontEnumeration} onChange={v => set("blockFontEnumeration", v)} />
       </div>
       <div className="settings-row">
         <div className="settings-label">
-          <span>Spoof CPU core count</span>
-          <span className="settings-hint">Reports 4 cores instead of real count</span>
+          <span>Hide CPU info</span>
+          <span className="settings-hint">Reports a generic CPU core count to prevent hardware fingerprinting</span>
         </div>
         <Toggle checked={settings.spoofHardwareConcurrency} onChange={v => set("spoofHardwareConcurrency", v)} />
       </div>
@@ -857,7 +870,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       <div className="settings-row">
         <div className="settings-label">
           <span>Compact mode</span>
-          <span className="settings-hint">Auto-hide sidebar (Ctrl+Shift+B)</span>
+          <span className="settings-hint">Auto-hide sidebar, reveal on hover</span>
         </div>
         <Toggle checked={settings.compactMode} onChange={v => set("compactMode", v)} />
       </div>
@@ -874,6 +887,13 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
           <span className="settings-hint">Hide the full path, show just the domain</span>
         </div>
         <Toggle checked={settings.showDomainOnly} onChange={v => set("showDomainOnly", v)} />
+      </div>
+      <div className="settings-row">
+        <div className="settings-label">
+          <span>Show status bar</span>
+          <span className="settings-hint">Show URL preview at the bottom when hovering links</span>
+        </div>
+        <Toggle checked={!settings.disableStatusBar} onChange={v => set("disableStatusBar", !v)} />
       </div>
     </section>
   );
@@ -1011,7 +1031,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
           <div className="settings-subsection">
             <h3 className="settings-subsection-title">Data Types</h3>
             <div className="settings-row">
-              <div className="settings-label"><span>Sync bookmarks</span></div>
+              <div className="settings-label">
+                <span>Sync bookmarks</span>
+                <span className="settings-hint">Share bookmarks and folders across devices</span>
+              </div>
               <Toggle checked={syncTypes.bookmarks} onChange={v => {
                 const next = { ...syncTypes, bookmarks: v };
                 setSyncTypes(next);
@@ -1019,7 +1042,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               }} />
             </div>
             <div className="settings-row">
-              <div className="settings-label"><span>Sync history</span></div>
+              <div className="settings-label">
+                <span>Sync history</span>
+                <span className="settings-hint">Share browsing history across devices</span>
+              </div>
               <Toggle checked={syncTypes.history} onChange={v => {
                 const next = { ...syncTypes, history: v };
                 setSyncTypes(next);
@@ -1027,7 +1053,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               }} />
             </div>
             <div className="settings-row">
-              <div className="settings-label"><span>Sync settings</span></div>
+              <div className="settings-label">
+                <span>Sync settings</span>
+                <span className="settings-hint">Keep preferences consistent across devices</span>
+              </div>
               <Toggle checked={syncTypes.settings} onChange={v => {
                 const next = { ...syncTypes, settings: v };
                 setSyncTypes(next);
@@ -1035,7 +1064,10 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               }} />
             </div>
             <div className="settings-row">
-              <div className="settings-label"><span>Sync open tabs</span></div>
+              <div className="settings-label">
+                <span>Sync open tabs</span>
+                <span className="settings-hint">See tabs open on your other devices</span>
+              </div>
               <Toggle checked={syncTypes.tabs} onChange={v => {
                 const next = { ...syncTypes, tabs: v };
                 setSyncTypes(next);
@@ -1051,7 +1083,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                 <span className="settings-hint">Backs up current sync data and starts fresh. Bookmarks are preserved locally.</span>
               </div>
               <button className="settings-remove-btn" onClick={async () => {
-                if (!confirm("Reset all sync data? Local data is preserved, but the CRDT history is wiped.")) return;
+                if (!confirm("Reset all sync data? Your local bookmarks and history are preserved, but sync state will start fresh.")) return;
                 try {
                   await invoke("reset_sync_data");
                   invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
@@ -1192,8 +1224,9 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
   };
 
   const renderPasswords = () => {
+    const q = vaultSearch.toLowerCase();
     const filtered = vaultEntries.filter(e =>
-      e.domain.includes(vaultSearch.toLowerCase()) || e.username.toLowerCase().includes(vaultSearch.toLowerCase())
+      e.domain.toLowerCase().includes(q) || e.username.toLowerCase().includes(q)
     );
 
     return (
@@ -1203,7 +1236,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         {!vaultHasMaster ? (
           <div className="settings-row" style={{ flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
             <p style={{ opacity: 0.6, fontSize: 13 }}>Set a master password to enable the vault.</p>
-            <form onSubmit={e => { e.preventDefault(); const f = e.target as HTMLFormElement; const pw = (f.elements.namedItem("pw") as HTMLInputElement).value; const pw2 = (f.elements.namedItem("pw2") as HTMLInputElement).value; if (pw !== pw2) { alert("Passwords don't match"); return; } vaultSetup(pw); }} style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 300 }}>
+            <form onSubmit={e => { e.preventDefault(); const f = e.target as HTMLFormElement; const pw = (f.elements.namedItem("pw") as HTMLInputElement).value; const pw2 = (f.elements.namedItem("pw2") as HTMLInputElement).value; if (pw !== pw2) { useUiStore.getState().showError("Passwords don't match"); return; } vaultSetup(pw); }} style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 300 }}>
               <input name="pw" type="password" placeholder="Master password" minLength={8} required className="settings-input" />
               <input name="pw2" type="password" placeholder="Confirm" minLength={8} required className="settings-input" />
               <button type="submit" className="settings-about-btn">Set Master Password</button>
@@ -1228,7 +1261,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                 className="settings-input"
                 style={{ maxWidth: 300 }}
               />
-              <button className="settings-about-btn" onClick={() => { invoke("vault_lock"); setVaultUnlocked(false); setVaultEntries([]); }}>
+              <button className="settings-about-btn" onClick={() => { invoke("vault_lock").catch(() => {}); setVaultUnlocked(false); setVaultEntries([]); }}>
                 Lock Vault
               </button>
             </div>
@@ -1274,6 +1307,34 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               </div>
             )}
           </>
+        )}
+
+        <h2 className="settings-section-title" style={{ marginTop: 24 }}>Vault Settings</h2>
+        <div className="settings-row">
+          <div className="settings-label">
+            <span>Auto-lock vault</span>
+            <span className="settings-hint">Lock the vault automatically when idle</span>
+          </div>
+          <Toggle checked={settings.vaultAutoLock} onChange={v => set("vaultAutoLock", v)} />
+        </div>
+        {settings.vaultAutoLock && (
+          <div className="settings-row">
+            <div className="settings-label">
+              <span>Lock timeout</span>
+              <span className="settings-hint">Lock after this many minutes of inactivity (0 = on app close)</span>
+            </div>
+            <Select
+              value={settings.vaultLockTimeout}
+              options={[
+                { value: 0, label: "On app close" },
+                { value: 5, label: "5 minutes" },
+                { value: 15, label: "15 minutes" },
+                { value: 30, label: "30 minutes" },
+                { value: 60, label: "1 hour" },
+              ]}
+              onChange={(v: number) => set("vaultLockTimeout", v)}
+            />
+          </div>
         )}
       </section>
     );
