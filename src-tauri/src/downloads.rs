@@ -123,7 +123,9 @@ impl RateLimiter {
                 return;
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let deficit = bytes.saturating_sub(current);
+            let wait_ms = ((deficit as f64 / limit as f64) * 1000.0).ceil() as u64;
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms.max(1))).await;
         }
     }
 }

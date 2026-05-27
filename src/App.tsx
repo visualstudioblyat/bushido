@@ -18,6 +18,7 @@ import AnnotationEditor from "./components/AnnotationEditor";
 import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
 import GlanceOverlay from "./components/GlanceOverlay";
+import PerfOverlay from "./components/PerfOverlay";
 import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone, PermissionRequest } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf, detectDropZone } from "./splitLayout";
 import { useTabStore } from "./store/tabStore";
@@ -183,6 +184,8 @@ export default function App() {
   const syncPairedDevices = useSyncStore(s => s.syncPairedDevices);
   const setSyncPairedDevices = useSyncStore(s => s.setSyncPairedDevices);
 
+  const [perfOpen, setPerfOpen] = useState(false);
+  const [tabPreview, setTabPreview] = useState<string | null>(null);
   const [networkEntries, setNetworkEntries] = useState<NetworkEntry[]>([]);
   const networkEntriesRef = useRef<NetworkEntry[]>([]);
   const [cookieToast, setCookieToast] = useState(false);
@@ -202,6 +205,7 @@ export default function App() {
   const bookmarkBulkRef = useRef(false);
   const prevSettingsRef = useRef<BushidoSettings | null>(null);
   const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
+  const tabThumbnails = useRef<Map<string, string>>(new Map());
   const zoomRef = useRef<Record<string, number>>({});
   const [zoomDisplay, setZoomDisplay] = useState<Record<string, number>>({});
   const pageCtxRef = useRef<HTMLDivElement>(null);
@@ -237,6 +241,7 @@ export default function App() {
   const activeTab = activeWs?.activeTabId || "";
   const paneLayout = activeWs?.paneLayout;
   const paneTabIds = useMemo(() => paneLayout ? allLeafIds(paneLayout) : [], [paneLayout]);
+  const paneTabIdSet = useMemo(() => new Set(paneTabIds), [paneTabIds]);
   const currentWsTabs = useMemo(() => tabs.filter(t => t.workspaceId === activeWorkspaceId), [tabs, activeWorkspaceId]);
   const sidebarW = compactMode ? 3 : sidebarOpen ? 300 : 54;
   const panelW = activePanelId && !compactMode ? PANEL_W : 0;
@@ -400,14 +405,25 @@ export default function App() {
         setActiveWorkspaceId(session.activeWorkspaceId);
         setCompactMode(restoredCompact);
 
-        // create webviews for all restored tabs
+        // progressive restore: only create the active tab's webview immediately,
+        // defer all others as "destroyed" — they'll be created on first click
         const restoredSidebarW = restoredCompact ? 3 : 300;
         const restoredTopOffset = 40;
         const firstActiveWs = restoredWs.find(w => w.id === session.activeWorkspaceId);
+        const activePaneIds = new Set<string>();
+        if (firstActiveWs?.activeTabId) activePaneIds.add(firstActiveWs.activeTabId);
+        if (firstActiveWs?.paneLayout) {
+          for (const lid of allLeafIds(firstActiveWs.paneLayout)) activePaneIds.add(lid);
+        }
         restoredTabs.forEach(t => {
-          if (!t.url.startsWith("bushido://") && !t.suspended) {
+          if (t.url.startsWith("bushido://") || t.suspended) return;
+          if (activePaneIds.has(t.id)) {
             invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, profileName: t.workspaceId, ...tabArgs });
             clearLoading(t.id);
+          } else {
+            t.memoryState = "destroyed";
+            t.suspended = true;
+            t.loading = false;
           }
         });
         if (firstActiveWs?.activeTabId) {
@@ -1002,7 +1018,7 @@ export default function App() {
       setTabs(prev => {
         let changed = false;
         const next = prev.map(t => {
-          if (t.id === activeTab || paneTabIds.includes(t.id)) return t;
+          if (t.id === activeTab || paneTabIdSet.has(t.id)) return t;
           if (t.pinned || t.url.startsWith("bushido://")) return t;
           if (t.memoryState === "destroyed") return t;
           if (t.mediaState === "playing") return t;
@@ -1030,7 +1046,7 @@ export default function App() {
       });
     }, 15_000);
     return () => clearInterval(interval);
-  }, [activeTab, paneTabIds, settings.suspendTimeout]);
+  }, [activeTab, paneTabIdSet, settings.suspendTimeout]);
 
   // --- workspace operations ---
 
@@ -1279,6 +1295,18 @@ export default function App() {
     const ws = workspaces.find(w => w.id === activeWorkspaceId);
     const isInternal = targetTab?.url === NTP_URL || targetTab?.url === SETTINGS_URL;
 
+    // capture thumbnail of outgoing tab for instant-swap on future restore
+    const outgoing = ws?.activeTabId;
+    if (outgoing && outgoing !== id && !tabs.find(t => t.id === outgoing)?.url.startsWith("bushido://")) {
+      invoke<string>("capture_visible", { id: outgoing }).then(b64 => {
+        tabThumbnails.current.set(outgoing, b64);
+        if (tabThumbnails.current.size > 100) {
+          const first = tabThumbnails.current.keys().next().value;
+          if (first) tabThumbnails.current.delete(first);
+        }
+      }).catch(() => {});
+    }
+
     setTabs(prev => prev.map(t => t.id === id ? { ...t, lastActiveAt: Date.now() } : t));
 
     // if tab is already in a pane, just change focus (no layout change)
@@ -1308,10 +1336,13 @@ export default function App() {
       setTabs(prev => prev.map(t => t.id === id ? { ...t, memoryState: "active" as const, lastActiveAt: Date.now() } : t));
       syncLayout(updated);
     } else if (targetTab?.suspended || targetTab?.memoryState === "destroyed") {
-      // full recreate — page reload required
+      // show cached thumbnail while webview loads
+      const thumb = tabThumbnails.current.get(id);
+      if (thumb) setTabPreview(thumb);
       const sr = settingsRef.current;
       invoke("create_tab", { id, url: targetTab.url, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetTab.workspaceId, ...secArgs(sr) }).then(() => {
         syncLayout(updated);
+        setTimeout(() => setTabPreview(null), 300);
       });
       clearLoading(id);
       setTabs(prev => prev.map(t => t.id === id ? { ...t, suspended: false, memoryState: "active" as const, loading: true, lastActiveAt: Date.now() } : t));
@@ -1863,29 +1894,32 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [urlQuery, settings.searchSuggestions, settings.searchEngine]);
 
-  // frecency suggestions for URL bar
+  // frecency suggestions for URL bar — cap scan at 50 matches to bound work on large histories
   const suggestions = useMemo((): FrecencyResult[] => {
     if (!urlQuery || urlQuery.length < 2) return [];
     const q = urlQuery.toLowerCase();
-    const map = new Map<string, FrecencyResult>();
+    const matches: FrecencyResult[] = [];
 
     for (const h of historyEntries) {
       if (h.url.toLowerCase().includes(q) || h.title.toLowerCase().includes(q)) {
-        map.set(h.url, { url: h.url, title: h.title, favicon: h.favicon, score: frecencyScore(h.visitCount, h.lastVisitAt), type: 'history' });
+        matches.push({ url: h.url, title: h.title, favicon: h.favicon, score: frecencyScore(h.visitCount, h.lastVisitAt), type: 'history' });
+        if (matches.length >= 50) break;
       }
     }
     for (const b of bookmarkData.bookmarks) {
       if (b.url.toLowerCase().includes(q) || b.title.toLowerCase().includes(q)) {
         const s = frecencyScore(1, b.createdAt) + 200;
-        const existing = map.get(b.url);
-        if (!existing || s > existing.score) map.set(b.url, { url: b.url, title: b.title, favicon: b.favicon, score: s, type: 'bookmark' });
+        const idx = matches.findIndex(m => m.url === b.url);
+        if (idx >= 0) { if (s > matches[idx].score) matches[idx] = { url: b.url, title: b.title, favicon: b.favicon, score: s, type: 'bookmark' }; }
+        else matches.push({ url: b.url, title: b.title, favicon: b.favicon, score: s, type: 'bookmark' });
       }
     }
 
-    const frecency = Array.from(map.values()).sort((a, b) => b.score - a.score).slice(0, 6);
+    matches.sort((a, b) => b.score - a.score);
+    const frecency = matches.slice(0, 6);
 
     for (const s of searchSugs) {
-      if (!map.has(s)) {
+      if (!matches.some(m => m.url === s)) {
         frecency.push({ url: s, title: s, score: 0, type: 'search' });
       }
     }
@@ -2044,6 +2078,7 @@ export default function App() {
       if (ctrl && e.shiftKey && e.key === "I") { e.preventDefault(); invoke("toggle_devtools", { id: activeTab }); }
       if (ctrl && e.key === "d" && !e.shiftKey) { e.preventDefault(); toggleBookmark(); }
       if (ctrl && e.key === "h" && !e.shiftKey) { e.preventDefault(); setHistoryOpen(p => !p); }
+      if (ctrl && e.shiftKey && e.key === "P") { e.preventDefault(); setPerfOpen(p => !p); }
       if (ctrl && e.key === "p" && !e.shiftKey) { e.preventDefault(); invoke("print_tab", { id: activeTab }); }
       if (ctrl && e.key === "j" && !e.shiftKey) { e.preventDefault(); setDownloadsOpen(p => !p); }
       if (ctrl && e.key === "r" && !e.shiftKey) { e.preventDefault(); invoke("reload_tab", { id: activeTab }); }
@@ -2319,6 +2354,7 @@ export default function App() {
           onRestoreWebview={() => syncLayout()}
         />
       )}
+      <PerfOverlay visible={perfOpen} />
       {glance && (
         <GlanceOverlay
           url={glance.url}
@@ -2517,7 +2553,14 @@ export default function App() {
               onImportHistory={handleImportHistory}
             />
           ) : (
-            <WebviewPanel />
+            <>
+              <WebviewPanel />
+              {tabPreview && (
+                <div className="tab-preview-overlay" style={{ position: "absolute", inset: 0, zIndex: 5, background: "var(--bg-primary)" }}>
+                  <img src={`data:image/png;base64,${tabPreview}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" />
+                </div>
+              )}
+            </>
           )}
           {dividers.length > 0 && (
             <SplitOverlay

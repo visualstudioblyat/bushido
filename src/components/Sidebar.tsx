@@ -352,6 +352,25 @@ export default memo(function Sidebar({
   const [panelDropIdx, setPanelDropIdx] = useState<number | null>(null);
   const prevPlayingTabId = useRef<string | undefined>(undefined);
 
+  const bookmarksByFolder = useMemo(() => {
+    const map = new Map<string, typeof bookmarks>();
+    const ungrouped: typeof bookmarks = [];
+    const folderIds = new Set(bookmarkFolders.map(f => f.id));
+    for (const b of bookmarks) {
+      if (b.folderId && folderIds.has(b.folderId)) {
+        let arr = map.get(b.folderId);
+        if (!arr) { arr = []; map.set(b.folderId, arr); }
+        arr.push(b);
+      } else {
+        ungrouped.push(b);
+      }
+    }
+    for (const arr of map.values()) arr.sort((a, b) => a.order - b.order);
+    ungrouped.sort((a, b) => a.order - b.order);
+    map.set("__ungrouped__", ungrouped);
+    return map;
+  }, [bookmarks, bookmarkFolders]);
+
   // Reset dismiss when a different tab starts playing
   useEffect(() => {
     if (playingTab?.id !== prevPlayingTabId.current) {
@@ -437,6 +456,8 @@ export default memo(function Sidebar({
     return matchQuickActions(actionQuery);
   }, [urlFocused, actionQuery]);
 
+  const preconnected = useRef(new Set<string>());
+
   // Total selectable items = suggestions + quick actions
   const totalItems = suggestions.length + quickActions.length;
 
@@ -481,12 +502,20 @@ export default memo(function Sidebar({
     if (!urlFocused || totalItems === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIdx(p => Math.min(p + 1, totalItems - 1));
+      setSelectedIdx(p => {
+        const next = Math.min(p + 1, totalItems - 1);
+        const s = suggestions[next];
+        if (s && s.type !== 'search' && s.url.startsWith("http") && !preconnected.current.has(s.url)) {
+          preconnected.current.add(s.url);
+          invoke("preconnect_url", { url: s.url }).catch(() => {});
+        }
+        return next;
+      });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIdx(p => Math.max(p - 1, -1));
     }
-  }, [urlFocused, totalItems]);
+  }, [urlFocused, totalItems, suggestions]);
 
   const displayUrl = useMemo(() => {
     if (urlFocused) return urlInput;
@@ -987,6 +1016,12 @@ export default memo(function Sidebar({
                       key={s.url}
                       className={`suggestion-item ${i === selectedIdx ? "selected" : ""}`}
                       onMouseDown={(e) => { e.preventDefault(); onSuggestionSelect(s.url); }}
+                      onMouseEnter={() => {
+                        if (s.type !== 'search' && s.url.startsWith("http") && !preconnected.current.has(s.url)) {
+                          preconnected.current.add(s.url);
+                          invoke("preconnect_url", { url: s.url }).catch(() => {});
+                        }
+                      }}
                     >
                       <div className="suggestion-favicon">
                         {s.favicon ? <img src={s.favicon} alt="" width={14} height={14} /> : <span className="tab-favicon-placeholder">{(s.title || s.url || '?')[0]}</span>}
@@ -1211,7 +1246,7 @@ export default memo(function Sidebar({
                     <div ref={bmListRef}>
                       {/* Folders */}
                       {[...bookmarkFolders].sort((a, b) => a.order - b.order).map(folder => {
-                        const folderBookmarks = bookmarks.filter(b => b.folderId === folder.id).sort((a, b) => a.order - b.order);
+                        const folderBookmarks = bookmarksByFolder.get(folder.id) || [];
                         const isExpanded = expandedFolders.has(folder.id);
                         return (
                           <div key={folder.id}>
@@ -1356,7 +1391,7 @@ export default memo(function Sidebar({
                         );
                       })}
                       {/* Unfiled bookmarks (no folder) */}
-                      {bookmarks.filter(b => !b.folderId || !bookmarkFolders.some(f => f.id === b.folderId)).sort((a, b) => a.order - b.order).map(b => (
+                      {(bookmarksByFolder.get("__ungrouped__") || []).map(b => (
                         <div
                           key={b.id}
                           className={`bookmark-item ${bmDragId === b.id ? "bm-dragging" : ""} ${bmDropId === b.id ? "bm-drop-target" : ""}`}

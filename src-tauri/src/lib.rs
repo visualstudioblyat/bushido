@@ -1,3 +1,4 @@
+mod bench;
 mod blocker;
 mod crash_log;
 pub mod dns_resolver;
@@ -238,6 +239,137 @@ async fn set_power_mode(low: bool) -> Result<(), String> {
         if low { trim_working_set(); }
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn get_perf_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let tab_count = {
+        let wv = app.state::<WebviewState>();
+        let count = wv.tabs.lock().len();
+        count
+    };
+    #[cfg(windows)]
+    let (mem_working_set, mem_private) = {
+        use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        use std::mem::{size_of, zeroed};
+        unsafe {
+            let mut counters: PROCESS_MEMORY_COUNTERS = zeroed();
+            counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+            (counters.WorkingSetSize as u64, counters.PagefileUsage as u64)
+        }
+    };
+
+    #[cfg(not(windows))]
+    let (mem_working_set, mem_private) = (0u64, 0u64);
+
+    Ok(serde_json::json!({
+        "tabCount": tab_count,
+        "memoryWorkingSetMB": (mem_working_set as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+        "memoryPrivateMB": (mem_private as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+    }))
+}
+
+#[tauri::command]
+async fn preconnect_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let host = parsed.host_str().ok_or("no host")?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addr = format!("{}:{}", host, port);
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::net::TcpStream::connect(&addr),
+        ).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_benchmarks(app: tauri::AppHandle) -> Result<Vec<bench::BenchResult>, String> {
+    let mut results = Vec::new();
+
+    // 1. Ad blocker request check
+    {
+        let bs = app.state::<BlockerState>();
+        let engine = bs.engine.clone();
+        let urls = [
+            ("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", "script"),
+            ("https://www.example.com/style.css", "stylesheet"),
+            ("https://cdn.analytics.example.com/tracker.js", "script"),
+            ("https://fonts.googleapis.com/css2?family=Inter", "stylesheet"),
+            ("https://example.com/image.png", "image"),
+        ];
+        results.push(bench::run_bench("ad_blocker_check", 10000, || {
+            let guard = engine.read();
+            for (url, rtype) in &urls {
+                if let Ok(req) = adblock::request::Request::new(url, "https://example.com", rtype) {
+                    let _ = guard.check_network_request(&req);
+                }
+            }
+        }));
+    }
+
+    // 2. Tracking param stripping
+    {
+        let urls = [
+            "https://example.com/page?utm_source=google&utm_medium=cpc&ref=123&id=456",
+            "https://clean.example.com/path",
+            "https://example.com/?fbclid=abc123&foo=bar",
+        ];
+        results.push(bench::run_bench("strip_tracking_params", 10000, || {
+            for url in &urls {
+                let _ = blocker::strip_tracking_params(url);
+            }
+        }));
+    }
+
+    // 3. Tab state lock acquisition
+    {
+        let wv = app.state::<WebviewState>();
+        results.push(bench::run_bench("tab_state_lock", 100000, || {
+            let guard = wv.tabs.lock();
+            let _ = guard.len();
+            drop(guard);
+        }));
+    }
+
+    // 4. Session JSON serialization (simulated)
+    {
+        let data = serde_json::json!({
+            "tabs": (0..50).map(|i| serde_json::json!({
+                "id": format!("tab-{}", i),
+                "url": format!("https://example{}.com/page", i),
+                "title": format!("Example Page {}", i),
+                "loading": false,
+                "workspaceId": "ws-1"
+            })).collect::<Vec<_>>(),
+            "workspaces": [{"id": "ws-1", "name": "Home", "color": "#6366f1", "activeTabId": "tab-0"}],
+            "activeWorkspaceId": "ws-1"
+        });
+        let json_str = serde_json::to_string(&data).unwrap();
+        results.push(bench::run_bench("session_deserialize_50_tabs", 5000, || {
+            let _: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        }));
+    }
+
+    // 5. Process memory snapshot (Win32 API call cost)
+    #[cfg(windows)]
+    {
+        results.push(bench::run_bench("memory_snapshot", 10000, || {
+            use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+            use windows::Win32::System::Threading::GetCurrentProcess;
+            use std::mem::{size_of, zeroed};
+            unsafe {
+                let mut counters: PROCESS_MEMORY_COUNTERS = zeroed();
+                counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+                let _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+            }
+        }));
+    }
+
+    Ok(results)
 }
 
 #[tauri::command]
@@ -3066,7 +3198,10 @@ pub fn run() {
             clear_workspace_data,
             set_tab_pinned,
             set_power_mode,
-            update_filter_lists
+            update_filter_lists,
+            get_perf_metrics,
+            run_benchmarks,
+            preconnect_url
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

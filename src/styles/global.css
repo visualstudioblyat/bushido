@@ -1510,7 +1510,6 @@ html, body, #root {
   transform: translateX(-100%);
   box-shadow: none;
   border-right: none;
-  will-change: transform, opacity;
 }
 
 .sidebar.compact::after {
@@ -5806,6 +5805,84 @@ html.light .webview {
 .ws-dot-emoji {
   font-size: 15px;
   line-height: 1;
+}
+
+/* ========== PERF OVERLAY ========== */
+.perf-overlay {
+  position: fixed;
+  top: 48px;
+  right: 12px;
+  z-index: 99999;
+  background: rgba(9, 9, 11, 0.92);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  min-width: 170px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.perf-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.perf-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.perf-good { color: var(--success); }
+.perf-warn { color: #f59e0b; }
+.perf-bad { color: var(--danger); }
+
+.perf-divider {
+  height: 1px;
+  background: var(--glass-border);
+  margin: 8px 0;
+}
+
+.perf-bench-btn {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-family: inherit;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: background var(--transition);
+}
+
+.perf-bench-btn:hover { background: var(--glass-hover); }
+.perf-bench-btn:disabled { opacity: 0.5; cursor: default; }
+
+.perf-bench-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.perf-bench-name {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: capitalize;
+}
+
+.perf-bench-val {
+  font-size: 11px;
+  color: var(--text-primary);
 }
 
 /* ========== GLOBAL REDUCED MOTION ========== */
