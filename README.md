@@ -63,15 +63,15 @@ Manifest V3 restricted what ad-blocking extensions can do. Digidaw doesn't care 
 ## Building from Source
 
 ```bash
-# prerequisites: node.js, rust, tauri cli
-npm install
-npx tauri dev
+# prerequisites: bun, rust, tauri cli
+bun install
+bun run tauri dev
 ```
 
 For a production build:
 
 ```bash
-npm run tauri build
+bun run tauri build
 ```
 
 The installer lands in `src-tauri/target/release/bundle/`.
