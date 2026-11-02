@@ -3,7 +3,7 @@
 Per-file migration checklist for the React → Vue port. Strategy and conventions
 live in [VUE_MIGRATION.md](./VUE_MIGRATION.md); this doc tracks what's done and what's left.
 
-Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow)
+Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow) · wave 5a (Sidebar)
 
 **Legend:** ✅ ported · 🟡 partial (skeleton, not at parity) · ⬜ not started · ➖ shared, imported from `src/` (no port needed)
 
@@ -12,11 +12,11 @@ Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `
 | Area | Done | Total | Notes |
 |---|---|---|---|
 | Stores | 7/7 | 7 | All zustand stores → Pinia setup stores (`9bcf0f1`) |
-| Components | 15/17 | 17 | `NewTabPage`, wave 1 overlays, wave 2 panels, wave 3 interactive, wave 4 screenshot flow |
+| Components | 16/17 | 17 | + wave 5a `Sidebar` (biggest/riskiest: tab+ws+bookmark+panel DnD, ctx menus, url bar) |
 | Entry/shell | 0/2 | 2 | `main.ts` exists; `App.vue` is a proof-of-concept shell only |
 | Shared TS/CSS | ➖ | 5 | Imported directly from `src/`, kept as source of truth |
 
-By line count: ~2,512 of ~8,736 lines of component/entry code (≈29%). The React app is the shipping entry until parity.
+By line count: ~4,435 of ~8,736 lines of component/entry code (≈51%). The React app is the shipping entry until parity.
 
 ## Stores
 
@@ -57,7 +57,7 @@ By line count: ~2,512 of ~8,736 lines of component/entry code (≈29%). The Reac
 | `Onboarding.tsx` | 378 | `Onboarding.vue` | ✅ | JSX icon components → functional components via `h()` + `<component :is>`; `useTransition` dropped (scheduling detail) |
 | `AnnotationEditor.tsx` | 444 | `AnnotationEditor.vue` | ✅ | React stale-closure mirror refs dropped — listeners read `tool/color/thickness` refs directly; `size` made reactive for template; undo/redo stacks non-reactive, lengths reactive; tool icons via `v-html` constants |
 | `SettingsPage.tsx` | 1,421 | — | ⬜ | Reads `uiStore` directly; 17 invokes — most IPC-heavy component |
-| `Sidebar.tsx` | 1,923 | — | ⬜ | Biggest UI: tab/workspace tree, drag & drop, context menus; 6 invokes |
+| `Sidebar.tsx` | 1,923 | `Sidebar.vue` | ✅ | Callbacks kept as function props (1:1, not emits); `useClampedMenu` → composable fn; DnD handlers as methods; `new URL`/`window`/`Date.now` moved to script (Vue template globals); `inputRef` passed as ref-like object; v-for rename inputs use function refs |
 
 ## Shared (no port needed)
 
@@ -87,7 +87,7 @@ Dependency- and risk-aware; each wave is independently verifiable via
 2. ~~**Panels**: `HistoryPanel`, `NetworkPanel`, `DownloadPanel`~~ ✅ done (`e2292a7`)
 3. ~~**Interactive**: `CommandPalette`, `PairingWizard`, `Onboarding`~~ ✅ done (`0c9ce6b`)
 4. ~~**Screenshot flow**: `ScreenshotOverlay` → `AnnotationEditor` (port together, they pair)~~ ✅ done
-5. **Big ones, one PR each**: `Sidebar` (drag & drop is the risk hotspot) → `SettingsPage` (IPC-heavy)
+5. **Big ones, one PR each**: ~~`Sidebar` (drag & drop is the risk hotspot)~~ ✅ wave 5a → `SettingsPage` (IPC-heavy) wave 5b
 6. **App shell last**: port `App.tsx` into `App.vue` incrementally — tab lifecycle + split layout + Tauri events — wiring each wave as it lands, then cutover per VUE_MIGRATION.md
 
 Update this file (status column + snapshot line) as waves land.
