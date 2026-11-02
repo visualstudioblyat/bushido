@@ -3,7 +3,7 @@
 Per-file migration checklist for the React → Vue port. Strategy and conventions
 live in [VUE_MIGRATION.md](./VUE_MIGRATION.md); this doc tracks what's done and what's left.
 
-Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow) · wave 5a (Sidebar)
+Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow) · wave 5a (Sidebar) · wave 6 (SettingsPage)
 
 **Legend:** ✅ ported · 🟡 partial (skeleton, not at parity) · ⬜ not started · ➖ shared, imported from `src/` (no port needed)
 
@@ -12,11 +12,11 @@ Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `
 | Area | Done | Total | Notes |
 |---|---|---|---|
 | Stores | 7/7 | 7 | All zustand stores → Pinia setup stores (`9bcf0f1`) |
-| Components | 16/17 | 17 | + wave 5a `Sidebar` (biggest/riskiest: tab+ws+bookmark+panel DnD, ctx menus, url bar) |
+| Components | 17/17 | 17 | + wave 6 `SettingsPage` (all 12 tabs; last component) |
 | Entry/shell | 0/2 | 2 | `main.ts` exists; `App.vue` is a proof-of-concept shell only |
 | Shared TS/CSS | ➖ | 5 | Imported directly from `src/`, kept as source of truth |
 
-By line count: ~4,435 of ~8,736 lines of component/entry code (≈51%). The React app is the shipping entry until parity.
+By line count: ~5,856 of ~8,736 lines of component/entry code (≈67%). The React app is the shipping entry until parity.
 
 ## Stores
 
@@ -56,7 +56,7 @@ By line count: ~4,435 of ~8,736 lines of component/entry code (≈51%). The Reac
 | `ScreenshotOverlay.tsx` | 338 | `ScreenshotOverlay.vue` | ✅ | Canvas area-select; drag state as plain locals; `watch(phase, flush:post)` rewires mouse listeners |
 | `Onboarding.tsx` | 378 | `Onboarding.vue` | ✅ | JSX icon components → functional components via `h()` + `<component :is>`; `useTransition` dropped (scheduling detail) |
 | `AnnotationEditor.tsx` | 444 | `AnnotationEditor.vue` | ✅ | React stale-closure mirror refs dropped — listeners read `tool/color/thickness` refs directly; `size` made reactive for template; undo/redo stacks non-reactive, lengths reactive; tool icons via `v-html` constants |
-| `SettingsPage.tsx` | 1,421 | — | ⬜ | Reads `uiStore` directly; 17 invokes — most IPC-heavy component |
+| `SettingsPage.tsx` | 1,421 | `SettingsPage.vue` | ✅ | All 12 tabs via `v-if` chain (mirrors React switch). Inline `Toggle`/`Select` → `settings/SettingsToggle.vue` + `settings/SettingsSelect.vue`. Backup select: React's `getElementById` → `v-model` (`selectedBackupNum`). Shortcut recording: React effect deps `[action, keybindings, onUpdate]` → `watch(recordingAction)` reading fresh props (no stale closure). DEV-only debug section via `isDevMode()`. Inline styles use explicit `px` (React auto-px). About tab says "Vue" not "React". |
 | `Sidebar.tsx` | 1,923 | `Sidebar.vue` | ✅ | Callbacks kept as function props (1:1, not emits); `useClampedMenu` → composable fn; DnD handlers as methods; `new URL`/`window`/`Date.now` moved to script (Vue template globals); `inputRef` passed as ref-like object; v-for rename inputs use function refs |
 
 ## Shared (no port needed)

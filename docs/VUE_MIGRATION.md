@@ -30,7 +30,9 @@ keeping **Bun + Vite + Tauri**. Done as a parallel track so the shipping React a
 ## Remaining
 
 Tracked per-file in [PORT_STATUS.md](./PORT_STATUS.md). Short version: leaf overlays →
-panels → interactive → screenshot flow → `Sidebar` → `SettingsPage` → `App.tsx` shell last.
+panels → interactive → screenshot flow → `Sidebar` → `SettingsPage` → `App.tsx` shell.
+**Everything is ported except the `App.tsx` shell** (wiring hub: all 6 stores, ~132
+`invoke` calls, Tauri event listeners, tab lifecycle, split layout, permissions).
 
 ## Cutover (final step, one commit)
 When `src-vue/` reaches parity:
