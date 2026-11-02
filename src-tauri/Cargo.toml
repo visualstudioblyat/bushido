@@ -1,0 +1,84 @@
+[package]
+name = "bushido-browser"
+version = "0.14.0"
+description = "Bushido Browser"
+authors = ["visualstudioblyat"]
+edition = "2021"
+default-run = "bushido-browser"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "bushido_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+url = "2"
+adblock = { version = "0.12", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "css-validation"] }
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+tokio = { version = "1", features = ["fs", "macros", "rt", "net", "io-util", "time", "sync"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+base64 = "0.22"
+axum = { version = "0.8", features = ["http2"] }
+hickory-proto = "0.25"
+moka = { version = "0.12", features = ["future"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+qrcode = "0.14"
+chrono = "0.4"
+
+# LAN Sync — Phase A: Discovery + Identity
+mdns-sd = "0.13"
+snow = "0.10"
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+rmp-serde = "1"
+zeroize = "1"
+argon2 = "0.5"
+hostname = "0.4"
+parking_lot = "0.12"
+mimalloc = { version = "0.1", default-features = false }
+
+# LAN Sync — Phase B: Pairing + Encryption
+spake2 = "0.4"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+
+# LAN Sync — Phase C: Bookmark CRDT + Sync Engine
+loro = "1.10"
+lz4_flex = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
+windows = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_System_Com_StructuredStorage", "Win32_System_ProcessStatus"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
+arboard = { version = "3", features = ["image-data"] }
+
+# Workspace cookie isolation — forked crates for WebView2 profile support
+[patch.crates-io]
+wry = { path = "forks/wry" }
+tauri = { path = "forks/tauri" }
+tauri-runtime = { path = "forks/tauri-runtime" }
+tauri-runtime-wry = { path = "forks/tauri-runtime-wry" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

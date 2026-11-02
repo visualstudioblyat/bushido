@@ -1,0 +1,3211 @@
+mod bench;
+mod blocker;
+mod crash_log;
+pub mod dns_resolver;
+mod downloads;
+mod import;
+mod screenshot;
+mod sync;
+mod vault;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+use tauri::{Manager, WebviewUrl, Emitter};
+use tauri::webview::WebviewBuilder;
+use std::sync::Arc;
+use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::fs;
+use std::path::PathBuf;
+use adblock::request::Request;
+use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+struct WebviewState {
+    tabs: Mutex<HashMap<String, bool>>,
+}
+
+struct PanelState {
+    ids: Mutex<HashSet<String>>,
+}
+
+
+struct BlockerState {
+    engine: Arc<RwLock<adblock::engine::Engine>>,
+    data_dir: PathBuf,
+    scriptlet_preamble: String,
+    cosmetic_script: String,
+    cosmetic_observer_script: String,
+    cookie_script: String,
+    shortcut_script: String,
+    media_script: String,
+    fingerprint_script: String,
+    fingerprint_verify_script: String,
+    vault_script: String,
+    glance_script: String,
+    preload_script: String,
+}
+
+struct WhitelistState {
+    sites: Mutex<HashSet<String>>,
+}
+
+struct PreloadState {
+    url: Mutex<Option<String>>,
+    webview_id: Mutex<Option<String>>,
+    source_tab: Mutex<Option<String>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct NetworkLogEntry {
+    url: String,
+    resource_type: String,
+    blocked: bool,
+    filter_rule: Option<String>,
+    timestamp_ms: u64,
+}
+
+struct NetworkLog {
+    entries: Mutex<HashMap<String, VecDeque<NetworkLogEntry>>>,
+    enabled: AtomicBool,
+    pending: Mutex<HashMap<String, Vec<NetworkLogEntry>>>,
+}
+
+struct KeybindingState {
+    map: Mutex<HashMap<String, String>>,  // normalized shortcut string → action
+}
+
+// Default keybindings: (action, combo in React format "Ctrl+T")
+// next-tab/prev-tab excluded — Ctrl+Tab not capturable as global shortcut on Windows
+const DEFAULT_KEYBINDINGS: &[(&str, &str)] = &[
+    ("new-tab", "Ctrl+T"),
+    ("close-tab", "Ctrl+W"),
+    ("reopen-tab", "Ctrl+Shift+T"),
+    ("focus-url", "Ctrl+L"),
+    ("find", "Ctrl+F"),
+    ("command-palette", "Ctrl+K"),
+    ("reload", "Ctrl+R"),
+    ("fullscreen", "F11"),
+    ("bookmark", "Ctrl+D"),
+    ("history", "Ctrl+H"),
+    ("downloads", "Ctrl+J"),
+    ("toggle-sidebar", "Ctrl+B"),
+    ("toggle-compact", "Ctrl+Shift+B"),
+    ("reader-mode", "Ctrl+Shift+R"),
+    ("devtools", "Ctrl+Shift+I"),
+    ("split-view", "Ctrl+\\"),
+    ("print", "Ctrl+P"),
+    ("screenshot", "Ctrl+Shift+S"),
+    ("zoom-in", "Ctrl+="),
+    ("zoom-out", "Ctrl+-"),
+    ("zoom-reset", "Ctrl+0"),
+];
+
+/// Convert a React-format combo like "Ctrl+Shift+T" into the normalized lowercase
+/// string that the global_hotkey crate produces from Shortcut::to_string().
+/// Shortcut::to_string() outputs modifiers in order: shift+control+alt+super+ then key code.
+/// e.g. "Ctrl+Shift+T" → "shift+control+keyt", "F11" → "f11", "Ctrl+=" → "control+equal"
+fn normalize_combo(combo: &str) -> String {
+    let mut has_shift = false;
+    let mut has_ctrl = false;
+    let mut has_alt = false;
+    let mut key_part = "";
+
+    for part in combo.split('+') {
+        let trimmed = part.trim();
+        match trimmed.to_uppercase().as_str() {
+            "CTRL" | "CONTROL" => has_ctrl = true,
+            "SHIFT" => has_shift = true,
+            "ALT" | "OPTION" => has_alt = true,
+            _ => key_part = trimmed,
+        }
+    }
+
+    // Convert React key name to global_hotkey Code name
+    let key_code = match key_part.to_uppercase().as_str() {
+        s if s.len() == 1 && s.chars().next().unwrap().is_ascii_alphabetic() =>
+            format!("key{}", s.to_lowercase()),
+        "=" => "equal".into(),
+        "-" => "minus".into(),
+        "\\" => "backslash".into(),
+        "0" => "digit0".into(),
+        "1" => "digit1".into(),
+        "2" => "digit2".into(),
+        "3" => "digit3".into(),
+        "4" => "digit4".into(),
+        "5" => "digit5".into(),
+        "6" => "digit6".into(),
+        "7" => "digit7".into(),
+        "8" => "digit8".into(),
+        "9" => "digit9".into(),
+        "/" => "slash".into(),
+        "." => "period".into(),
+        "," => "comma".into(),
+        ";" => "semicolon".into(),
+        "'" => "quote".into(),
+        "`" => "backquote".into(),
+        "[" => "bracketleft".into(),
+        "]" => "bracketright".into(),
+        other => other.to_lowercase(),
+    };
+
+    // Build in the same order as HotKey::into_string: shift, control, alt, super
+    let mut result = String::new();
+    if has_shift { result.push_str("shift+"); }
+    if has_ctrl { result.push_str("control+"); }
+    if has_alt { result.push_str("alt+"); }
+    result.push_str(&key_code);
+    result
+}
+
+#[cfg(windows)]
+struct PendingPermission {
+    deferral: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral,
+    args: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2PermissionRequestedEventArgs,
+    _tab_id: String,
+}
+#[cfg(windows)]
+unsafe impl Send for PendingPermission {}
+#[cfg(windows)]
+unsafe impl Sync for PendingPermission {}
+
+struct PermissionState {
+    saved: Mutex<HashMap<String, bool>>,
+    #[cfg(windows)]
+    pending: Arc<Mutex<HashMap<String, PendingPermission>>>,
+}
+
+/// Trim working set of the current process — moves pages to the standby list,
+/// recovering 70-85% of RSS. The OS will page them back in on demand.
+#[cfg(windows)]
+fn trim_working_set() {
+    use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let _ = K32EmptyWorkingSet(GetCurrentProcess());
+    }
+}
+
+/// Enable or disable EcoQoS (Efficiency Mode) on the current process.
+/// When enabled, Windows schedules the process on E-cores and limits clock boost.
+#[cfg(windows)]
+fn set_ecoqos(enable: bool) {
+    use windows::Win32::System::Threading::*;
+    use std::mem::size_of;
+    unsafe {
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: if enable { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+        };
+        let _ = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            &state as *const _ as *const std::ffi::c_void,
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+    }
+}
+
+/// Set memory priority for the current process (0=lowest, 5=normal).
+/// Background browsers should use MEMORY_PRIORITY_VERY_LOW (1).
+#[cfg(windows)]
+fn set_memory_priority(priority: u32) {
+    use windows::Win32::System::Threading::*;
+    use std::mem::size_of;
+    unsafe {
+        let info = MEMORY_PRIORITY_INFORMATION {
+            MemoryPriority: MEMORY_PRIORITY(priority),
+        };
+        let _ = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessMemoryPriority,
+            &info as *const _ as *const std::ffi::c_void,
+            size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        );
+    }
+}
+
+/// Called by React when window is minimized (low=true) or restored (low=false).
+/// Enables EcoQoS + low memory priority when minimized, restores on focus.
+#[tauri::command]
+async fn set_power_mode(low: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        set_ecoqos(low);
+        set_memory_priority(if low { 1 } else { 5 }); // 1=VERY_LOW, 5=NORMAL
+        if low { trim_working_set(); }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_perf_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let tab_count = {
+        let wv = app.state::<WebviewState>();
+        let count = wv.tabs.lock().len();
+        count
+    };
+    #[cfg(windows)]
+    let (mem_working_set, mem_private) = {
+        use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        use std::mem::{size_of, zeroed};
+        unsafe {
+            let mut counters: PROCESS_MEMORY_COUNTERS = zeroed();
+            counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+            (counters.WorkingSetSize as u64, counters.PagefileUsage as u64)
+        }
+    };
+
+    #[cfg(not(windows))]
+    let (mem_working_set, mem_private) = (0u64, 0u64);
+
+    Ok(serde_json::json!({
+        "tabCount": tab_count,
+        "memoryWorkingSetMB": (mem_working_set as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+        "memoryPrivateMB": (mem_private as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+    }))
+}
+
+#[tauri::command]
+async fn preconnect_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let host = parsed.host_str().ok_or("no host")?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addr = format!("{}:{}", host, port);
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::net::TcpStream::connect(&addr),
+        ).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_benchmarks(app: tauri::AppHandle) -> Result<Vec<bench::BenchResult>, String> {
+    let mut results = Vec::new();
+
+    // 1. Ad blocker request check
+    {
+        let bs = app.state::<BlockerState>();
+        let engine = bs.engine.clone();
+        let urls = [
+            ("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", "script"),
+            ("https://www.example.com/style.css", "stylesheet"),
+            ("https://cdn.analytics.example.com/tracker.js", "script"),
+            ("https://fonts.googleapis.com/css2?family=Inter", "stylesheet"),
+            ("https://example.com/image.png", "image"),
+        ];
+        results.push(bench::run_bench("ad_blocker_check", 10000, || {
+            let guard = engine.read();
+            for (url, rtype) in &urls {
+                if let Ok(req) = adblock::request::Request::new(url, "https://example.com", rtype) {
+                    let _ = guard.check_network_request(&req);
+                }
+            }
+        }));
+    }
+
+    // 2. Tracking param stripping
+    {
+        let urls = [
+            "https://example.com/page?utm_source=google&utm_medium=cpc&ref=123&id=456",
+            "https://clean.example.com/path",
+            "https://example.com/?fbclid=abc123&foo=bar",
+        ];
+        results.push(bench::run_bench("strip_tracking_params", 10000, || {
+            for url in &urls {
+                let _ = blocker::strip_tracking_params(url);
+            }
+        }));
+    }
+
+    // 3. Tab state lock acquisition
+    {
+        let wv = app.state::<WebviewState>();
+        results.push(bench::run_bench("tab_state_lock", 100000, || {
+            let guard = wv.tabs.lock();
+            let _ = guard.len();
+            drop(guard);
+        }));
+    }
+
+    // 4. Session JSON serialization (simulated)
+    {
+        let data = serde_json::json!({
+            "tabs": (0..50).map(|i| serde_json::json!({
+                "id": format!("tab-{}", i),
+                "url": format!("https://example{}.com/page", i),
+                "title": format!("Example Page {}", i),
+                "loading": false,
+                "workspaceId": "ws-1"
+            })).collect::<Vec<_>>(),
+            "workspaces": [{"id": "ws-1", "name": "Home", "color": "#6366f1", "activeTabId": "tab-0"}],
+            "activeWorkspaceId": "ws-1"
+        });
+        let json_str = serde_json::to_string(&data).unwrap();
+        results.push(bench::run_bench("session_deserialize_50_tabs", 5000, || {
+            let _: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        }));
+    }
+
+    // 5. Process memory snapshot (Win32 API call cost)
+    #[cfg(windows)]
+    {
+        results.push(bench::run_bench("memory_snapshot", 10000, || {
+            use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+            use windows::Win32::System::Threading::GetCurrentProcess;
+            use std::mem::{size_of, zeroed};
+            unsafe {
+                let mut counters: PROCESS_MEMORY_COUNTERS = zeroed();
+                counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+                let _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb);
+            }
+        }));
+    }
+
+    Ok(results)
+}
+
+#[tauri::command]
+async fn update_filter_lists(app: tauri::AppHandle) -> Result<String, String> {
+    let bs = app.state::<BlockerState>();
+    let engine = bs.engine.clone();
+    let data_dir = bs.data_dir.clone();
+    blocker::update_filter_lists(data_dir, engine).await?;
+    Ok("Filter lists updated".into())
+}
+
+fn is_blocked_scheme(url: &str) -> bool {
+    let lower = url.trim().to_lowercase();
+    lower.starts_with("javascript:") || lower.starts_with("data:")
+        || lower.starts_with("file:") || lower.starts_with("vbscript:")
+        || lower.starts_with("blob:")
+        // Windows-specific dangerous URI schemes (Follina CVE-2022-30190 + friends)
+        || lower.starts_with("ms-msdt:") || lower.starts_with("search-ms:")
+        || lower.starts_with("ms-officecmd:") || lower.starts_with("ms-word:")
+        || lower.starts_with("ms-excel:") || lower.starts_with("ms-powerpoint:")
+        || lower.starts_with("ms-cxh:") || lower.starts_with("ms-cxh-full:")
+}
+
+#[tauri::command]
+async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f64, top_offset: f64, https_only: bool, ad_blocker: bool, cookie_auto_reject: bool, is_panel: bool, profile_name: Option<String>, disable_dev_tools: Option<bool>, disable_status_bar: Option<bool>, disable_autofill: Option<bool>, disable_password_save: Option<bool>, block_service_workers: Option<bool>, block_font_enum: Option<bool>, spoof_hw_concurrency: Option<bool>, block_popups: Option<bool>, default_zoom: Option<f64>, max_tabs: Option<u32>) -> Result<(), String> {
+    crash_log::log_info("create_tab", &format!("id={} url={}", id, url));
+    let disable_dev_tools = disable_dev_tools.unwrap_or(false);
+    let disable_status_bar = disable_status_bar.unwrap_or(false);
+    let disable_autofill = disable_autofill.unwrap_or(false);
+    let disable_password_save = disable_password_save.unwrap_or(false);
+    let block_service_workers = block_service_workers.unwrap_or(false);
+    let block_font_enum = block_font_enum.unwrap_or(false);
+    let _spoof_hw_concurrency = spoof_hw_concurrency.unwrap_or(false);
+    let block_popups = block_popups.unwrap_or(false);
+    let default_zoom = default_zoom.unwrap_or(100.0);
+
+    let tab_limit = max_tabs.unwrap_or(50) as usize;
+    {
+        let ws = app.state::<WebviewState>();
+        let tabs = ws.tabs.lock();
+        if tabs.len() >= tab_limit { return Err(format!("Max {} tabs", tab_limit)); }
+    }
+
+    let window = app.get_window("main").ok_or("no main window")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let content_w = (size.width as f64 / scale) - sidebar_w;
+    let content_h = (size.height as f64 / scale) - top_offset;
+
+    // block dangerous URL schemes
+    if is_blocked_scheme(&url) {
+        return Err("Blocked URL scheme".into());
+    }
+
+    // internal pages — handled by React, no webview needed
+    if url.starts_with("bushido://") {
+        return Ok(());
+    }
+
+    // https upgrade (conditional on https_only setting)
+    let final_url = if url.starts_with("https://") {
+        url.clone()
+    } else if url.starts_with("http://") {
+        if https_only { url.replacen("http://", "https://", 1) } else { url.clone() }
+    } else {
+        format!("https://{}", url)
+    };
+    let webview_url = WebviewUrl::External(
+        final_url.parse().map_err(|e: url::ParseError| e.to_string())?
+    );
+
+    let bs = app.state::<BlockerState>();
+    let engine = bs.engine.clone();
+    let scriptlet_preamble = bs.scriptlet_preamble.clone();
+    let cosmetic_script = bs.cosmetic_script.clone();
+    let cosmetic_observer_script = bs.cosmetic_observer_script.clone();
+    let cookie_script = bs.cookie_script.clone();
+    let shortcut_script = bs.shortcut_script.clone();
+    let media_script = bs.media_script.clone();
+    let fingerprint_script = bs.fingerprint_script.clone();
+    let fingerprint_verify_script = bs.fingerprint_verify_script.clone();
+    let vault_script = bs.vault_script.clone();
+    let glance_script = bs.glance_script.clone();
+
+    // check if this site is whitelisted
+    let ws = app.state::<WhitelistState>();
+    let whitelist_sites = ws.sites.lock().clone();
+    let site_domain = url::Url::parse(&final_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .unwrap_or_default();
+    let site_whitelisted = whitelist_sites.contains(&site_domain);
+
+    let tab_id_nav = id.clone();
+    let tab_id_title = id.clone();
+    let tab_id_load = id.clone();
+    let tab_id_track = id.clone();
+    let app_nav = app.clone();
+    let app_title = app.clone();
+    let app_load = app.clone();
+    let engine_for_nav = engine.clone();
+    let inject_cosmetic = cosmetic_script.clone();
+    let inject_cosmetic_observer = cosmetic_observer_script.clone();
+    let inject_cookie = cookie_script.clone();
+    let inject_shortcut = shortcut_script.clone();
+    let inject_media = media_script.clone();
+    let inject_fingerprint = fingerprint_script.clone();
+    let inject_fp_verify = fingerprint_verify_script.clone();
+    let inject_vault = vault_script.clone();
+    let inject_glance = glance_script.clone();
+    let inject_preload = bs.preload_script.clone();
+
+    // build security hardening JS (only enabled features)
+    let mut sec_parts: Vec<&str> = Vec::new();
+    if block_service_workers {
+        sec_parts.push("try{if(navigator.serviceWorker){Object.defineProperty(navigator,'serviceWorker',{get:function(){return{register:function(){return Promise.reject(new DOMException('blocked','SecurityError'))},getRegistration:function(){return Promise.resolve(undefined)},getRegistrations:function(){return Promise.resolve([])},ready:new Promise(function(){}),controller:null}},configurable:false});}}catch(e){}");
+    }
+    if block_font_enum {
+        sec_parts.push(concat!(
+            "try{if(document.fonts){",
+            "var _origFonts=document.fonts;",
+            "var _safeList=['Arial','Helvetica','Times New Roman','Times','Courier New','Courier','Verdana','Georgia','Palatino','Garamond','Comic Sans MS','Trebuchet MS','Arial Black','Impact','Tahoma','Segoe UI'];",
+            "var fakeSet={",
+              "size:0,",
+              "status:'loaded',",
+              "ready:Promise.resolve(),",
+              "check:function(f){try{var m=f.match(/['\"]([^'\"]+)['\"]/);if(m){for(var i=0;i<_safeList.length;i++)if(_safeList[i].toLowerCase()===m[1].toLowerCase())return true}return false}catch(e){return false}},",
+              "load:function(){return Promise.resolve([])},",
+              "forEach:function(){},",
+              "entries:function(){return[][Symbol.iterator]()},",
+              "keys:function(){return[][Symbol.iterator]()},",
+              "values:function(){return[][Symbol.iterator]()},",
+              "has:function(){return false},",
+              "add:function(){},",
+              "delete:function(){return false},",
+              "clear:function(){},",
+              "addEventListener:function(){},",
+              "removeEventListener:function(){},",
+              "dispatchEvent:function(){return true},",
+              "onloading:null,onloadingdone:null,onloadingerror:null",
+            "};",
+            "fakeSet[Symbol.iterator]=function(){return[][Symbol.iterator]()};",
+            "Object.defineProperty(document,'fonts',{get:function(){return fakeSet},configurable:false});",
+            "}}catch(e){}"
+        ));
+    }
+    let security_js = if sec_parts.is_empty() { String::new() } else { format!("(function(){{{}}})();", sec_parts.join("")) };
+    let inject_security = security_js.clone();
+
+    // per-tab cosmetic state: computed in on_navigation, injected in on_page_load
+    struct PendingCosmetic {
+        css: String,
+        script: String,
+        exceptions: HashSet<String>,
+        generichide: bool,
+    }
+    let pending_cosmetic: Arc<Mutex<PendingCosmetic>> = Arc::new(Mutex::new(PendingCosmetic {
+        css: String::new(), script: String::new(), exceptions: HashSet::new(), generichide: false,
+    }));
+    let pending_for_nav = pending_cosmetic.clone();
+    let pending_for_load = pending_cosmetic.clone();
+    let pending_for_msg = pending_cosmetic.clone();
+    // shared state for dynamic AddScriptToExecuteOnDocumentCreated script ID
+    let dynamic_script_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let whitelisted_for_nav = site_whitelisted;
+    let whitelisted_for_load = site_whitelisted;
+    let nav_https_only = https_only;
+    let nav_ad_blocker = ad_blocker;
+    let load_ad_blocker = ad_blocker;
+    let load_cookie_reject = cookie_auto_reject;
+    // shared source URL for third-party classification (updated on every navigation)
+    let current_source_url: Arc<Mutex<String>> = Arc::new(Mutex::new(final_url.clone()));
+    let source_for_nav = current_source_url.clone();
+
+    let mut builder = WebviewBuilder::new(&id, webview_url)
+        .auto_resize()
+        .with_profile_name(profile_name);
+
+    if is_panel {
+        builder = builder.user_agent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36");
+    } else {
+        builder = builder.user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    }
+
+    builder = builder.on_navigation(move |url| {
+            let url_str = url.to_string();
+
+            // block dangerous URL schemes (javascript:, data:, file:, etc.)
+            if is_blocked_scheme(&url_str) {
+                return false;
+            }
+
+            // block http (only when https-only mode is enabled)
+            if nav_https_only && url_str.starts_with("http://") {
+                return false;
+            }
+
+            // adblock-rust engine check for document-level navigations
+            if nav_ad_blocker && !whitelisted_for_nav {
+                let guard = engine_for_nav.read();
+                if let Ok(req) = Request::new(&url_str, &url_str, "document") {
+                    let result = guard.check_network_request(&req);
+                    if result.matched {
+                        return false;
+                    }
+                }
+                // compute cosmetic resources for this URL (injected in on_page_load)
+                let cosmetic = blocker::get_cosmetic_resources(&guard, &url_str);
+                {
+                    let mut pc = pending_for_nav.lock();
+                    pc.css = cosmetic.css;
+                    pc.script = cosmetic.script;
+                    pc.exceptions = cosmetic.exceptions;
+                    pc.generichide = cosmetic.generichide;
+                }
+            }
+
+            // check for speculative preload match
+            {
+                let ps = app_nav.state::<PreloadState>();
+                let preload_url = ps.url.lock().clone();
+                if let Some(ref purl) = preload_url {
+                    if *purl == url_str {
+                        let preload_id = ps.webview_id.lock().take();
+                        let source_tab = ps.source_tab.lock().take();
+                        *ps.url.lock() = None;
+                        if let (Some(pid), Some(stab)) = (preload_id, source_tab) {
+                            let panel_s = app_nav.state::<PanelState>();
+                            panel_s.ids.lock().remove(&pid);
+                            let ws = app_nav.state::<WebviewState>();
+                            ws.tabs.lock().insert(pid.clone(), false);
+                            let _ = app_nav.emit_to("main", "preload-promoted", serde_json::json!({
+                                "preloadId": pid,
+                                "url": url_str,
+                                "sourceTabId": stab
+                            }));
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            // update source URL for third-party request classification
+            *source_for_nav.lock() = url_str.clone();
+
+            let _ = app_nav.emit_to("main", "tab-url-changed", serde_json::json!({
+                "id": tab_id_nav,
+                "url": url_str
+            }));
+            true
+        })
+        .on_document_title_changed(move |_wv, title| {
+            // strip html tags to prevent stored xss via malicious <title>
+            let clean = title.replace(|c: char| c == '<' || c == '>', "");
+            let _ = app_title.emit_to("main", "tab-title-changed", serde_json::json!({
+                "id": tab_id_title,
+                "title": clean
+            }));
+        })
+        .on_page_load(move |wv, payload| {
+            let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
+            let _ = app_load.emit_to("main", "tab-loading", serde_json::json!({
+                "id": tab_id_load,
+                "loading": loading
+            }));
+            // re-inject on every page load
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                let _ = wv.eval(&inject_shortcut);
+                let _ = wv.eval(&inject_media);
+                let _ = wv.eval(&inject_fingerprint);
+                #[cfg(debug_assertions)]
+                { let _ = wv.eval(&inject_fp_verify); }
+                let _ = wv.eval(&inject_vault);
+                let _ = wv.eval(&inject_glance);
+                let _ = wv.eval(&inject_preload);
+                // blockers only if enabled and not whitelisted
+                if load_ad_blocker && !whitelisted_for_load {
+                    let _ = wv.eval(&inject_cosmetic);
+
+                    // inject dynamic cosmetic resources (computed in on_navigation)
+                    let (css, script, generichide) = {
+                        let guard = pending_for_load.lock();
+                        (guard.css.clone(), guard.script.clone(), guard.generichide)
+                    };
+                    if !css.is_empty() {
+                        let js = format!(
+                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                            serde_json::to_string(&css).unwrap_or_default()
+                        );
+                        let _ = wv.eval(&js);
+                    }
+                    if !script.is_empty() {
+                        let js = format!(
+                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                            script
+                        );
+                        let _ = wv.eval(&js);
+                    }
+                    // inject cosmetic observer for dynamic generic element hiding
+                    if !generichide {
+                        let _ = wv.eval(&inject_cosmetic_observer);
+                    }
+                }
+                if load_cookie_reject && !whitelisted_for_load {
+                    let _ = wv.eval(&inject_cookie);
+                }
+                if !inject_security.is_empty() {
+                    let _ = wv.eval(&inject_security);
+                }
+            }
+        });
+
+    builder = builder.initialization_script(&scriptlet_preamble);
+    builder = builder.initialization_script(&shortcut_script);
+    builder = builder.initialization_script(&media_script);
+    builder = builder.initialization_script(&fingerprint_script);
+    // fingerprint_verify.js is injected ONLY via on_page_load (not initialization_script)
+    // because window.chrome.webview may not be available at initialization_script time
+    builder = builder.initialization_script(&vault_script);
+    builder = builder.initialization_script(&glance_script);
+    builder = builder.initialization_script(&bs.preload_script);
+
+    // only inject cosmetic scripts if enabled and not whitelisted
+    if ad_blocker && !site_whitelisted {
+        builder = builder.initialization_script(&cosmetic_script);
+        builder = builder.initialization_script(&cosmetic_observer_script);
+    }
+    if cookie_auto_reject && !site_whitelisted {
+        builder = builder.initialization_script(&cookie_script);
+    }
+    if !security_js.is_empty() {
+        builder = builder.initialization_script(&security_js);
+    }
+
+    let webview = window.add_child(
+        builder,
+        tauri::LogicalPosition::new(sidebar_w, top_offset),
+        tauri::LogicalSize::new(content_w, content_h),
+    ).map_err(|e| e.to_string())?;
+
+    let state = app.state::<WebviewState>();
+    state.tabs.lock().insert(tab_id_track, true);
+
+    // intercept downloads + ad blocking via WebView2 COM API
+    #[cfg(windows)]
+    {
+        let app_dl = app.clone();
+        let engine_for_block = engine.clone();
+        let app_for_block = app.clone();
+        let tab_id_block = id.clone();
+        let block_enabled = ad_blocker && !site_whitelisted;
+        let source_url = current_source_url.clone();
+
+        let wv_tab_id = id.clone();
+        let with_result = webview.with_webview(move |wv| {
+            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+            use windows::core::Interface;
+
+            unsafe {
+                let controller = wv.controller();
+                let core = match controller.CoreWebView2() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        crate::crash_log::log_error("with_webview", &format!("CoreWebView2() failed for {}: {}", wv_tab_id, e));
+                        return;
+                    }
+                };
+                let core4: ICoreWebView2_4 = match core.cast() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+
+                // always-on COM hardening
+                if let Ok(settings) = core.Settings() {
+                    let _ = settings.SetAreHostObjectsAllowed(false);
+                    // conditional security settings (toggled via Settings → Security)
+                    if disable_dev_tools { let _ = settings.SetAreDevToolsEnabled(false); }
+                    if disable_status_bar { let _ = settings.SetIsStatusBarEnabled(false); }
+                    if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                        let _ = s4.SetIsGeneralAutofillEnabled(!disable_autofill);
+                        let _ = s4.SetIsPasswordAutosaveEnabled(!disable_password_save);
+                    }
+                }
+
+                // apply default zoom level
+                if (default_zoom - 100.0).abs() > 0.5 {
+                    let _ = controller.SetZoomFactor(default_zoom / 100.0);
+                }
+
+                // try to get cookie manager for authenticated downloads
+                let cookie_mgr: Option<ICoreWebView2CookieManager> = core.cast::<ICoreWebView2_2>()
+                    .ok()
+                    .and_then(|c2| c2.CookieManager().ok());
+
+                let app_inner = app_dl.clone();
+                let mut token: i64 = 0;
+
+                let handler = webview2_com::DownloadStartingEventHandler::create(Box::new(
+                    move |_sender, args| {
+                        // SAFETY: catch_unwind prevents panics from crossing the FFI boundary (UB)
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_inner);
+                        let cookie_ref = AssertUnwindSafe(&cookie_mgr);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let _ = args.SetHandled(true);
+                                let _ = args.SetCancel(true);
+
+                                let download_op = match args.DownloadOperation() { Ok(d) => d, Err(_) => return };
+                                let mut uri_pwstr = windows::core::PWSTR::null();
+                                if download_op.Uri(&mut uri_pwstr).is_err() { return; }
+                                let url = if !uri_pwstr.is_null() {
+                                    uri_pwstr.to_string().unwrap_or_default()
+                                } else { String::new() };
+
+                                let mut disp_pwstr = windows::core::PWSTR::null();
+                                let disposition = if download_op.ContentDisposition(&mut disp_pwstr).is_ok() && !disp_pwstr.is_null() {
+                                    disp_pwstr.to_string().unwrap_or_default()
+                                } else { String::new() };
+
+                                let filename = downloads::parse_filename(&url, &disposition);
+
+                                if let Some(ref mgr) = *cookie_ref {
+                                    let url_clone = url.clone();
+                                    let filename_clone = filename.clone();
+                                    let app_cookie = app_ref.clone();
+                                    let url_wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+                                    let url_pcwstr = windows::core::PCWSTR::from_raw(url_wide.as_ptr());
+
+                                    let cookie_handler = webview2_com::GetCookiesCompletedHandler::create(Box::new(
+                                        move |hr, cookie_list| {
+                                            let hr_ref = AssertUnwindSafe(hr);
+                                            let list_ref = AssertUnwindSafe(&cookie_list);
+                                            let app_c = AssertUnwindSafe(&app_cookie);
+                                            let url_c = AssertUnwindSafe(&url_clone);
+                                            let fname_c = AssertUnwindSafe(&filename_clone);
+                                            let _ = catch_unwind(move || {
+                                                let mut cookies_str = String::new();
+                                                if hr_ref.is_ok() {
+                                                    if let Some(ref list) = *list_ref {
+                                                        let mut count = 0u32;
+                                                        if list.Count(&mut count).is_ok() {
+                                                            for i in 0..count {
+                                                                if let Ok(cookie) = list.GetValueAtIndex(i) {
+                                                                    let mut name_pw = windows::core::PWSTR::null();
+                                                                    let mut val_pw = windows::core::PWSTR::null();
+                                                                    if cookie.Name(&mut name_pw).is_ok() && cookie.Value(&mut val_pw).is_ok() {
+                                                                        let name = if !name_pw.is_null() { name_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                        let val = if !val_pw.is_null() { val_pw.to_string().unwrap_or_default() } else { String::new() };
+                                                                        if !name.is_empty() {
+                                                                            if !cookies_str.is_empty() { cookies_str.push_str("; "); }
+                                                                            cookies_str.push_str(&name);
+                                                                            cookies_str.push('=');
+                                                                            cookies_str.push_str(&val);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                let cookies_opt = if cookies_str.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(cookies_str) };
+                                                let _ = app_c.emit_to("main", "download-intercepted", serde_json::json!({
+                                                    "url": *url_c,
+                                                    "suggestedFilename": *fname_c,
+                                                    "cookies": cookies_opt
+                                                }));
+                                            });
+                                            Ok(())
+                                        },
+                                    ));
+                                    let _ = mgr.GetCookies(url_pcwstr, &cookie_handler);
+                                } else {
+                                    let _ = app_ref.emit_to("main", "download-intercepted", serde_json::json!({
+                                        "url": url,
+                                        "suggestedFilename": filename
+                                    }));
+                                }
+                            }
+                        });
+                        Ok(())
+                    },
+                ));
+
+                let _ = core4.add_DownloadStarting(&handler, &mut token);
+
+                // intercept ALL requests — header stripping is always-on, adblock is conditional
+                {
+                    let filter: Vec<u16> = "*\0".encode_utf16().collect();
+                    let _ = core.AddWebResourceRequestedFilter(
+                        windows::core::PCWSTR::from_raw(filter.as_ptr()),
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    );
+
+                    let engine_block = engine_for_block.clone();
+                    let app_block = app_for_block.clone();
+                    let tab_block = tab_id_block.clone();
+                    let source = source_url.clone();
+                    let blocked_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+                    let block_handler = webview2_com::WebResourceRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let args_ref = AssertUnwindSafe(&args);
+                            let engine_ref = AssertUnwindSafe(&engine_block);
+                            let app_ref = AssertUnwindSafe(&app_block);
+                            let tab_ref = AssertUnwindSafe(&tab_block);
+                            let source_ref = AssertUnwindSafe(&source);
+                            let count_ref = AssertUnwindSafe(&blocked_count);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let request = match args.Request() { Ok(r) => r, Err(_) => return };
+
+                                    // always-on: strip tracking headers
+                                    if let Ok(headers) = request.Headers() {
+                                        for h in ["Sec-CH-UA", "Sec-CH-UA-Arch", "Sec-CH-UA-Bitness",
+                                                  "Sec-CH-UA-Full-Version", "Sec-CH-UA-Full-Version-List",
+                                                  "Sec-CH-UA-Mobile", "Sec-CH-UA-Model", "Sec-CH-UA-Platform",
+                                                  "Sec-CH-UA-Platform-Version", "Sec-CH-UA-WoW64"] {
+                                            let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                        }
+                                        // NOTE: Sec-Fetch-* intentionally NOT stripped (Chromium overwrites post-handler)
+
+                                        for h in ["X-Client-Data", "X-Requested-With"] {
+                                            let name: Vec<u16> = h.encode_utf16().chain(std::iter::once(0)).collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(name.as_ptr()));
+                                        }
+                                        // normalize Accept-Language to match JS navigator.language spoof
+                                        {
+                                            let al_name: Vec<u16> = "Accept-Language\0".encode_utf16().collect();
+                                            let al_val: Vec<u16> = "en-US,en;q=0.9\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(al_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(al_val.as_ptr()),
+                                            );
+                                        }
+                                        // DNT + GPC headers (research/18 — must match JS navigator.doNotTrack)
+                                        {
+                                            let dnt_name: Vec<u16> = "DNT\0".encode_utf16().collect();
+                                            let dnt_val: Vec<u16> = "1\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(dnt_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(dnt_val.as_ptr()),
+                                            );
+                                            let gpc_name: Vec<u16> = "Sec-GPC\0".encode_utf16().collect();
+                                            let gpc_val: Vec<u16> = "1\0".encode_utf16().collect();
+                                            let _ = headers.SetHeader(
+                                                windows::core::PCWSTR::from_raw(gpc_name.as_ptr()),
+                                                windows::core::PCWSTR::from_raw(gpc_val.as_ptr()),
+                                            );
+                                        }
+                                        // Strip ETag headers from third-party requests (research/18 A.3)
+                                        // Prevents ETag-based supercookie tracking
+                                        {
+                                            let etag_name: Vec<u16> = "If-None-Match\0".encode_utf16().collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(etag_name.as_ptr()));
+                                            let ifmod_name: Vec<u16> = "If-Modified-Since\0".encode_utf16().collect();
+                                            let _ = headers.RemoveHeader(windows::core::PCWSTR::from_raw(ifmod_name.as_ptr()));
+                                        }
+                                        // normalize Referer to origin only
+                                        let referer_name: Vec<u16> = "Referer\0".encode_utf16().collect();
+                                        let mut referer_val = windows::core::PWSTR::null();
+                                        if headers.GetHeader(windows::core::PCWSTR::from_raw(referer_name.as_ptr()), &mut referer_val).is_ok() && !referer_val.is_null() {
+                                            if let Ok(ref_str) = referer_val.to_string() {
+                                                if let Ok(parsed) = url::Url::parse(&ref_str) {
+                                                    let origin = parsed.origin().ascii_serialization();
+                                                    let origin_wide: Vec<u16> = format!("{}/", origin).encode_utf16().chain(std::iter::once(0)).collect();
+                                                    let _ = headers.SetHeader(
+                                                        windows::core::PCWSTR::from_raw(referer_name.as_ptr()),
+                                                        windows::core::PCWSTR::from_raw(origin_wide.as_ptr()),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // conditional: adblock engine check
+                                    if block_enabled {
+                                        let mut uri = windows::core::PWSTR::null();
+                                        if request.Uri(&mut uri).is_err() { return; }
+                                        let url = if !uri.is_null() { uri.to_string().unwrap_or_default() } else { return; };
+
+                                        let mut ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+                                        let _ = args.ResourceContext(&mut ctx);
+                                        let rtype = blocker::resource_type_str(ctx.0 as u32);
+
+                                        // strip tracking params from ALL requests (research/18 B.2)
+                                        // not just documents — sub-resources (images, scripts, XHR) also carry
+                                        // tracking params like ?fbclid=, ?_ga=, etc.
+                                        if let Some(clean) = blocker::strip_tracking_params(&url) {
+                                            let new_url: Vec<u16> = format!("{}\0", clean).encode_utf16().collect();
+                                            let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
+                                        }
+
+                                        let current_source = source_ref.lock().clone();
+                                        if let Ok(req) = Request::new(&url, &current_source, rtype) {
+                                            let result = engine_ref.read().check_network_request(&req);
+
+                                            // network log — only when enabled
+                                            {
+                                                let nl = app_ref.state::<NetworkLog>();
+                                                if nl.enabled.load(Ordering::Relaxed) {
+                                                    let entry = NetworkLogEntry {
+                                                        url: url.clone(),
+                                                        resource_type: rtype.to_string(),
+                                                        blocked: result.matched,
+                                                        filter_rule: if result.matched { result.filter.clone() } else { None },
+                                                        timestamp_ms: std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_millis() as u64,
+                                                    };
+                                                    nl.pending.lock()
+                                                        .entry(tab_ref.clone())
+                                                        .or_insert_with(Vec::new)
+                                                        .push(entry);
+                                                }
+                                            }
+
+                                            if !result.matched {
+                                                // handle $removeparam (rewritten URL)
+                                                if let Some(ref rewritten) = result.rewritten_url {
+                                                    let new_url: Vec<u16> = format!("{}\0", rewritten).encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(new_url.as_ptr()));
+                                                }
+                                            } else {
+                                                // request is blocked — use redirect surrogate or about:blank
+                                                if let Some(ref data_uri) = result.redirect {
+                                                    let redir_url: Vec<u16> = format!("{}\0", data_uri).encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(redir_url.as_ptr()));
+                                                } else {
+                                                    let blank: Vec<u16> = "about:blank\0".encode_utf16().collect();
+                                                    let _ = request.SetUri(windows::core::PCWSTR::from_raw(blank.as_ptr()));
+                                                }
+
+                                                let count = count_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                                if count <= 3 || count % 5 == 0 {
+                                                    let _ = app_ref.emit_to("main", "tab-blocked-count", serde_json::json!({
+                                                        "id": *tab_ref,
+                                                        "count": count
+                                                    }));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+
+                    let mut block_token: i64 = 0;
+                    let _ = core.add_WebResourceRequested(&block_handler, &mut block_token);
+                }
+
+                // postMessage IPC handler — replaces title encoding
+                let app_msg = app_for_block.clone();
+                let tab_id_msg = tab_id_block.clone();
+                let engine_for_msg = engine_for_block.clone();
+                let pending_for_msg2 = pending_for_msg.clone();
+
+                let msg_handler = webview2_com::WebMessageReceivedEventHandler::create(Box::new(
+                    move |sender, args| {
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_msg);
+                        let tab_ref = AssertUnwindSafe(&tab_id_msg);
+                        let engine_ref = AssertUnwindSafe(&engine_for_msg);
+                        let pending_ref = AssertUnwindSafe(&pending_for_msg2);
+                        let sender_ref = AssertUnwindSafe(&sender);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let mut msg_pwstr = windows::core::PWSTR::null();
+                                if args.WebMessageAsJson(&mut msg_pwstr).is_err() { return; }
+                                let json_str = if !msg_pwstr.is_null() {
+                                    msg_pwstr.to_string().unwrap_or_default()
+                                } else { return; };
+                                let raw: String = serde_json::from_str(&json_str).unwrap_or_default();
+                                let msg: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+
+                                match msg.get("__bushido").and_then(|v| v.as_str()) {
+                                    Some("shortcut") => {
+                                        let valid = ["toggle-compact","new-tab","close-tab","focus-url",
+                                                     "find","toggle-sidebar","bookmark","history",
+                                                     "command-palette","reader-mode"];
+                                        if let Some(action) = msg.get("action").and_then(|v| v.as_str()) {
+                                            if valid.contains(&action) {
+                                                let _ = app_ref.emit_to("main", "global-shortcut", action);
+                                            }
+                                        }
+                                    }
+                                    Some("media") => {
+                                        if let Some(state) = msg.get("state").and_then(|v| v.as_str()) {
+                                            if !matches!(state, "playing" | "paused" | "ended") { return; }
+                                            let title = msg.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                            let clean = title.replace(|c: char| c == '<' || c == '>', "");
+                                            let mut payload = serde_json::json!({
+                                                "id": *tab_ref, "state": state, "title": clean
+                                            });
+                                            if let Some(artist) = msg.get("artist").and_then(|v| v.as_str()) {
+                                                payload["artist"] = serde_json::json!(artist);
+                                            }
+                                            if let Some(meta_title) = msg.get("metaTitle").and_then(|v| v.as_str()) {
+                                                payload["metaTitle"] = serde_json::json!(meta_title);
+                                            }
+                                            if let Some(ct) = msg.get("currentTime").and_then(|v| v.as_f64()) {
+                                                payload["currentTime"] = serde_json::json!(ct);
+                                            }
+                                            if let Some(dur) = msg.get("duration").and_then(|v| v.as_f64()) {
+                                                payload["duration"] = serde_json::json!(dur);
+                                            }
+                                            if let Some(rate) = msg.get("playbackRate").and_then(|v| v.as_f64()) {
+                                                payload["playbackRate"] = serde_json::json!(rate);
+                                            }
+                                            let _ = app_ref.emit_to("main", "tab-media-state", payload);
+                                        }
+                                    }
+                                    Some("video") => {
+                                        let has = msg.get("hasVideo").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        let _ = app_ref.emit_to("main", "tab-has-video", serde_json::json!({
+                                            "id": *tab_ref, "hasVideo": has
+                                        }));
+                                    }
+                                    Some("match-count") => {
+                                        let count = msg.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let _ = app_ref.emit_to("main", "match-count", serde_json::json!({
+                                            "id": *tab_ref, "count": count
+                                        }));
+                                    }
+                                    Some("vault-check") => {
+                                        let domain = msg.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let tab_id = tab_ref.to_string();
+                                        let app_clone = (*app_ref).clone();
+                                        std::thread::spawn(move || {
+                                            let vs = app_clone.state::<crate::vault::VaultState>();
+                                            let is_locked = vs.derived_key.lock().is_none();
+                                            if is_locked {
+                                                // vault locked but page has login form — tell React to show unlock prompt
+                                                let has_master = crate::vault::has_master_password_sync(&vs);
+                                                if has_master {
+                                                    let _ = app_clone.emit_to("main", "vault-unlock-needed", serde_json::json!({
+                                                        "domain": domain, "tabId": tab_id
+                                                    }));
+                                                }
+                                                return;
+                                            }
+                                            if let Ok(entries) = crate::vault::get_entries_for_domain(&vs, &domain) {
+                                                if entries.is_empty() { return; }
+                                                if let Some(wv) = app_clone.get_webview(&tab_id) {
+                                                    let data = serde_json::json!({
+                                                        "__bushidoVaultFill": true,
+                                                        "entries": entries,
+                                                    });
+                                                    let js = format!("window.postMessage({}, '*')", data);
+                                                    let _ = wv.eval(&js);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Some("vault-save-prompt") => {
+                                        let domain = msg.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let username = msg.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let password = msg.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let _ = app_ref.emit_to("main", "vault-save-prompt", serde_json::json!({
+                                            "domain": domain, "username": username, "password": password
+                                        }));
+                                    }
+                                    Some("cookie-rejected") => {
+                                        let _ = app_ref.emit_to("main", "cookie-rejected", serde_json::json!({
+                                            "id": *tab_ref
+                                        }));
+                                    }
+                                    Some("glance") => {
+                                        if let Some(url) = msg.get("url").and_then(|v| v.as_str()) {
+                                            let _ = app_ref.emit_to("main", "glance-request", serde_json::json!({
+                                                "url": url,
+                                                "sourceTabId": *tab_ref
+                                            }));
+                                        }
+                                    }
+                                    Some("cosmetic-probe") => {
+                                        let classes: Vec<String> = msg.get("classes")
+                                            .and_then(|v| v.as_array())
+                                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        let ids: Vec<String> = msg.get("ids")
+                                            .and_then(|v| v.as_array())
+                                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                            .unwrap_or_default();
+                                        if classes.is_empty() && ids.is_empty() { return; }
+                                        let exceptions = {
+                                            pending_ref.lock().exceptions.clone()
+                                        };
+                                        let selectors = blocker::get_hidden_selectors(
+                                            &engine_ref.read(),
+                                            &classes,
+                                            &ids,
+                                            &exceptions,
+                                        );
+                                        if !selectors.is_empty() {
+                                            let json_arr = serde_json::to_string(&selectors).unwrap_or_default();
+                                            let js = format!("window.__bushidoApplyCosmetic({})", json_arr);
+                                            if let Some(ref s) = *sender_ref {
+                                                let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                                let _ = s.ExecuteScript(
+                                                    windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                                    None,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Some("preload") => {
+                                        if let Some(url) = msg.get("url").and_then(|v| v.as_str()) {
+                                            let url = url.to_string();
+                                            let tab_id = tab_ref.to_string();
+                                            let app_clone = (*app_ref).clone();
+                                            std::thread::spawn(move || {
+                                                let old_id = {
+                                                    let ps = app_clone.state::<PreloadState>();
+                                                    let val = ps.webview_id.lock().take();
+                                                    val
+                                                };
+                                                if let Some(old_id) = old_id {
+                                                    let panel_s = app_clone.state::<PanelState>();
+                                                    panel_s.ids.lock().remove(&old_id);
+                                                    if let Some(wv) = app_clone.get_webview(&old_id) {
+                                                        let _ = wv.close();
+                                                    }
+                                                }
+                                                let preload_id = format!("preload-{}", std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+                                                let window = match app_clone.get_window("main") {
+                                                    Some(w) => w,
+                                                    None => return,
+                                                };
+                                                let webview_url = match url.parse::<url::Url>() {
+                                                    Ok(u) => tauri::WebviewUrl::External(u),
+                                                    Err(_) => return,
+                                                };
+                                                {
+                                                    let bs = app_clone.state::<BlockerState>();
+                                                    let mut builder = tauri::WebviewBuilder::new(&preload_id, webview_url);
+                                                    builder = builder.initialization_script(&bs.shortcut_script);
+                                                    builder = builder.initialization_script(&bs.fingerprint_script);
+                                                    match window.add_child(
+                                                        builder,
+                                                        tauri::LogicalPosition::new(-9999.0, -9999.0),
+                                                        tauri::LogicalSize::new(800.0, 600.0),
+                                                    ) {
+                                                        Ok(_) => {
+                                                            let panel_s = app_clone.state::<PanelState>();
+                                                            panel_s.ids.lock().insert(preload_id.clone());
+                                                            let ps = app_clone.state::<PreloadState>();
+                                                            *ps.url.lock() = Some(url);
+                                                            *ps.webview_id.lock() = Some(preload_id);
+                                                            *ps.source_tab.lock() = Some(tab_id);
+                                                        }
+                                                        Err(e) => {
+                                                            crash_log::log_error("preload", &format!("failed to create preload webview: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                    Some("preload-cancel") => {
+                                        let app_clone = (*app_ref).clone();
+                                        std::thread::spawn(move || {
+                                            std::thread::sleep(std::time::Duration::from_secs(2));
+                                            let old_id = {
+                                                let ps = app_clone.state::<PreloadState>();
+                                                let id = ps.webview_id.lock().take();
+                                                if id.is_some() {
+                                                    *ps.url.lock() = None;
+                                                    *ps.source_tab.lock() = None;
+                                                }
+                                                id
+                                            };
+                                            if let Some(old_id) = old_id {
+                                                let panel_s = app_clone.state::<PanelState>();
+                                                panel_s.ids.lock().remove(&old_id);
+                                                if let Some(wv) = app_clone.get_webview(&old_id) {
+                                                    let _ = wv.close();
+                                                }
+                                            }
+                                        });
+                                    }
+                                    Some("fingerprint-verify") => {
+                                        if let Some(report) = msg.get("report") {
+                                            let passed = report.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let failed = report.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let total = report.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let pct = report.get("percentage").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let url = report.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                                            if failed == 0 {
+                                                println!("\x1b[32m[FP-VERIFY] {}/{} passed ({}%) on {} — ALL CLEAR\x1b[0m", passed, total, pct, url);
+                                            } else {
+                                                eprintln!("\x1b[31m[FP-VERIFY] {}/{} passed, {} FAILED ({}%) on {}\x1b[0m", passed, total, failed, pct, url);
+                                                if let Some(results) = report.get("results").and_then(|v| v.as_array()) {
+                                                    for r in results {
+                                                        if r.get("pass").and_then(|v| v.as_bool()) == Some(false) {
+                                                            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                                            let detail = r.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                                                            eprintln!("\x1b[31m  FAIL: {} — {}\x1b[0m", name, detail);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Write report to disk so automated tests can read it
+                                            let report_dir = app_ref.path().app_data_dir().unwrap_or_default();
+                                            let report_path = report_dir.join("fp-verify-report.json");
+                                            let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap_or_default());
+
+                                            let _ = app_ref.emit_to("main", "fingerprint-verify", serde_json::json!({
+                                                "id": *tab_ref,
+                                                "report": report
+                                            }));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        });
+                        Ok(())
+                    },
+                ));
+
+                let mut msg_token: i64 = 0;
+                let _ = core.add_WebMessageReceived(&msg_handler, &mut msg_token);
+
+                // crash handler — detect renderer process failures
+                let app_crash = app_for_block.clone();
+                let tab_id_crash = tab_id_block.clone();
+                let crash_handler = webview2_com::ProcessFailedEventHandler::create(Box::new(
+                    move |_sender, _args| {
+                        let app_ref = AssertUnwindSafe(&app_crash);
+                        let tab_ref = AssertUnwindSafe(&tab_id_crash);
+                        let _ = catch_unwind(move || {
+                            crate::crash_log::log_error("ProcessFailed", &format!(
+                                "WebView2 renderer crashed for tab={}", *tab_ref
+                            ));
+                            let _ = app_ref.emit_to("main", "tab-crashed", serde_json::json!({
+                                "id": *tab_ref
+                            }));
+                        });
+                        Ok(())
+                    },
+                ));
+                let mut crash_token: i64 = 0;
+                let _ = core.add_ProcessFailed(&crash_handler, &mut crash_token);
+
+                // navigation error page — styled error when page fails to load
+                let nav_handler = webview2_com::NavigationCompletedEventHandler::create(Box::new(
+                    move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
+                        if let (Some(wv), Some(args)) = (sender, args) {
+                            let mut success = windows_core::BOOL(0);
+                            let _ = unsafe { args.IsSuccess(&mut success) };
+                            if success.0 == 0 {
+                                // WebErrorStatus is COREWEBVIEW2_WEB_ERROR_STATUS(i32) newtype
+                                let mut status: i32 = 0;
+                                let _ = unsafe { args.WebErrorStatus(&mut status as *mut i32 as *mut _) };
+                                // skip user-cancelled navigations
+                                if status == 14 { return Ok(()); }
+
+                                // get the current URL for display
+                                let mut source = windows::core::PWSTR::null();
+                                let page_url = unsafe { wv.Source(&mut source).ok().and_then(|_| source.to_string().ok()) }
+                                    .unwrap_or_default();
+                                let domain = page_url.split("//").nth(1).unwrap_or(&page_url).split('/').next().unwrap_or(&page_url);
+
+                                let (icon, title, desc, extra): (&str, &str, String, &str) = match status {
+                                    // SSL / certificate errors
+                                    1..=5 => (
+                                        "&#x1F512;",
+                                        "Connection is not secure",
+                                        format!("The certificate for <strong>{}</strong> is not trusted. An attacker could be intercepting your connection.", domain),
+                                        "<div class='extra'><a href='javascript:void(0)' onclick='history.back()' class='link'>Go back</a></div>"
+                                    ),
+                                    // server unreachable / connection refused
+                                    6 | 12 => (
+                                        "&#x1F50D;",
+                                        "Can&rsquo;t reach this site",
+                                        format!("<strong>{}</strong> refused to connect.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // timeout
+                                    7 => (
+                                        "&#x23F3;",
+                                        "Connection timed out",
+                                        format!("<strong>{}</strong> took too long to respond.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // connection reset
+                                    9 | 10 => (
+                                        "&#x26A0;&#xFE0F;",
+                                        "Connection was reset",
+                                        "The connection was unexpectedly closed.".to_string(),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // offline
+                                    11 => (
+                                        "&#x1F4E1;",
+                                        "You&rsquo;re offline",
+                                        "Check your internet connection and try again.".to_string(),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // DNS failure
+                                    13 => (
+                                        "&#x1F50D;",
+                                        "Can&rsquo;t find this site",
+                                        format!("<strong>{}</strong> could not be found. Check the URL for typos.", page_url),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // too many redirects
+                                    15 => (
+                                        "&#x1F504;",
+                                        "Too many redirects",
+                                        format!("<strong>{}</strong> redirected too many times.", domain),
+                                        "<button onclick='location.reload()'>Retry</button>"
+                                    ),
+                                    // crash / generic
+                                    _ => (
+                                        "&#x1F4A5;",
+                                        "This tab crashed",
+                                        "Something went wrong while loading the page.".to_string(),
+                                        "<button onclick='location.reload()'>Reload</button>"
+                                    ),
+                                };
+
+                                let js = format!(
+                                    r#"document.documentElement.innerHTML = '<head><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{background:#0d0d14;color:#e0e0e8;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;-webkit-font-smoothing:antialiased}}.wrap{{max-width:420px;padding:40px}}.icon{{font-size:48px;margin-bottom:20px;display:block;filter:grayscale(0.3);opacity:0.9}}h1{{font-size:22px;font-weight:600;margin-bottom:10px;letter-spacing:-0.3px;line-height:1.3}}p{{color:rgba(224,224,232,0.5);font-size:13.5px;line-height:1.6;margin-bottom:24px}}p strong{{color:rgba(224,224,232,0.7);font-weight:500}}button{{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#e0e0e8;padding:9px 24px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;transition:background 0.2s,border-color 0.2s}}button:hover{{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.14)}}.link{{color:rgba(99,102,241,0.8);text-decoration:none;font-size:13px;font-weight:500;transition:color 0.15s}}.link:hover{{color:rgba(99,102,241,1)}}.extra{{margin-top:8px}}.code{{color:rgba(224,224,232,0.2);font-size:10px;margin-top:20px;font-family:monospace;letter-spacing:0.5px}}</style></head><body><div class="wrap"><span class="icon">{icon}</span><h1>{title}</h1><p>{desc}</p>{extra}<div class="code">ERR_{code}</div></div></body>';"#,
+                                    icon = icon, title = title, desc = desc, extra = extra, code = status
+                                );
+                                let _ = unsafe { wv.ExecuteScript(
+                                    &windows_core::HSTRING::from(&js),
+                                    None,
+                                ) };
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+                let mut nav_token: i64 = 0;
+                let _ = core.add_NavigationCompleted(&nav_handler, &mut nav_token);
+
+                // early scriptlet injection via ContentLoading (fires before DOM parsing)
+                if block_enabled {
+                    let pending_for_content = pending_for_msg.clone();
+                    let content_handler = webview2_com::ContentLoadingEventHandler::create(Box::new(
+                        move |sender: Option<ICoreWebView2>, _args: Option<ICoreWebView2ContentLoadingEventArgs>| {
+                            let pending_c = AssertUnwindSafe(&pending_for_content);
+                            let sender_c = AssertUnwindSafe(&sender);
+                            let _ = catch_unwind(move || {
+                                let (css, script) = {
+                                    let guard = pending_c.lock();
+                                    (guard.css.clone(), guard.script.clone())
+                                };
+                                if let Some(ref wv) = *sender_c {
+                                    // inject CSS immediately
+                                    if !css.is_empty() {
+                                        let js = format!(
+                                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic-early';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                                            serde_json::to_string(&css).unwrap_or_default()
+                                        );
+                                        let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = wv.ExecuteScript(
+                                            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                            None,
+                                        );
+                                    }
+                                    // inject scriptlets immediately (before page scripts)
+                                    if !script.is_empty() {
+                                        let js = format!(
+                                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                            script
+                                        );
+                                        let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
+                                        let _ = wv.ExecuteScript(
+                                            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                                            None,
+                                        );
+                                    }
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut content_token: i64 = 0;
+                    let _ = core.add_ContentLoading(&content_handler, &mut content_token);
+
+                    // dynamic scriptlet injection — register for NEXT navigation's document_start
+                    // Scripts registered during NavigationStarting apply at true document_start
+                    // for subsequent navigations (refresh, back/forward, same-site nav)
+                    let pending_for_dynscript = pending_for_msg.clone();
+                    let dyn_id_for_nav = dynamic_script_id.clone();
+                    let core_for_dynscript = core.clone();
+
+                    let nav_script_handler = webview2_com::NavigationStartingEventHandler::create(Box::new(
+                        move |_sender, _args| {
+                            let pending_c = AssertUnwindSafe(&pending_for_dynscript);
+                            let dyn_c = AssertUnwindSafe(&dyn_id_for_nav);
+                            let core_c = AssertUnwindSafe(&core_for_dynscript);
+                            let _ = catch_unwind(move || {
+                                // remove previously registered dynamic script
+                                if let Some(old_id) = dyn_c.lock().take() {
+                                    let wide: Vec<u16> = old_id.encode_utf16().chain(std::iter::once(0)).collect();
+                                    let _ = core_c.RemoveScriptToExecuteOnDocumentCreated(
+                                        windows::core::PCWSTR::from_raw(wide.as_ptr())
+                                    );
+                                }
+
+                                // read scriptlets (already computed by on_navigation which fires first)
+                                let script = pending_c.lock().script.clone();
+                                if script.is_empty() { return; }
+
+                                let js = format!(
+                                    "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                    script
+                                );
+
+                                // register for next navigation's document_start (fire-and-forget)
+                                let dyn_store = dyn_c.clone();
+                                let handler = webview2_com::AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(
+                                    Box::new(move |result: windows::core::Result<()>, id: String| {
+                                        if result.is_ok() && !id.is_empty() {
+                                            *dyn_store.lock() = Some(id);
+                                        }
+                                        Ok(())
+                                    })
+                                );
+                                let js_hstr = windows_core::HSTRING::from(js);
+                                let _ = core_c.AddScriptToExecuteOnDocumentCreated(&js_hstr, &handler);
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut nav_script_token: i64 = 0;
+                    let _ = core.add_NavigationStarting(&nav_script_handler, &mut nav_script_token);
+                }
+
+                // intercept popups (window.open, target="_blank") — open in same workspace
+                let app_nw = app_for_block.clone();
+                let tab_id_nw = tab_id_block.clone();
+                let block_popups_nw = block_popups;
+                let nw_handler = webview2_com::NewWindowRequestedEventHandler::create(Box::new(
+                    move |_sender, args| {
+                        let args_ref = AssertUnwindSafe(&args);
+                        let app_ref = AssertUnwindSafe(&app_nw);
+                        let tab_ref = AssertUnwindSafe(&tab_id_nw);
+                        let _ = catch_unwind(move || {
+                            if let Some(args) = args_ref.as_ref() {
+                                let _ = args.SetHandled(true);
+                                if block_popups_nw { return; } // silently block
+                                let mut uri = windows::core::PWSTR::null();
+                                if args.Uri(&mut uri).is_ok() && !uri.is_null() {
+                                    if let Ok(url_str) = uri.to_string() {
+                                        if !url_str.is_empty() {
+                                            let _ = app_ref.emit_to("main", "new-window-requested",
+                                                serde_json::json!({ "sourceTabId": *tab_ref, "url": url_str }));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        Ok(())
+                    },
+                ));
+                let mut nw_token: i64 = 0;
+                let _ = core.add_NewWindowRequested(&nw_handler, &mut nw_token);
+
+                // context menu — suppress default Chromium menu, emit target info to React
+                if let Ok(core11) = core.cast::<ICoreWebView2_11>() {
+                    let app_ctx = app_for_block.clone();
+                    let tab_id_ctx = tab_id_block.clone();
+
+                    let ctx_handler = webview2_com::ContextMenuRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let args_ref = AssertUnwindSafe(&args);
+                            let app_ref = AssertUnwindSafe(&app_ctx);
+                            let tab_ref = AssertUnwindSafe(&tab_id_ctx);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let _ = args.SetHandled(true);
+
+                                    #[repr(C)]
+                                    struct RawPoint { x: i32, y: i32 }
+                                    let mut point = RawPoint { x: 0, y: 0 };
+                                    let _ = args.Location(&mut point as *mut RawPoint as *mut _);
+
+                                    if let Ok(target) = args.ContextMenuTarget() {
+                                        let mut kind_val = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND(0);
+                                        let _ = target.Kind(&mut kind_val);
+                                        let kind = match kind_val.0 {
+                                            1 => "image", 2 => "selection", 3 => "audio", 4 => "video",
+                                            _ => "page",
+                                        };
+
+                                        let read_pw = |pw: windows::core::PWSTR| -> String {
+                                            if !pw.is_null() { pw.to_string().unwrap_or_default() } else { String::new() }
+                                        };
+
+                                        let mut has_link = windows_core::BOOL::default();
+                                        let _ = target.HasLinkUri(&mut has_link);
+                                        let link_uri = if has_link == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.LinkUri(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut has_source = windows_core::BOOL::default();
+                                        let _ = target.HasSourceUri(&mut has_source);
+                                        let source_uri = if has_source == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.SourceUri(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut has_sel = windows_core::BOOL::default();
+                                        let _ = target.HasSelection(&mut has_sel);
+                                        let selection = if has_sel == true {
+                                            let mut pw = windows::core::PWSTR::null();
+                                            let _ = target.SelectionText(&mut pw);
+                                            read_pw(pw)
+                                        } else { String::new() };
+
+                                        let mut page_pw = windows::core::PWSTR::null();
+                                        let _ = target.PageUri(&mut page_pw);
+                                        let page_uri = read_pw(page_pw);
+
+                                        let mut is_edit = windows_core::BOOL::default();
+                                        let _ = target.IsEditable(&mut is_edit);
+
+                                        let _ = app_ref.emit_to("main", "webview-context-menu", serde_json::json!({
+                                            "id": *tab_ref,
+                                            "x": point.x,
+                                            "y": point.y,
+                                            "kind": kind,
+                                            "linkUri": link_uri,
+                                            "sourceUri": source_uri,
+                                            "selectionText": selection,
+                                            "pageUri": page_uri,
+                                            "isEditable": is_edit == true,
+                                        }));
+                                    }
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut ctx_token: i64 = 0;
+                    let _ = core11.add_ContextMenuRequested(&ctx_handler, &mut ctx_token);
+                }
+
+                // permission request handler — custom prompt instead of Chromium default
+                {
+                    let app_perm = app_for_block.clone();
+                    let tab_id_perm = tab_id_block.clone();
+                    let perm_state = app_perm.state::<PermissionState>();
+                    let perm_pending = perm_state.pending.clone();
+                    let perm_saved = perm_state.saved.lock().clone();
+
+                    let perm_handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(
+                        move |_sender, args| {
+                            let args_ref = AssertUnwindSafe(&args);
+                            let app_ref = AssertUnwindSafe(&app_perm);
+                            let tab_ref = AssertUnwindSafe(&tab_id_perm);
+                            let pending_ref = AssertUnwindSafe(&perm_pending);
+                            let saved_ref = AssertUnwindSafe(&perm_saved);
+                            let _ = catch_unwind(move || {
+                                if let Some(args) = args_ref.as_ref() {
+                                    let mut uri_pw = windows::core::PWSTR::null();
+                                    let _ = args.Uri(&mut uri_pw);
+                                    let uri = if !uri_pw.is_null() { uri_pw.to_string().unwrap_or_default() } else { return; };
+
+                                    let domain = url::Url::parse(&uri)
+                                        .ok()
+                                        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                                        .unwrap_or_default();
+
+                                    let mut kind_val = COREWEBVIEW2_PERMISSION_KIND(0);
+                                    let _ = args.PermissionKind(&mut kind_val);
+                                    let kind_str = match kind_val.0 {
+                                        1 => "microphone", 2 => "camera", 3 => "geolocation",
+                                        4 => "notifications", 5 => "othersensors", 6 => "clipboardread",
+                                        7 => "multipledownloads", 8 => "filereadwrite", 9 => "autoplay",
+                                        10 => "localfonts", 11 => "midi", 12 => "windowmanagement",
+                                        _ => "unknown",
+                                    };
+
+                                    let kind_key = format!("{}:{}", domain, kind_str);
+
+                                    if let Some(&allowed) = saved_ref.get(&kind_key) {
+                                        let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(if allowed { 1 } else { 2 }));
+                                        return;
+                                    }
+
+                                    // auto-deny local fonts (fingerprint risk), auto-allow multiple downloads
+                                    if kind_val.0 == 10 { let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(2)); return; }
+                                    if kind_val.0 == 7 { let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE(1)); return; }
+
+                                    let deferral = match args.GetDeferral() {
+                                        Ok(d) => d,
+                                        Err(_) => return,
+                                    };
+
+                                    let request_id = uuid::Uuid::new_v4().to_string();
+
+                                    let mut user_initiated = windows_core::BOOL::default();
+                                    let _ = args.IsUserInitiated(&mut user_initiated);
+
+                                    pending_ref.lock()
+                                        .insert(request_id.clone(), PendingPermission {
+                                            deferral, args: args.clone(), _tab_id: tab_ref.clone(),
+                                        });
+
+                                    let _ = app_ref.emit_to("main", "permission-requested", serde_json::json!({
+                                        "requestId": request_id,
+                                        "tabId": *tab_ref,
+                                        "uri": uri,
+                                        "domain": domain,
+                                        "permission": kind_str,
+                                        "isUserInitiated": user_initiated == true,
+                                    }));
+                                }
+                            });
+                            Ok(())
+                        },
+                    ));
+                    let mut perm_token: i64 = 0;
+                    let _ = core.add_PermissionRequested(&perm_handler, &mut perm_token);
+                }
+            }
+        });
+        if let Err(e) = with_result {
+            crash_log::log_error("create_tab", &format!("with_webview failed for {}: {}", id, e));
+        }
+    }
+
+    crash_log::log_info("create_tab", &format!("tab {} created successfully", id));
+    Ok(())
+}
+
+#[tauri::command]
+async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        // pause media before suspending to prevent AUDIO_RENDERER_ERROR on resume
+        let _ = wv.eval("document.querySelectorAll('video,audio').forEach(m=>m.pause())");
+
+        // inject content-visibility:hidden to stop rendering + force-lose WebGL contexts
+        let _ = wv.eval(
+            "(function(){try{\
+                let s=document.getElementById('__bushido_bg_style');\
+                if(!s){s=document.createElement('style');s.id='__bushido_bg_style';document.head.appendChild(s)}\
+                s.textContent='*{content-visibility:hidden !important}';\
+                document.querySelectorAll('canvas').forEach(c=>{\
+                    let gl=c.getContext('webgl')||c.getContext('webgl2');\
+                    if(gl){let ext=gl.getExtension('WEBGL_lose_context');if(ext)ext.loseContext()}\
+                });\
+            }catch(e){}})()"
+        );
+
+        #[cfg(windows)]
+        {
+            let _ = wv.with_webview(move |wv| {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows::core::Interface;
+                unsafe {
+                    let controller = wv.controller();
+                    let core = match controller.CoreWebView2() {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                        let handler = webview2_com::TrySuspendCompletedHandler::create(
+                            Box::new(|_hr, _is_successful| Ok(()))
+                        );
+                        let _ = core3.TrySuspend(&handler);
+                    }
+                    // set memory target to low — triggers GC, reduces slack
+                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                        let _ = core19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(1));
+                    }
+                }
+            });
+
+            // trim working set of our own process after suspend
+            trim_working_set();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        #[cfg(windows)]
+        {
+            let _ = wv.with_webview(move |wv| {
+                use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                use windows::core::Interface;
+                unsafe {
+                    let controller = wv.controller();
+                    let core = match controller.CoreWebView2() {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                        let _ = core3.Resume();
+                    }
+                    // restore memory target to normal
+                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                        let _ = core19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL(0));
+                    }
+                }
+            });
+        }
+
+        // remove background rendering block
+        let _ = wv.eval(
+            "(function(){try{\
+                let s=document.getElementById('__bushido_bg_style');\
+                if(s)s.remove();\
+            }catch(e){}})()"
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    crash_log::log_info("close_tab", &format!("id={}", id));
+    // remove from state FIRST so layout_webviews won't try to position a dying webview
+    let state = app.state::<WebviewState>();
+    state.tabs.lock().remove(&id);
+    if let Some(wv) = app.get_webview(&id) {
+        if let Err(e) = wv.close() {
+            crash_log::log_error("close_tab", &format!("wv.close() failed for {}: {}", id, e));
+        }
+    } else {
+        crash_log::log_warn("close_tab", &format!("webview not found: {}", id));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_network_log(app: tauri::AppHandle, tab_id: String) -> Result<Vec<NetworkLogEntry>, String> {
+    let nl = app.state::<NetworkLog>();
+    let entries = nl.entries.lock();
+    Ok(entries.get(&tab_id).map(|d| d.iter().cloned().collect()).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn set_network_log_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let nl = app.state::<NetworkLog>();
+    nl.enabled.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_network_log(app: tauri::AppHandle, tab_id: String) -> Result<(), String> {
+    let nl = app.state::<NetworkLog>();
+    nl.entries.lock().remove(&tab_id);
+    nl.pending.lock().remove(&tab_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_glance(app: tauri::AppHandle, url: String, glance_id: String, sidebar_w: f64, top_offset: f64, profile_name: Option<String>) -> Result<(), String> {
+    let window = app.get_window("main").ok_or("no main window")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let total_w = size.width as f64 / scale;
+    let total_h = size.height as f64 / scale;
+    let content_w = total_w - sidebar_w;
+    let content_h = total_h - top_offset;
+
+    // 85% width, 80% height, centered in content area
+    let glance_w = content_w * 0.85;
+    let glance_h = content_h * 0.80;
+    let glance_x = sidebar_w + (content_w - glance_w) / 2.0;
+    let glance_y = top_offset + (content_h - glance_h) / 2.0;
+
+    // top bar is 40px rendered by React overlay, so offset webview content down
+    let bar_h = 40.0;
+    let wv_x = glance_x;
+    let wv_y = glance_y + bar_h;
+    let wv_w = glance_w;
+    let wv_h = glance_h - bar_h;
+
+    let webview_url = tauri::WebviewUrl::External(
+        url.parse().map_err(|e: url::ParseError| e.to_string())?
+    );
+
+    let bs = app.state::<BlockerState>();
+    let shortcut_s = bs.shortcut_script.clone();
+    let media_s = bs.media_script.clone();
+    let fingerprint_s = bs.fingerprint_script.clone();
+    let vault_s = bs.vault_script.clone();
+    let glance_s = bs.glance_script.clone();
+
+    let mut builder = tauri::WebviewBuilder::new(&glance_id, webview_url)
+        .with_profile_name(profile_name);
+    builder = builder.initialization_script(&shortcut_s);
+    builder = builder.initialization_script(&media_s);
+    builder = builder.initialization_script(&fingerprint_s);
+    builder = builder.initialization_script(&vault_s);
+    builder = builder.initialization_script(&glance_s);
+
+    let _webview = window.add_child(
+        builder,
+        tauri::LogicalPosition::new(wv_x, wv_y),
+        tauri::LogicalSize::new(wv_w, wv_h),
+    ).map_err(|e| e.to_string())?;
+
+    // register as panel so layout_webviews skips it
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().insert(glance_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_glance(app: tauri::AppHandle, glance_id: String) -> Result<(), String> {
+    // unregister from panels
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().remove(&glance_id);
+
+    // destroy webview
+    if let Some(wv) = app.get_webview(&glance_id) {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn promote_glance(app: tauri::AppHandle, glance_id: String) -> Result<(), String> {
+    // unregister from panels
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().remove(&glance_id);
+
+    // register as a normal tab in WebviewState using the glance_id as tab id
+    // (the webview label IS the glance_id, so layout_webviews can find it)
+    let ws = app.state::<WebviewState>();
+    ws.tabs.lock().insert(glance_id, false);
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_workspace_data(app: tauri::AppHandle, tab_id: String) -> Result<(), String> {
+    let wv = app.get_webview(&tab_id).ok_or("no webview for this workspace")?;
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use windows::core::Interface;
+        let _ = wv.with_webview(move |wv| {
+            unsafe {
+                let controller = wv.controller();
+                let core = match controller.CoreWebView2() {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                if let Ok(core13) = core.cast::<ICoreWebView2_13>() {
+                    if let Ok(profile) = core13.Profile() {
+                        if let Ok(profile2) = profile.cast::<ICoreWebView2Profile2>() {
+                            let handler = webview2_com::ClearBrowsingDataCompletedHandler::create(
+                                Box::new(|_| Ok(()))
+                            );
+                            let _ = profile2.ClearBrowsingDataAll(&handler);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+// position N webviews from a flat rect array
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaneRectArg {
+    tab_id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[tauri::command]
+async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
+    let vs = app.state::<crate::vault::VaultState>();
+    if vs.derived_key.lock().is_none() {
+        return Ok(());
+    }
+    let state = app.state::<WebviewState>();
+    let tabs = state.tabs.lock().clone();
+    for (tab_id, _) in &tabs {
+        if vs.derived_key.lock().is_none() {
+            break;
+        }
+        if let Some(wv) = app.get_webview(tab_id) {
+            let _ = wv.eval("if(window.__bushidoVaultRetry)window.__bushidoVaultRetry()");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn layout_webviews(app: tauri::AppHandle, panes: Vec<PaneRectArg>, focused_tab_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    let state = app.state::<WebviewState>();
+    let panel_state = app.state::<PanelState>();
+    let panel_ids = panel_state.ids.lock().clone();
+    let tabs = state.tabs.lock().clone();
+
+    for (tab_id, _) in &tabs {
+        if panel_ids.contains(tab_id) { continue; }
+        if let Some(wv) = app.get_webview(tab_id) {
+            if let Some(pane) = panes.iter().find(|p| p.tab_id == *tab_id) {
+                let _ = wv.set_position(tauri::LogicalPosition::new(sidebar_w + pane.x, top_offset + pane.y));
+                let _ = wv.set_size(tauri::LogicalSize::new(pane.w, pane.h));
+                if *tab_id == focused_tab_id {
+                    let _ = wv.set_focus();
+                }
+            } else {
+                let _ = wv.set_position(tauri::LogicalPosition::new(-9999.0, -9999.0));
+            }
+        }
+    }
+    Ok(())
+}
+
+// legacy wrapper — kept for incremental migration
+#[tauri::command]
+async fn switch_tab(app: tauri::AppHandle, id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    let window = app.get_window("main").ok_or("no main window")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let content_w = (size.width as f64 / scale) - sidebar_w;
+    let content_h = (size.height as f64 / scale) - top_offset;
+
+    let mut panes = vec![PaneRectArg { tab_id: id.clone(), x: 0.0, y: 0.0, w: content_w, h: content_h }];
+    if !split_id.is_empty() {
+        let half_w = content_w / 2.0;
+        panes[0].w = half_w;
+        panes.push(PaneRectArg { tab_id: split_id, x: half_w, y: 0.0, w: half_w, h: content_h });
+    }
+
+    layout_webviews(app, panes, id, sidebar_w, top_offset).await
+}
+
+#[tauri::command]
+async fn navigate_tab(app: tauri::AppHandle, id: String, url: String) -> Result<(), String> {
+    if is_blocked_scheme(&url) {
+        return Err("Blocked URL scheme".into());
+    }
+    if let Some(wv) = app.get_webview(&id) {
+        let parsed_url = if url.starts_with("https://") {
+            url.parse().map_err(|e: url::ParseError| e.to_string())?
+        } else if url.starts_with("http://") {
+            url.replacen("http://", "https://", 1)
+                .parse().map_err(|e: url::ParseError| e.to_string())?
+        } else if url.contains('.') {
+            format!("https://{}", url).parse().map_err(|e: url::ParseError| e.to_string())?
+        } else {
+            format!("https://www.google.com/search?q={}", urlencoding::encode(&url))
+                .parse().map_err(|e: url::ParseError| e.to_string())?
+        };
+        wv.navigate(parsed_url).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn go_back(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval("window.history.back()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn go_forward(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval("window.history.forward()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn reload_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval("window.location.reload()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn minimize_window(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_window("main").ok_or("no window")?.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn maximize_window(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_window("main").ok_or("no window")?;
+    if win.is_maximized().unwrap_or(false) {
+        win.unmaximize().map_err(|e| e.to_string())
+    } else {
+        win.maximize().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+async fn close_window(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_window("main").ok_or("no window")?.close().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn toggle_fullscreen(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_window("main").ok_or("no window")?;
+    let fs = win.is_fullscreen().map_err(|e| e.to_string())?;
+    win.set_fullscreen(!fs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn zoom_tab(app: tauri::AppHandle, id: String, factor: f64) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let _ = wv.with_webview(move |wv| {
+            #[cfg(windows)]
+            unsafe { let _ = wv.controller().SetZoomFactor(factor); }
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn print_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval("window.print()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.with_webview(|webview| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                if let Ok(core) = webview.controller().CoreWebView2() {
+                    let _ = core.OpenDevToolsWindow();
+                }
+            }));
+        }).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    match std::thread::spawn(move || {
+        let mut cb = arboard::Clipboard::new().map_err(|e| format!("{}", e))?;
+        cb.set_text(text).map_err(|e| format!("{}", e))
+    }).join() {
+        Ok(res) => res,
+        Err(_) => Err("thread panicked".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn set_tab_pinned(app: tauri::AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let js = format!("window.__bushidoPinned = {};", pinned);
+        let _ = wv.eval(&js);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward: bool) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        if query.is_empty() {
+            wv.eval("window.getSelection().removeAllRanges()").map_err(|e| e.to_string())?;
+        } else {
+            let dir = if forward { "false" } else { "true" };
+            let escaped = query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "\\r");
+            let js = format!(
+                "window.find('{}', false, {}, true, false, false, false)",
+                escaped, dir
+            );
+            wv.eval(&js).map_err(|e| e.to_string())?;
+            let count_js = format!(
+                "(function(){{var q='{}';var t=(document.body.innerText||'').toLowerCase();var c=t.split(q.toLowerCase()).length-1;window.chrome.webview.postMessage(JSON.stringify({{__bushido:'match-count',count:c}}))}})()",
+                escaped
+            );
+            let _ = wv.eval(&count_js);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn detect_video(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let js = r#"(function(){var videos=document.querySelectorAll('video');var has=false;videos.forEach(function(v){if(v.readyState>=2||v.src||v.querySelector('source'))has=true});if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify({__bushido:'video',hasVideo:has}))}})()"#;
+        wv.eval(js).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_reader(app: tauri::AppHandle, id: String, font_size: u32, font: String, theme: String, line_width: u32) -> Result<(), String> {
+    let fs = font_size.clamp(12, 28);
+    let lw = line_width.clamp(600, 900);
+    let font_family = if font == "serif" {
+        "Georgia,'Times New Roman',serif"
+    } else {
+        "-apple-system,system-ui,sans-serif"
+    };
+    let (bg, text, link) = match theme.as_str() {
+        "light" => ("#fafafa", "#1a1a1a", "#4f46e5"),
+        "sepia" => ("#f4ecd8", "#433422", "#8b5e3c"),
+        _ => ("#09090b", "#d4d4d8", "#818cf8"),
+    };
+    let css = format!(
+        "#__bushido_reader{{position:fixed;inset:0;z-index:999999;background:{bg};color:{text};overflow-y:auto;padding:48px 24px;font-family:{font_family};font-size:{fs}px;line-height:1.7}}.bushido-reader-content{{max-width:{lw}px;margin:0 auto}}.bushido-reader-content h1{{font-size:2em;margin-bottom:.5em;line-height:1.2}}.bushido-reader-content img{{max-width:100%;height:auto;border-radius:8px;margin:16px 0}}.bushido-reader-content a{{color:{link}}}.bushido-reader-content p{{margin-bottom:1em}}"
+    );
+    let js = format!(
+        r#"(function(){{if(document.getElementById('__bushido_reader')){{document.getElementById('__bushido_reader').remove();var s=document.getElementById('__bushido_reader_style');if(s)s.remove();document.querySelectorAll('[data-bushido-hidden]').forEach(function(el){{el.style.display=el.dataset.bushidoOrigDisplay||'';delete el.dataset.bushidoHidden;delete el.dataset.bushidoOrigDisplay}});return}}var article=document.querySelector('article')||document.querySelector('[role="main"]')||document.querySelector('main');if(!article){{var candidates=document.querySelectorAll('div,section');var best=null,bestLen=0;candidates.forEach(function(el){{var text=el.innerText||'';if(text.length>bestLen){{bestLen=text.length;best=el}}}});article=best}}if(!article)return;var title=document.title;var content=article.innerHTML;Array.from(document.body.children).forEach(function(el){{if(el.id==='__bushido_reader')return;el.dataset.bushidoOrigDisplay=el.style.display;el.dataset.bushidoHidden='true';el.style.display='none'}});var reader=document.createElement('div');reader.id='__bushido_reader';reader.innerHTML='<div class="bushido-reader-content"><h1>'+title+'</h1>'+content+'</div>';document.body.appendChild(reader);var style=document.createElement('style');style.id='__bushido_reader_style';style.textContent=`{css}`;document.head.appendChild(style)}})()"#
+    );
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval(&js).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_pip(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let js = r#"(function(){if(document.pictureInPictureElement){document.exitPictureInPicture();return}var existing=document.getElementById('__bushido_pip_host');if(existing){existing.remove();return}var v=document.querySelector('video');if(!v)return;v.removeAttribute('disablePictureInPicture');v.removeAttribute('disablepictureinpicture');var host=document.createElement('div');host.id='__bushido_pip_host';host.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none';var shadow=host.attachShadow({mode:'closed'});var btn=document.createElement('div');btn.innerHTML='<svg width="18" height="18" viewBox="0 0 16 16" fill="none" style="vertical-align:middle;margin-right:6px"><rect x="1" y="2.5" width="14" height="11" rx="1.5" stroke="white" stroke-width="1.3"/><rect x="8" y="7" width="6" height="5" rx="1" fill="white" opacity="0.4" stroke="white" stroke-width="1"/></svg>Picture in Picture';btn.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.9);color:#fff;padding:14px 24px;border-radius:10px;cursor:pointer;font:600 15px system-ui;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;display:flex;align-items:center;border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(12px);transition:background 0.15s';btn.onmouseenter=function(){btn.style.background='rgba(99,102,241,0.9)'};btn.onmouseleave=function(){btn.style.background='rgba(0,0,0,0.9)'};btn.onclick=function(e){e.stopPropagation();v.requestPictureInPicture().then(function(){host.remove()}).catch(function(){btn.innerHTML='PiP not available';btn.style.background='rgba(239,68,68,0.9)';setTimeout(function(){host.remove()},2000)})};shadow.appendChild(btn);document.documentElement.appendChild(host)})()"#;
+        wv.eval(js).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn media_play_pause(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval(r#"(function(){var v=document.querySelector('video,audio');if(v){v.paused?v.play():v.pause()}})()"#)
+          .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn media_mute(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        wv.eval(r#"(function(){var v=document.querySelector('video,audio');if(v){v.muted=!v.muted}})()"#)
+          .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn register_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().insert(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn unregister_panel(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let ps = app.state::<PanelState>();
+    ps.ids.lock().remove(&id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn position_panel(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    if let Some(wv) = app.get_webview(&id) {
+        let _ = wv.set_position(tauri::LogicalPosition::new(x, y));
+        let _ = wv.set_size(tauri::LogicalSize::new(w, h));
+    }
+    Ok(())
+}
+
+// legacy wrapper
+#[tauri::command]
+async fn resize_webviews(app: tauri::AppHandle, active_id: String, split_id: String, sidebar_w: f64, top_offset: f64) -> Result<(), String> {
+    switch_tab(app, active_id, split_id, sidebar_w, top_offset).await
+}
+
+fn data_dir(app: &tauri::AppHandle) -> PathBuf {
+    let dir = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn session_path(app: &tauri::AppHandle) -> PathBuf {
+    data_dir(app).join("session.json")
+}
+
+fn whitelist_path(app: &tauri::AppHandle) -> PathBuf {
+    data_dir(app).join("whitelist.json")
+}
+
+fn load_whitelist(app: &tauri::AppHandle) -> HashSet<String> {
+    let path = whitelist_path(app);
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(sites) = serde_json::from_str::<Vec<String>>(&data) {
+                return sites.into_iter().collect();
+            }
+        }
+    }
+    HashSet::new()
+}
+
+fn save_whitelist(app: &tauri::AppHandle, sites: &HashSet<String>) {
+    let path = whitelist_path(app);
+    let list: Vec<&String> = sites.iter().collect();
+    if let Ok(json) = serde_json::to_string(&list) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+fn permissions_path(app: &tauri::AppHandle) -> PathBuf {
+    data_dir(app).join("permissions.json")
+}
+
+fn load_permissions(app: &tauri::AppHandle) -> HashMap<String, bool> {
+    let path = permissions_path(app);
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, bool>>(&data) {
+                return map;
+            }
+        }
+    }
+    HashMap::new()
+}
+
+fn save_permissions(app: &tauri::AppHandle, perms: &HashMap<String, bool>) {
+    let path = permissions_path(app);
+    if let Ok(json) = serde_json::to_string(perms) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+#[tauri::command]
+async fn toggle_whitelist(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
+    let ws = app.state::<WhitelistState>();
+    let (whitelisted, snapshot) = {
+        let mut sites = ws.sites.lock();
+        let wl = if sites.contains(&domain) {
+            sites.remove(&domain);
+            false
+        } else {
+            sites.insert(domain);
+            true
+        };
+        (wl, sites.clone())
+    };
+    save_whitelist(&app, &snapshot);
+    Ok(whitelisted)
+}
+
+#[tauri::command]
+async fn get_whitelist(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let ws = app.state::<WhitelistState>();
+    let sites = ws.sites.lock();
+    Ok(sites.iter().cloned().collect())
+}
+
+#[tauri::command]
+async fn is_whitelisted(app: tauri::AppHandle, domain: String) -> Result<bool, String> {
+    let ws = app.state::<WhitelistState>();
+    let sites = ws.sites.lock();
+    Ok(sites.contains(&domain))
+}
+
+#[tauri::command]
+async fn respond_permission(app: tauri::AppHandle, request_id: String, allow: bool, remember: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+
+        let perm_state = app.state::<PermissionState>();
+        let pending = perm_state.pending.lock()
+            .remove(&request_id);
+        let pending = pending.ok_or("Permission request not found")?;
+
+        let state_val = COREWEBVIEW2_PERMISSION_STATE(if allow { 1 } else { 2 });
+        unsafe {
+            let _ = pending.args.SetState(state_val);
+            let _ = pending.deferral.Complete();
+        }
+
+        if remember {
+            let mut uri_pw = windows::core::PWSTR::null();
+            unsafe { let _ = pending.args.Uri(&mut uri_pw); }
+            let uri = if !uri_pw.is_null() { unsafe { uri_pw.to_string().unwrap_or_default() } } else { String::new() };
+            let domain = url::Url::parse(&uri)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                .unwrap_or_default();
+
+            let mut kind_val = COREWEBVIEW2_PERMISSION_KIND(0);
+            unsafe { let _ = pending.args.PermissionKind(&mut kind_val); }
+            let kind_str = match kind_val.0 {
+                1 => "microphone", 2 => "camera", 3 => "geolocation",
+                4 => "notifications", 5 => "othersensors", 6 => "clipboardread",
+                7 => "multipledownloads", 8 => "filereadwrite", 9 => "autoplay",
+                10 => "localfonts", 11 => "midi", 12 => "windowmanagement",
+                _ => "unknown",
+            };
+            let kind_key = format!("{}:{}", domain, kind_str);
+
+            let mut saved = perm_state.saved.lock();
+            saved.insert(kind_key, allow);
+            save_permissions(&app, &saved);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPermissionEntry {
+    domain: String,
+    permission: String,
+    allowed: bool,
+}
+
+#[tauri::command]
+async fn get_permissions(app: tauri::AppHandle) -> Result<Vec<SavedPermissionEntry>, String> {
+    let ps = app.state::<PermissionState>();
+    let saved = ps.saved.lock();
+    let result: Vec<SavedPermissionEntry> = saved.iter().map(|(key, &allowed)| {
+        let parts: Vec<&str> = key.splitn(2, ':').collect();
+        SavedPermissionEntry {
+            domain: parts.first().unwrap_or(&"").to_string(),
+            permission: parts.get(1).unwrap_or(&"unknown").to_string(),
+            allowed,
+        }
+    }).collect();
+    Ok(result)
+}
+
+#[tauri::command]
+async fn revoke_permission(app: tauri::AppHandle, domain: String, permission: String) -> Result<(), String> {
+    let ps = app.state::<PermissionState>();
+    let mut saved = ps.saved.lock();
+    let key = format!("{}:{}", domain, permission);
+    saved.remove(&key);
+    save_permissions(&app, &saved);
+    Ok(())
+}
+
+#[tauri::command]
+fn rebind_shortcut(app: tauri::AppHandle, action: String, old_combo: String, new_combo: String) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let gs = app.global_shortcut();
+
+    // Unregister old (ignore error if it wasn't registered)
+    if !old_combo.is_empty() {
+        let _ = gs.unregister(old_combo.as_str());
+    }
+
+    // Register new
+    gs.register(new_combo.as_str())
+        .map_err(|e| format!("Failed to register {}: {}", new_combo, e))?;
+
+    // Update the keybinding map
+    let kb = app.state::<KeybindingState>();
+    let mut map = kb.map.lock();
+    let old_normalized = normalize_combo(&old_combo);
+    let new_normalized = normalize_combo(&new_combo);
+    map.remove(&old_normalized);
+    map.insert(new_normalized, action);
+
+    Ok(())
+}
+
+const MAX_SESSION_BACKUPS: u32 = 5;
+
+fn rotate_session_backups(app: &tauri::AppHandle) {
+    let dir = data_dir(app);
+    let session = dir.join("session.json");
+    if !session.exists() { return; }
+    // shift existing backups up: 4→5, 3→4, 2→3, 1→2
+    for i in (1..MAX_SESSION_BACKUPS).rev() {
+        let src = dir.join(format!("session.backup.{}.json", i));
+        let dst = dir.join(format!("session.backup.{}.json", i + 1));
+        if src.exists() {
+            let _ = fs::copy(&src, &dst);
+        }
+    }
+    // copy current session to backup.1
+    let _ = fs::copy(&session, dir.join("session.backup.1.json"));
+}
+
+#[tauri::command]
+async fn save_session(app: tauri::AppHandle, tabs: String) -> Result<(), String> {
+    rotate_session_backups(&app);
+    let path = session_path(&app);
+    fs::write(&path, tabs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_session(app: tauri::AppHandle) -> Result<String, String> {
+    let path = session_path(&app);
+    if path.exists() {
+        fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok("[]".into())
+    }
+}
+
+#[tauri::command]
+async fn list_session_backups(app: tauri::AppHandle) -> Result<Vec<(u32, String)>, String> {
+    let dir = data_dir(&app);
+    let mut backups = Vec::new();
+    for i in 1..=MAX_SESSION_BACKUPS {
+        let path = dir.join(format!("session.backup.{}.json", i));
+        if path.exists() {
+            let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+            let modified = meta.modified().map_err(|e| e.to_string())?;
+            let epoch = modified.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let ms = epoch.as_millis() as u64;
+            backups.push((i, ms.to_string()));
+        }
+    }
+    Ok(backups)
+}
+
+#[tauri::command]
+async fn restore_backup(app: tauri::AppHandle, backup_num: u32) -> Result<String, String> {
+    if backup_num < 1 || backup_num > MAX_SESSION_BACKUPS {
+        return Err("Invalid backup number".into());
+    }
+    let dir = data_dir(&app);
+    let backup_path = dir.join(format!("session.backup.{}.json", backup_num));
+    if !backup_path.exists() {
+        return Err("Backup not found".into());
+    }
+    let data = fs::read_to_string(&backup_path).map_err(|e| e.to_string())?;
+    let session_path = dir.join("session.json");
+    fs::write(&session_path, &data).map_err(|e| e.to_string())?;
+    Ok(data)
+}
+
+fn settings_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("settings.json") }
+fn history_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("history.json") }
+fn bookmarks_path(app: &tauri::AppHandle) -> PathBuf { data_dir(app).join("bookmarks.json") }
+
+#[tauri::command]
+async fn save_settings(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    fs::write(settings_path(&app), data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_dns_level(app: tauri::AppHandle, level: String) -> Result<(), String> {
+    let port = app.state::<DnsPort>().0;
+    if port == 0 { return Err("dns resolver not running".into()); }
+    let client = reqwest::Client::new();
+    client.post(format!("http://127.0.0.1:{}/level", port))
+        .body(format!("\"{}\"", level))
+        .send().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+struct DnsPort(u16);
+
+#[tauri::command]
+async fn load_settings(app: tauri::AppHandle) -> Result<String, String> {
+    let p = settings_path(&app);
+    if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok("{}".into()) }
+}
+
+#[tauri::command]
+async fn save_history(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    fs::write(history_path(&app), data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_history(app: tauri::AppHandle) -> Result<String, String> {
+    let p = history_path(&app);
+    if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok("[]".into()) }
+}
+
+#[tauri::command]
+async fn delete_history_entry(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let p = history_path(&app);
+    if !p.exists() { return Ok(()); }
+    let data = fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
+    let filtered: Vec<&serde_json::Value> = entries.iter().filter(|e| {
+        e.get("url").and_then(|u| u.as_str()) != Some(url.as_str())
+    }).collect();
+    let out = serde_json::to_string(&filtered).map_err(|e| e.to_string())?;
+    fs::write(&p, out).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn fetch_search_suggestions(query: String, engine: String) -> Result<Vec<String>, String> {
+    if query.len() < 2 { return Ok(vec![]); }
+    let url = match engine.as_str() {
+        "google" => format!("https://suggestqueries.google.com/complete/search?client=firefox&q={}", urlencoding::encode(&query)),
+        "duckduckgo" => format!("https://duckduckgo.com/ac/?q={}&type=list", urlencoding::encode(&query)),
+        "brave" => format!("https://search.brave.com/api/suggest?q={}&rich=false", urlencoding::encode(&query)),
+        "bing" => format!("https://api.bing.com/osjson.aspx?query={}", urlencoding::encode(&query)),
+        _ => return Ok(vec![]),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let suggestions = match parsed {
+        serde_json::Value::Array(ref arr) if arr.len() >= 2 => {
+            arr[1].as_array().map(|a| {
+                a.iter().filter_map(|v| {
+                    if let Some(s) = v.as_str() { return Some(s.to_string()); }
+                    if let Some(obj) = v.as_object() {
+                        return obj.get("phrase").and_then(|p| p.as_str()).map(|s| s.to_string());
+                    }
+                    None
+                }).take(6).collect::<Vec<_>>()
+            }).unwrap_or_default()
+        }
+        _ => vec![],
+    };
+    Ok(suggestions)
+}
+
+#[tauri::command]
+async fn save_bookmarks(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    // if sync enabled, write through SyncDoc
+    let state = app.try_state::<sync::SyncState>();
+    if let Some(state) = state {
+        let mut doc_guard = state.sync_doc.lock().await;
+        if let Some(ref mut doc) = *doc_guard {
+            doc.write_full_from_json(&data)?;
+            doc.save()?;
+            drop(doc_guard); // release before notify
+            sync::notify_sync_change(&state);
+            return Ok(());
+        }
+    }
+    // fallback: plain JSON
+    fs::write(bookmarks_path(&app), data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn load_bookmarks(app: tauri::AppHandle) -> Result<String, String> {
+    // if sync enabled, read from SyncDoc
+    let state = app.try_state::<sync::SyncState>();
+    if let Some(state) = state {
+        let doc_guard = state.sync_doc.lock().await;
+        if let Some(ref doc) = *doc_guard {
+            return doc.read_bookmarks_as_json();
+        }
+    }
+    // fallback: plain JSON
+    let p = bookmarks_path(&app);
+    if p.exists() { fs::read_to_string(&p).map_err(|e| e.to_string()) } else { Ok(r#"{"bookmarks":[],"folders":[]}"#.into()) }
+}
+
+#[tauri::command]
+async fn start_download(app: tauri::AppHandle, url: String, filename: String, download_dir: String, cookies: Option<String>, mime_routing: Option<Vec<downloads::MimeRoute>>) -> Result<String, String> {
+    let dir = if download_dir.is_empty() {
+        dirs::download_dir().unwrap_or_else(|| PathBuf::from(".")).to_string_lossy().to_string()
+    } else {
+        download_dir
+    };
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    downloads::start(app.clone(), url, filename, dir, cookies, mime_routing.unwrap_or_default(), rl.inner().clone()).await
+}
+
+#[tauri::command]
+async fn pause_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    downloads::pause(&app, &id)
+}
+
+#[tauri::command]
+async fn resume_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    downloads::resume(app.clone(), id, rl.inner().clone()).await
+}
+
+#[tauri::command]
+async fn reorder_download(app: tauri::AppHandle, id: String, priority: u32) -> Result<(), String> {
+    downloads::set_priority(&app, &id, priority)
+}
+
+#[tauri::command]
+async fn set_bandwidth_limit(app: tauri::AppHandle, limit: u64) -> Result<(), String> {
+    let rl = app.state::<std::sync::Arc<downloads::RateLimiter>>();
+    rl.limit_bps.store(limit, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    downloads::cancel(&app, &id)
+}
+
+#[tauri::command]
+async fn get_downloads(app: tauri::AppHandle) -> Result<Vec<downloads::DlItem>, String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let downloads = dm.downloads.lock();
+    Ok(downloads.values().cloned().collect())
+}
+
+#[tauri::command]
+async fn open_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let path = {
+        let downloads = dm.downloads.lock();
+        let item = downloads.get(&id).ok_or("not found")?;
+        item.file_path.clone()
+    };
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_download_folder(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dm = app.state::<downloads::DownloadManager>();
+    let path = {
+        let downloads = dm.downloads.lock();
+        let item = downloads.get(&id).ok_or("not found")?;
+        item.file_path.clone()
+    };
+    let parent = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
+    tauri_plugin_opener::open_path(&parent, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // start local DoH resolver before any webview creation
+    let (dns_flags, dns_port) = {
+        let rt = tokio::runtime::Runtime::new().expect("tokio rt for dns");
+        match rt.block_on(dns_resolver::start()) {
+            Ok(port) => {
+                println!("DoH resolver on port {}", port);
+                std::thread::spawn(move || { rt.block_on(std::future::pending::<()>()); });
+                (dns_resolver::flags(port), port)
+            }
+            Err(e) => {
+                eprintln!("dns resolver failed: {}", e);
+                (String::new(), 0)
+            }
+        }
+    };
+
+    // read saved settings for browser args that need to be set before webview creation
+    let autoplay_arg = {
+        let settings_path = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("com.bushido.browser")
+            .join("settings.json");
+        let policy = std::fs::read_to_string(&settings_path).ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("autoplayPolicy")?.as_str().map(String::from))
+            .unwrap_or_else(|| "block-audio".into());
+        match policy.as_str() {
+            "block-all" => "--autoplay-policy=no-user-gesture-required",
+            "allow" => "--autoplay-policy=no-user-gesture-required",
+            _ => "--autoplay-policy=document-user-activation-required",
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        std::env::remove_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
+        let base_args = format!(
+            "--enable-quic --site-per-process --origin-agent-cluster=true \
+             --disable-dns-prefetch --disable-background-networking \
+             --enable-features=ThirdPartyStoragePartitioning,PartitionedCookies \
+             --disable-features=UserAgentClientHint \
+             --renderer-process-limit=4 \
+             --js-flags=\"--max-old-space-size=512 --max-semi-space-size=2 --optimize-for-size --lite-mode\" \
+             --purge-v8-memory \
+             --disable-low-res-tiling \
+             --gpu-rasterization-msaa-sample-count=0 \
+             --enable-zero-copy \
+             --decoded-image-working-set-budget-mb=128 \
+             {} {}", dns_flags, autoplay_arg
+        );
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &base_args);
+    }
+
+    // init data dir and crash logging FIRST
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("com.bushido.browser");
+    let _ = std::fs::create_dir_all(&data_dir);
+    crash_log::init(&data_dir);
+    crash_log::log_info("startup", &format!("Bushido Browser v0.9.2 starting, pid={}", std::process::id()));
+
+    // init adblock-rust engine (cached binary or cold compile)
+    let engine = blocker::init_engine(&data_dir);
+
+    let scriptlet_preamble = include_str!("scriptlet_preamble.js").to_string();
+    let cosmetic_script = include_str!("content_blocker.js").to_string();
+    let cosmetic_observer_script = include_str!("cosmetic_observer.js").to_string();
+    let cookie_script = include_str!("cookie_blocker.js").to_string();
+    let shortcut_script = include_str!("shortcut_bridge.js").to_string();
+    let media_script = include_str!("media_listener.js").to_string();
+    let fingerprint_script = include_str!("fingerprint.js").to_string();
+    let fingerprint_verify_script = include_str!("fingerprint_verify.js").to_string();
+    let vault_script = include_str!("vault_autofill.js").to_string();
+    let glance_script = include_str!("glance_listener.js").to_string();
+    let preload_script = include_str!("link_preload.js").to_string();
+
+    let sync_data_dir = data_dir.clone();
+
+    // Load keybindings from settings.json (or use defaults)
+    let mut keybinding_map: HashMap<String, String> = HashMap::new();
+    let mut shortcut_combos: Vec<String> = Vec::new();
+    {
+        let settings_p = data_dir.join("settings.json");
+        let user_bindings: Option<HashMap<String, String>> = if settings_p.exists() {
+            fs::read_to_string(&settings_p).ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get("keybindings").cloned())
+                .and_then(|kb| serde_json::from_value(kb).ok())
+        } else {
+            None
+        };
+
+        // Build action→combo from user settings or defaults
+        let mut action_to_combo: Vec<(String, String)> = Vec::new();
+        if let Some(ref ub) = user_bindings {
+            for (action, combo) in DEFAULT_KEYBINDINGS {
+                let combo_str = ub.get(*action).map(|s| s.as_str()).unwrap_or(combo);
+                action_to_combo.push((action.to_string(), combo_str.to_string()));
+            }
+        } else {
+            for (action, combo) in DEFAULT_KEYBINDINGS {
+                action_to_combo.push((action.to_string(), combo.to_string()));
+            }
+        }
+
+        for (action, combo) in &action_to_combo {
+            let normalized = normalize_combo(combo);
+            keybinding_map.insert(normalized, action.clone());
+            shortcut_combos.push(combo.clone());
+        }
+    }
+    let keybinding_state = KeybindingState {
+        map: Mutex::new(keybinding_map),
+    };
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(WebviewState {
+            tabs: Mutex::new(HashMap::new()),
+        })
+        .manage(PanelState {
+            ids: Mutex::new(HashSet::new()),
+        })
+        .manage(PreloadState {
+            url: Mutex::new(None),
+            webview_id: Mutex::new(None),
+            source_tab: Mutex::new(None),
+        })
+        .manage(NetworkLog {
+            entries: Mutex::new(HashMap::new()),
+            enabled: AtomicBool::new(false),
+            pending: Mutex::new(HashMap::new()),
+        })
+        .manage(downloads::DownloadManager::new())
+        .manage(std::sync::Arc::new(downloads::RateLimiter::new(0)))
+        .manage(keybinding_state)
+        .manage(BlockerState {
+            engine: engine.clone(),
+            data_dir: data_dir.clone(),
+            scriptlet_preamble,
+            cosmetic_script,
+            cosmetic_observer_script,
+            cookie_script,
+            shortcut_script,
+            media_script,
+            fingerprint_script,
+            fingerprint_verify_script,
+            vault_script,
+            glance_script,
+            preload_script,
+        })
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(|app, shortcut, event| {
+                use tauri_plugin_global_shortcut::ShortcutState;
+                if event.state != ShortcutState::Pressed { return; }
+                let normalized = shortcut.to_string().to_lowercase();
+                let kb_state = app.state::<KeybindingState>();
+                let action = {
+                    let map = kb_state.map.lock();
+                    map.get(&normalized).cloned()
+                };
+                if let Some(action) = action {
+                    if let Some(win) = app.get_webview("main") {
+                        let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);
+                        let _ = win.eval(&js);
+                    }
+                }
+            })
+            .build()
+        )
+        .setup(move |app| {
+            app.manage(DnsPort(dns_port));
+
+            #[cfg(windows)]
+            {
+                use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS};
+                unsafe { let _ = SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS); }
+            }
+
+            // Register global shortcuts one-by-one, skipping any that fail (e.g., already registered by another app)
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                for combo in &shortcut_combos {
+                    match app.global_shortcut().register(combo.as_str()) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Warning: failed to register shortcut '{}': {}", combo, e);
+                            crash_log::log_warn("shortcuts", &format!("Failed to register '{}': {}", combo, e));
+                        }
+                    }
+                }
+            }
+
+            let sites = load_whitelist(&app.handle());
+            app.manage(WhitelistState {
+                sites: Mutex::new(sites),
+            });
+
+            let saved_perms = load_permissions(&app.handle());
+            app.manage(PermissionState {
+                saved: Mutex::new(saved_perms),
+                #[cfg(windows)]
+                pending: Arc::new(Mutex::new(HashMap::new())),
+            });
+
+            // init vault
+            let vault_path = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("vault.db");
+            let vault_state = vault::VaultState::new(vault_path);
+            let _ = vault_state.init_db();
+            app.manage(vault_state);
+
+            // Initialize sync state
+            let sync_state = match sync::keys::load_identity(&sync_data_dir) {
+                Ok(Some(identity)) => {
+                    // Read syncEnabled from the app settings (Tauri app_data_dir), NOT sync_data_dir
+                    let settings_p = app.path().app_data_dir()
+                        .unwrap_or_else(|_| sync_data_dir.clone())
+                        .join("settings.json");
+                    let sync_enabled = if settings_p.exists() {
+                        fs::read_to_string(&settings_p).ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| v.get("syncEnabled")?.as_bool())
+                            .unwrap_or(false)
+                    } else { false };
+
+                    if sync_enabled {
+                        let device_name = fs::read_to_string(&settings_p).ok()
+                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                            .and_then(|v| v.get("syncDeviceName")?.as_str().map(String::from))
+                            .unwrap_or_else(|| hostname::get()
+                                .map(|h| h.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| "My PC".into()));
+                        let state = sync::SyncState::from_identity(identity, device_name, sync_data_dir);
+                        // Start discovery automatically
+                        if let Ok(mut disc) = sync::discovery::DiscoveryService::new() {
+                            let _ = disc.register(&state.device_id, &state.device_name, &state.fingerprint);
+                            let _ = disc.start_browsing(app.handle().clone(), state.device_id.clone());
+                            *state.discovery.lock() = Some(disc);
+                            *state.status.lock() = sync::SyncStatus::Discovering;
+                        }
+                        state
+                    } else {
+                        sync::SyncState::new_disabled(sync_data_dir)
+                    }
+                }
+                _ => sync::SyncState::new_disabled(sync_data_dir),
+            };
+            app.manage(sync_state);
+
+            // Start TCP listener if sync is enabled
+            {
+                let ss = app.state::<sync::SyncState>();
+                if ss.enabled {
+                    sync::start_tcp_listener(app.handle().clone());
+                }
+            }
+
+            // Init SyncDoc + migration + sync debounce + health check if sync enabled
+            {
+                let ss = app.state::<sync::SyncState>();
+                if ss.enabled {
+                    match sync::sync_doc::SyncDoc::init(&ss.app_data_dir, ss.peer_id, &ss.device_id) {
+                        Ok(mut doc) => {
+                            let _ = doc.maybe_migrate_json(&ss.app_data_dir);
+                            *ss.sync_doc.blocking_lock() = Some(doc);
+                            sync::start_sync_debounce(app.handle().clone());
+                            sync::start_health_check(app.handle().clone());
+                            sync::start_compaction(app.handle().clone());
+                        }
+                        Err(e) => eprintln!("[sync] SyncDoc init failed: {}", e),
+                    }
+                }
+            }
+
+            // restore pending downloads from manifests
+            let pending = downloads::load_pending(&app.handle());
+            if !pending.is_empty() {
+                let dm = app.state::<downloads::DownloadManager>();
+                let mut downloads = dm.downloads.lock();
+                for item in pending {
+                    downloads.insert(item.id.clone(), item);
+                }
+            }
+
+            // filter list auto-update (startup check + every 24h)
+            {
+                let bs = app.state::<BlockerState>();
+                let engine_update = bs.engine.clone();
+                let data_dir_update = bs.data_dir.clone();
+                let app_handle = app.handle().clone();
+
+                tauri::async_runtime::spawn(async move {
+                    // check if update needed (>24h since last)
+                    let metadata = blocker::load_metadata(&data_dir_update);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let stale = metadata.last_updated
+                        .map(|t| now.saturating_sub(t) > 86400)
+                        .unwrap_or(true);
+
+                    if stale {
+                        // small delay so browser UI loads first
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        if let Err(e) = blocker::update_filter_lists(
+                            data_dir_update.clone(),
+                            engine_update.clone(),
+                        ).await {
+                            eprintln!("filter list update failed: {}", e);
+                        } else {
+                            let _ = app_handle.emit_to("main", "filter-lists-updated", ());
+                        }
+                    }
+
+                    // then every 24h
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+                    interval.tick().await; // skip first tick
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = blocker::update_filter_lists(
+                            data_dir_update.clone(),
+                            engine_update.clone(),
+                        ).await {
+                            eprintln!("filter list update failed: {}", e);
+                        } else {
+                            let _ = app_handle.emit_to("main", "filter-lists-updated", ());
+                        }
+                    }
+                });
+            }
+
+            // network log batch emitter — flush pending entries every 500ms
+            {
+                let app_netlog = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+                    loop {
+                        interval.tick().await;
+                        let nl = app_netlog.state::<NetworkLog>();
+                        if !nl.enabled.load(Ordering::Relaxed) { continue; }
+                        let batches: HashMap<String, Vec<NetworkLogEntry>> = {
+                            let mut pending = nl.pending.lock();
+                            if pending.is_empty() { continue; }
+                            std::mem::take(&mut *pending)
+                        };
+                        for (tab_id, entries) in &batches {
+                            let mut main = nl.entries.lock();
+                            let deque = main.entry(tab_id.clone()).or_insert_with(VecDeque::new);
+                            for entry in entries {
+                                deque.push_back(entry.clone());
+                                if deque.len() > 500 { deque.pop_front(); }
+                            }
+                        }
+                        for (tab_id, entries) in batches {
+                            let _ = app_netlog.emit_to("main", "network-request", serde_json::json!({
+                                "tabId": tab_id,
+                                "entries": entries
+                            }));
+                        }
+                    }
+                });
+            }
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            create_tab,
+            suspend_tab,
+            resume_tab,
+            close_tab,
+            layout_webviews,
+            switch_tab,
+            navigate_tab,
+            go_back,
+            go_forward,
+            reload_tab,
+            detect_video,
+            toggle_reader,
+            toggle_pip,
+            media_play_pause,
+            media_mute,
+            resize_webviews,
+            find_in_page,
+            minimize_window,
+            maximize_window,
+            close_window,
+            toggle_fullscreen,
+            zoom_tab,
+            print_tab,
+            toggle_devtools,
+            copy_text_to_clipboard,
+            save_session,
+            load_session,
+            list_session_backups,
+            restore_backup,
+            save_settings,
+            set_dns_level,
+            load_settings,
+            save_history,
+            load_history,
+            delete_history_entry,
+            fetch_search_suggestions,
+            save_bookmarks,
+            load_bookmarks,
+            toggle_whitelist,
+            get_whitelist,
+            is_whitelisted,
+            respond_permission,
+            get_permissions,
+            revoke_permission,
+            rebind_shortcut,
+            start_download,
+            pause_download,
+            resume_download,
+            cancel_download,
+            get_downloads,
+            open_download,
+            open_download_folder,
+            reorder_download,
+            set_bandwidth_limit,
+            register_panel,
+            unregister_panel,
+            position_panel,
+            import::detect_browsers,
+            import::import_bookmarks,
+            import::import_history,
+            screenshot::capture_visible,
+            screenshot::capture_preview_for_select,
+            screenshot::capture_area,
+            screenshot::capture_fullpage,
+            screenshot::save_screenshot,
+            screenshot::copy_image_to_clipboard,
+            screenshot::generate_qr_code,
+            crash_log::read_crash_log,
+            crash_log::clear_crash_log,
+            sync::get_sync_status,
+            sync::enable_sync,
+            sync::disable_sync,
+            sync::get_discovered_peers,
+            sync::set_device_name,
+            sync::start_pairing,
+            sync::enter_pairing_code,
+            sync::remove_device,
+            sync::simulate_pairing,
+            sync::force_sync,
+            sync::simulate_sync,
+            sync::sync_add_bookmark,
+            sync::sync_remove_bookmark,
+            sync::sync_add_folder,
+            sync::sync_remove_folder,
+            sync::sync_rename_folder,
+            sync::sync_move_bookmark,
+            sync::sync_add_history,
+            sync::sync_write_setting,
+            sync::sync_write_tabs,
+            sync::sync_get_all_tabs,
+            sync::sync_set_data_types,
+            sync::send_tab_to_device,
+            sync::reset_sync_data,
+            vault::vault_has_master_password,
+            vault::vault_setup,
+            vault::vault_unlock,
+            vault::vault_lock,
+            vault::vault_is_unlocked,
+            vault::vault_save_entry,
+            vault::vault_get_entries,
+            vault::vault_delete_entry,
+            vault::vault_update_entry,
+            vault::vault_generate_password,
+            vault_retry_autofill,
+            get_network_log,
+            set_network_log_enabled,
+            clear_network_log,
+            open_glance,
+            close_glance,
+            promote_glance,
+            clear_workspace_data,
+            set_tab_pinned,
+            set_power_mode,
+            update_filter_lists,
+            get_perf_metrics,
+            run_benchmarks,
+            preconnect_url
+        ])
+        .run(tauri::generate_context!())
+        .unwrap_or_else(|e| {
+            crash_log::log_error("startup", &format!("Tauri run() failed: {}", e));
+            eprintln!("FATAL: Bushido failed to start: {}", e);
+        });
+}

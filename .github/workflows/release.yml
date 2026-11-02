@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Rust clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Bushido ${{ github.ref_name }}'
+          releaseBody: |
+            See [CHANGELOG.md](https://github.com/visualstudioblyat/bushido/blob/main/CHANGELOG.md) for details.
+
+            **Windows SmartScreen Note:** This build is not code-signed. Windows may show a SmartScreen warning — click "More info" then "Run anyway" to proceed.
+          releaseDraft: false
+          prerelease: false
+
+      - name: Generate and upload updater JSON
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          # Read the signature
+          SIG=$(cat src-tauri/target/release/bundle/nsis/Bushido_${VERSION}_x64-setup.nsis.zip.sig)
+
+          # Generate latest.json
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "See https://github.com/visualstudioblyat/bushido/releases/tag/v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "${SIG}",
+                "url": "https://github.com/visualstudioblyat/bushido/releases/download/v${VERSION}/Bushido_${VERSION}_x64-setup.nsis.zip"
+              }
+            }
+          }
+          EOF
+
+          # Upload artifacts to the release
+          gh release upload "v${VERSION}" \
+            "src-tauri/target/release/bundle/nsis/Bushido_${VERSION}_x64-setup.nsis.zip" \
+            latest.json \
+            --clobber

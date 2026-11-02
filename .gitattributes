@@ -1,0 +1,2 @@
+# Hide forked Tauri/wry source from GitHub language stats
+src-tauri/forks/** linguist-vendored
