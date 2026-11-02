@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoFingerprint) return;
-    Object.defineProperty(window, '__bushidoFingerprint', { value: true, writable: false, configurable: false });
+    if (window.__digidawFingerprint) return;
+    Object.defineProperty(window, '__digidawFingerprint', { value: true, writable: false, configurable: false });
 
     // ── FIX #1: Per-site PRNG seed (research/17 Attack 20, research/18 D.1) ──
     // Derive seed from domain so each site gets different canvas/WebGL/audio noise.
@@ -71,8 +71,8 @@
     var _origPrepend = Element.prototype.prepend;
 
     function maybePatchiframe(el) {
-        if (el && el.tagName === 'IFRAME' && el.contentWindow && !el.__bushidoFP) {
-            el.__bushidoFP = true;
+        if (el && el.tagName === 'IFRAME' && el.contentWindow && !el.__digidawFP) {
+            el.__digidawFP = true;
             patchIframeWindow(el.contentWindow);
             el.addEventListener('load', function() {
                 try { if (el.contentWindow) patchIframeWindow(el.contentWindow); } catch(e) {}
@@ -118,7 +118,7 @@
                     var self = this;
                     origSrcdocSet.call(this, val);
                     Promise.resolve().then(function() {
-                        if (self.contentWindow) { self.__bushidoFP = false; maybePatchiframe(self); }
+                        if (self.contentWindow) { self.__digidawFP = false; maybePatchiframe(self); }
                     });
                 },
                 get: srcdocDesc.get,
@@ -413,8 +413,8 @@
         var origABGCD = AudioBuffer.prototype.getChannelData;
         AudioBuffer.prototype.getChannelData = function(ch) {
             var d = origABGCD.call(this, ch);
-            if (!this.__bushidoNoised) {
-                this.__bushidoNoised = true;
+            if (!this.__digidawNoised) {
+                this.__digidawNoised = true;
                 var n = audioNoise();
                 for (var i = 0; i < d.length; i++) d[i] += n;
             }
@@ -489,11 +489,11 @@
 
         Object.defineProperty(Error.prototype, 'stack', {
             get: function() {
-                var val = this.__bushidoRealStack;
+                var val = this.__digidawRealStack;
                 return sanitizeStack(val);
             },
             set: function(val) {
-                this.__bushidoRealStack = val;
+                this.__digidawRealStack = val;
             },
             configurable: true,
             enumerable: false

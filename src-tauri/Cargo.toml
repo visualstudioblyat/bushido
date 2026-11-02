@@ -1,14 +1,14 @@
 [package]
-name = "bushido-browser"
+name = "digidaw-space"
 version = "0.14.0"
-description = "Bushido Browser"
-authors = ["visualstudioblyat"]
+description = "Digidaw Space"
+authors = ["Digidaw", "visualstudioblyat (original Bushido author)"]
 edition = "2021"
-default-run = "bushido-browser"
+default-run = "digidaw-space"
 license = "GPL-3.0-or-later"
 
 [lib]
-name = "bushido_lib"
+name = "digidaw_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoCosmeticObs) return;
-    Object.defineProperty(window, '__bushidoCosmeticObs', { value: true, writable: false, configurable: false });
+    if (window.__digidawCosmeticObs) return;
+    Object.defineProperty(window, '__digidawCosmeticObs', { value: true, writable: false, configurable: false });
 
     var sentClasses = new Set();
     var sentIds = new Set();
@@ -40,7 +40,7 @@
     function flush() {
         if (pendingClasses.length === 0 && pendingIds.length === 0) return;
         var msg = {
-            __bushido: 'cosmetic-probe',
+            __digidaw: 'cosmetic-probe',
             classes: pendingClasses.splice(0),
             ids: pendingIds.splice(0)
         };
@@ -58,7 +58,7 @@
     }
 
     // Called by Rust via wv.eval() / ExecuteScript when selectors arrive
-    window.__bushidoApplyCosmetic = function(selectors) {
+    window.__digidawApplyCosmetic = function(selectors) {
         if (!selectors || selectors.length === 0) return;
         var newSels = [];
         for (var i = 0; i < selectors.length; i++) {
@@ -70,7 +70,7 @@
         if (newSels.length === 0) return;
         if (!styleEl) {
             styleEl = document.createElement('style');
-            styleEl.id = 'bushido-generic-cosmetic';
+            styleEl.id = 'digidaw-generic-cosmetic';
             (document.head || document.documentElement).appendChild(styleEl);
         }
         styleEl.textContent += newSels.join(',') + '{display:none!important}\n';

@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { DEFAULT_SETTINGS } from "../types";
-import type { BushidoSettings } from "../types";
+import type { DigidawSettings } from "../types";
 
 describe("DEFAULT_SETTINGS", () => {
   it("has all required keys", () => {
-    const keys: (keyof BushidoSettings)[] = [
+    const keys: (keyof DigidawSettings)[] = [
       "searchEngine", "customSearchUrl", "onStartup", "showTopSites",
       "showClock", "showGreeting", "downloadLocation", "askDownloadLocation",
       "httpsOnly", "adBlocker", "cookieAutoReject", "clearDataOnExit",

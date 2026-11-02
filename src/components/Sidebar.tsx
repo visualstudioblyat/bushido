@@ -64,7 +64,7 @@ const QUICK_ACTIONS: QuickAction[] = [
   { id: "close-tab", label: "Close Tab", keywords: ["close", "tab"], shortcut: "Ctrl+W", action: "closeTab" },
 ];
 
-const ACTION_SCORES_KEY = "bushido-action-scores";
+const ACTION_SCORES_KEY = "digidaw-action-scores";
 
 function getActionScores(): Record<string, number> {
   try { return JSON.parse(localStorage.getItem(ACTION_SCORES_KEY) || "{}"); } catch { return {}; }
@@ -416,7 +416,7 @@ export default memo(function Sidebar({
             timestamp: d.timestamp,
           })));
         } catch {}
-      }).catch(e => console.warn("[bushido]", e));
+      }).catch(e => console.warn("[digidaw]", e));
     };
     fetch();
     const iv = setInterval(fetch, 10000);
@@ -781,7 +781,7 @@ export default memo(function Sidebar({
       >
         {!open && !compact && (
           <div className="sidebar-collapsed-logo">
-            <img src={logoSrc} alt="Bushido" width={22} height={22} />
+            <img src={logoSrc} alt="Digidaw" width={22} height={22} />
             <button className="sidebar-toggle" onClick={onToggle}>›</button>
           </div>
         )}

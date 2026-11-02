@@ -1,16 +1,16 @@
 import { create } from "zustand";
-import { HistoryEntry, BookmarkData, DownloadItem, BushidoSettings, DEFAULT_SETTINGS } from "../types";
+import { HistoryEntry, BookmarkData, DownloadItem, DigidawSettings, DEFAULT_SETTINGS } from "../types";
 
 interface DataState {
   historyEntries: HistoryEntry[];
   bookmarkData: BookmarkData;
   downloads: DownloadItem[];
-  settings: BushidoSettings;
+  settings: DigidawSettings;
 
   setHistoryEntries: (updater: HistoryEntry[] | ((prev: HistoryEntry[]) => HistoryEntry[])) => void;
   setBookmarkData: (updater: BookmarkData | ((prev: BookmarkData) => BookmarkData)) => void;
   setDownloads: (updater: DownloadItem[] | ((prev: DownloadItem[]) => DownloadItem[])) => void;
-  setSettings: (updater: BushidoSettings | ((prev: BushidoSettings) => BushidoSettings)) => void;
+  setSettings: (updater: DigidawSettings | ((prev: DigidawSettings) => DigidawSettings)) => void;
 }
 
 export const useDataStore = create<DataState>((set) => ({

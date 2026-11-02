@@ -14,7 +14,7 @@ pub struct PeerInfo {
     pub port: u16,
 }
 
-const SERVICE_TYPE: &str = "_bushido-sync._tcp.local.";
+const SERVICE_TYPE: &str = "_digidaw-sync._tcp.local.";
 const SYNC_PORT: u16 = 22000;
 
 pub struct DiscoveryService {
@@ -43,12 +43,12 @@ impl DiscoveryService {
         device_name: &str,
         fingerprint: &str,
     ) -> Result<(), String> {
-        let instance_name = format!("bushido-{}", &device_id[..8.min(device_id.len())]);
+        let instance_name = format!("digidaw-{}", &device_id[..8.min(device_id.len())]);
         self.instance_name = instance_name.clone();
 
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "bushido-device".to_string());
+            .unwrap_or_else(|_| "digidaw-device".to_string());
         let host_fqdn = format!("{}.local.", hostname);
 
         let properties = [

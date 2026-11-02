@@ -1,35 +1,34 @@
 <p align="center">
-  <img src="logo.png" alt="Bushido Logo" width="128" height="128">
+  <img src="logo.png" alt="Digidaw Logo" width="128" height="128">
 </p>
 
-<h1 align="center">Bushido Browser</h1>
+<h1 align="center">Digidaw Space</h1>
 
 <p align="center">
   <strong>Browse with Discipline.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/visualstudioblyat/bushido/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/visualstudioblyat/bushido?style=flat-square&color=6366f1"></a>
-  <a href="https://github.com/visualstudioblyat/bushido/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/visualstudioblyat/bushido?style=flat-square&color=6366f1"></a>
-  <a href="https://github.com/visualstudioblyat/bushido/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/visualstudioblyat/bushido?style=flat-square&color=6366f1"></a>
-  <a href="https://github.com/visualstudioblyat/bushido/issues"><img alt="Issues" src="https://img.shields.io/github/issues/visualstudioblyat/bushido?style=flat-square&color=6366f1"></a>
+  <a href="https://github.com/Dayuss/bushido/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/Dayuss/bushido?style=flat-square&color=6366f1"></a>
+  <a href="https://github.com/Dayuss/bushido/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Dayuss/bushido?style=flat-square&color=6366f1"></a>
+  <a href="https://github.com/Dayuss/bushido/issues"><img alt="Issues" src="https://img.shields.io/github/issues/Dayuss/bushido?style=flat-square&color=6366f1"></a>
 </p>
 
 <p align="center">
-  Bushido is a solo project. I got tired of browsers that spy on you, bloat themselves with features nobody asked for, & treat your attention like a product. So I built one that doesn't.
+  Digidaw is a privacy-first browser. No spying, no bloat, no treating your attention like a product.
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/wnXpZyju98">Discord</a> •
-  <a href="https://github.com/visualstudioblyat/bushido/issues">Report Bug</a> •
-  <a href="https://github.com/visualstudioblyat/bushido/discussions">Feature Request</a>
+  <a href="https://github.com/Dayuss/bushido">GitHub</a> •
+  <a href="https://github.com/Dayuss/bushido/issues">Report Bug</a> •
+  <a href="https://github.com/Dayuss/bushido/discussions">Feature Request</a>
 </p>
 
 —-
 
-## So Why Bushido?
+## So Why Digidaw?
 
-Manifest V3 restricted what ad-blocking extensions can do. Bushido doesn't care —blocking is built into the browser core, not an extension that can be neutered.
+Manifest V3 restricted what ad-blocking extensions can do. Digidaw doesn't care —blocking is built into the browser core, not an extension that can be neutered.
 
 - **Native Ad & Tracker Blocking** —10 filter lists (EasyList, EasyPrivacy, uBlock Filters, and more), matched in under 0.05ms per request. Network blocking at the WebView2 COM level before connections are established. Cosmetic filtering hides ad containers that survive network blocking. Scriptlet injection (173 uBlock Origin resources) defuses anti-adblock scripts. Page JavaScript can't bypass any of it.
 - **Fingerprint Protection** —Canvas, WebGL, audio, navigator, screen, timing —all spoofed with realistic per-session randomized values. Hardened against common detection techniques: `Function.prototype.toString` inspection, iframe cross-realm access, Web Worker clean scope, `Object.getOwnPropertyDescriptor` probing, `Date.now` vs `performance.now` comparison, error stack trace sanitization, WebGL parameter consistency. Init script runs before any page JS exists —the page never gets a reference to the original functions.
@@ -79,7 +78,7 @@ The installer lands in `src-tauri/target/release/bundle/`.
 
 ## Contributing
 
-Bushido is open source under the [GPL-3.0](LICENSE) license. Contributions welcome —open an issue or submit a PR.
+Digidaw is open source under the [GPL-3.0](LICENSE) license. Contributions welcome —open an issue or submit a PR.
 
 Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-BY-SA 3.0).
 
@@ -108,3 +107,9 @@ Ad blocking uses filter lists from [EasyList](https://easylist.to/) (GPLv3 / CC-
 - [ ] Boosts —per-site CSS/JS injection
 - [ ] Custom themes
 - [ ] Cross-platform builds (macOS, Linux)
+
+---
+
+## Credits
+
+Digidaw Space is a rebrand/fork of [Bushido Browser](https://github.com/visualstudioblyat/bushido) by **visualstudioblyat**, used under the GPL-3.0 license. All upstream copyrights remain with their original authors. Modifications © 2026 Digidaw Space contributors.

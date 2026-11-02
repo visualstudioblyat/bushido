@@ -1,12 +1,12 @@
 (function() {
-  if (window.__bushidoVault) return;
-  window.__bushidoVault = true;
+  if (window.__digidawVault) return;
+  window.__digidawVault = true;
 
   var postMsg = window.chrome && window.chrome.webview
     ? function(data) { window.chrome.webview.postMessage(JSON.stringify(data)); }
     : function() {};
 
-  var STORAGE_KEY = '__bushidoVaultUser';
+  var STORAGE_KEY = '__digidawVaultUser';
   var pendingSave = null;
   var DBG = false;
   // track last known password value — some sites clear the field before our handler runs
@@ -124,8 +124,8 @@
     // watch email/username inputs as user types (captures before navigation)
     var emailInputs = document.querySelectorAll('input[type="email"], input[autocomplete="username"], input[id*="dentifier" i], input[name*="mail" i]');
     emailInputs.forEach(function(inp) {
-      if (inp.__bushidoEmailWatched) return;
-      inp.__bushidoEmailWatched = true;
+      if (inp.__digidawEmailWatched) return;
+      inp.__digidawEmailWatched = true;
       inp.addEventListener('input', function() {
         if (inp.value) { storeUsername(inp.value); }
       });
@@ -162,7 +162,7 @@
       '.bv-hdr{padding:8px 14px;color:#818cf8;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #222}' +
       '</style>' +
       '<div class="bv-dd">' +
-      '<div class="bv-hdr">Bushido Vault</div>';
+      '<div class="bv-hdr">Digidaw Vault</div>';
 
     entries.forEach(function(e, i) {
       html += '<div class="bv-item" data-idx="' + i + '">' +
@@ -260,7 +260,7 @@
       pendingSave = key;
       vlog('  SENDING vault-save-prompt for', location.hostname, username);
       postMsg({
-        __bushido: 'vault-save-prompt',
+        __digidaw: 'vault-save-prompt',
         domain: location.hostname,
         username: username,
         password: pwValue,
@@ -277,7 +277,7 @@
       pendingSave = key;
       vlog('  SENDING vault-save-prompt (cached) for', location.hostname, username);
       postMsg({
-        __bushido: 'vault-save-prompt',
+        __digidaw: 'vault-save-prompt',
         domain: location.hostname,
         username: username,
         password: lastPwValue,
@@ -288,7 +288,7 @@
   // listen for fill options from rust
   window.addEventListener('message', function(ev) {
     if (!ev.data || typeof ev.data !== 'object') return;
-    if (ev.data.__bushidoVaultFill && ev.data.entries) {
+    if (ev.data.__digidawVaultFill && ev.data.entries) {
       var entries = ev.data.entries;
       if (!entries.length) return;
       var forms = findLoginForms();
@@ -310,7 +310,7 @@
     var forms = findLoginForms();
     vlog('checkDomain:', location.hostname, 'forms:', forms.length);
     if (forms.length > 0) {
-      postMsg({ __bushido: 'vault-check', domain: location.hostname });
+      postMsg({ __digidaw: 'vault-check', domain: location.hostname });
     }
   }
 
@@ -330,8 +330,8 @@
   function watchPasswordInputs() {
     var forms = findLoginForms();
     forms.forEach(function(f) {
-      if (f.pass && !f.pass.__bushidoWatched) {
-        f.pass.__bushidoWatched = true;
+      if (f.pass && !f.pass.__digidawWatched) {
+        f.pass.__digidawWatched = true;
         vlog('watching pw field:', f.pass.name || f.pass.type);
         f.pass.addEventListener('input', function() {
           if (f.pass.value) {
@@ -370,7 +370,7 @@
     pendingSave = key;
     vlog('SENDING vault-save-prompt (cached) for', lastPwDomain, username);
     postMsg({
-      __bushido: 'vault-save-prompt',
+      __digidaw: 'vault-save-prompt',
       domain: lastPwDomain,
       username: username,
       password: lastPwValue,
@@ -481,7 +481,7 @@
     }).observe(spaTarget, { childList: true, subtree: true });
   }
   // expose retry hook for post-unlock flow (called from Rust after vault unlock)
-  window.__bushidoVaultRetry = function() {
+  window.__digidawVaultRetry = function() {
     vlog('vault retry triggered');
     checkDomain();
     watchPasswordInputs();

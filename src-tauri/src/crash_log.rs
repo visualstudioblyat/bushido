@@ -88,7 +88,7 @@ fn format_panic(info: &std::panic::PanicHookInfo) -> String {
     let bt = std::backtrace::Backtrace::force_capture();
 
     format!(
-        "=== BUSHIDO CRASH ===\n\
+        "=== DIGIDAW CRASH ===\n\
          Timestamp: {}\n\
          Location:  {}\n\
          Message:   {}\n\

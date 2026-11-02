@@ -2,7 +2,7 @@ import { memo, useCallback, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { BushidoSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
+import { DigidawSettings, DEFAULT_SETTINGS, VaultEntry } from "../types";
 import { useUiStore } from "../store/uiStore";
 import PairingWizard from "./PairingWizard";
 
@@ -11,8 +11,8 @@ interface ImportedHistory { title: string; url: string; visit_count: number; las
 interface BrowserInfo { name: string; has_bookmarks: boolean; has_history: boolean; }
 
 interface Props {
-  settings: BushidoSettings;
-  onUpdate: (patch: Partial<BushidoSettings>) => void;
+  settings: DigidawSettings;
+  onUpdate: (patch: Partial<DigidawSettings>) => void;
   onReloadAllTabs: () => void;
   onThemeChange: (accent: string, mode: "dark" | "light") => void;
   onOpenUrl: (url: string) => void;
@@ -20,7 +20,7 @@ interface Props {
   onImportHistory?: (history: ImportedHistory[]) => void;
 }
 
-const SEARCH_ENGINES: { value: BushidoSettings["searchEngine"]; label: string }[] = [
+const SEARCH_ENGINES: { value: DigidawSettings["searchEngine"]; label: string }[] = [
   { value: "google", label: "Google" },
   { value: "duckduckgo", label: "DuckDuckGo" },
   { value: "brave", label: "Brave Search" },
@@ -60,7 +60,7 @@ const TOP_SITE_ROW_OPTIONS: { value: number; label: string }[] = [
   { value: 3, label: "3 rows" },
 ];
 
-const AUTOPLAY_OPTIONS: { value: BushidoSettings["autoplayPolicy"]; label: string }[] = [
+const AUTOPLAY_OPTIONS: { value: DigidawSettings["autoplayPolicy"]; label: string }[] = [
   { value: "block-all", label: "Block all media" },
   { value: "block-audio", label: "Block audio only" },
   { value: "allow", label: "Allow" },
@@ -171,7 +171,7 @@ const ACCENT_COLORS = [
   "#06b6d4", "#a855f7", "#ec4899", "#14b8a6",
 ];
 
-const SECURITY_KEYS: (keyof BushidoSettings)[] = [
+const SECURITY_KEYS: (keyof DigidawSettings)[] = [
   "disableDevTools", "disableAutofill", "disablePasswordSave",
   "blockServiceWorkers", "blockFontEnumeration", "spoofHardwareConcurrency",
 ];
@@ -230,20 +230,20 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         const d = new Date(parseInt(ms, 10));
         return { num, date: d.toLocaleString() };
       }));
-    }).catch(e => console.warn("[bushido]", e));
+    }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   useEffect(() => {
-    invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+    invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
   }, [settings.syncEnabled]);
 
   useEffect(() => {
     const unsubs: Promise<() => void>[] = [];
     unsubs.push(listen<SyncPeer>("peer-discovered", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
     }));
     unsubs.push(listen<string>("peer-removed", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
     }));
     unsubs.push(listen<{ device_id: string; device_name: string }>("pair-request-received", e => {
       setPairingWizard({
@@ -253,7 +253,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
       });
     }));
     unsubs.push(listen("pair-complete", () => {
-      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
       setSimulateCode(null);
     }));
     return () => { unsubs.forEach(p => p.then(fn => fn())); };
@@ -302,7 +302,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     return () => window.removeEventListener("keydown", handler, true);
   }, [recordingAction, settings.keybindings, onUpdate]);
 
-  const set = useCallback(<K extends keyof BushidoSettings>(key: K, value: BushidoSettings[K]) => {
+  const set = useCallback(<K extends keyof DigidawSettings>(key: K, value: DigidawSettings[K]) => {
     onUpdate({ [key]: value });
     if (SECURITY_KEYS.includes(key)) setSecurityDirty(true);
   }, [onUpdate]);
@@ -318,7 +318,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         <Select
           value={settings.searchEngine}
           options={SEARCH_ENGINES}
-          onChange={(v: BushidoSettings["searchEngine"]) => set("searchEngine", v)}
+          onChange={(v: DigidawSettings["searchEngine"]) => set("searchEngine", v)}
         />
       </div>
       {settings.searchEngine === "custom" && (
@@ -355,7 +355,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
             { value: "newtab", label: "Open new tab" },
             { value: "custom", label: "Open specific page" },
           ]}
-          onChange={(v: BushidoSettings["onStartup"]) => set("onStartup", v)}
+          onChange={(v: DigidawSettings["onStartup"]) => set("onStartup", v)}
         />
       </div>
       {settings.onStartup === "custom" && (
@@ -684,7 +684,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
         <Select
           value={settings.autoplayPolicy}
           options={AUTOPLAY_OPTIONS}
-          onChange={(v: BushidoSettings["autoplayPolicy"]) => set("autoplayPolicy", v)}
+          onChange={(v: DigidawSettings["autoplayPolicy"]) => set("autoplayPolicy", v)}
         />
       </div>
       <div className="settings-row">
@@ -699,7 +699,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
             { value: "strict", label: "Strict (recommended)" },
             { value: "maximum", label: "Maximum" },
           ]}
-          onChange={(v: BushidoSettings["dnsLevel"]) => set("dnsLevel", v)}
+          onChange={(v: DigidawSettings["dnsLevel"]) => set("dnsLevel", v)}
         />
       </div>
     </section>
@@ -775,11 +775,11 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
 
   useEffect(() => {
     if (activeTab === "passwords") {
-      invoke<boolean>("vault_has_master_password").then(setVaultHasMaster).catch(e => console.warn("[bushido]", e));
+      invoke<boolean>("vault_has_master_password").then(setVaultHasMaster).catch(e => console.warn("[digidaw]", e));
       invoke<boolean>("vault_is_unlocked").then(u => {
         setVaultUnlocked(u);
-        if (u) invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[bushido]", e));
-      }).catch(e => console.warn("[bushido]", e));
+        if (u) invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[digidaw]", e));
+      }).catch(e => console.warn("[digidaw]", e));
     }
   }, [activeTab]);
 
@@ -938,7 +938,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               value={settings.syncDeviceName}
               onChange={e => {
                 onUpdate({ syncDeviceName: e.target.value });
-                invoke("set_device_name", { name: e.target.value }).catch(e => console.warn("[bushido]", e));
+                invoke("set_device_name", { name: e.target.value }).catch(e => console.warn("[digidaw]", e));
               }}
               placeholder="My PC"
               spellCheck={false}
@@ -1017,7 +1017,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                   <button className="settings-remove-btn" onClick={async () => {
                     try {
                       await invoke("remove_device", { deviceId: d.device_id });
-                      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+                      invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
                     } catch (e) {
                       console.error("Failed to remove device:", e);
                     }
@@ -1038,7 +1038,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.bookmarks} onChange={v => {
                 const next = { ...syncTypes, bookmarks: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
+                invoke("sync_set_data_types", next).catch(e => console.warn("[digidaw]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1049,7 +1049,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.history} onChange={v => {
                 const next = { ...syncTypes, history: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
+                invoke("sync_set_data_types", next).catch(e => console.warn("[digidaw]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1060,7 +1060,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.settings} onChange={v => {
                 const next = { ...syncTypes, settings: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
+                invoke("sync_set_data_types", next).catch(e => console.warn("[digidaw]", e));
               }} />
             </div>
             <div className="settings-row">
@@ -1071,7 +1071,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
               <Toggle checked={syncTypes.tabs} onChange={v => {
                 const next = { ...syncTypes, tabs: v };
                 setSyncTypes(next);
-                invoke("sync_set_data_types", next).catch(e => console.warn("[bushido]", e));
+                invoke("sync_set_data_types", next).catch(e => console.warn("[digidaw]", e));
               }} />
             </div>
           </div>
@@ -1086,7 +1086,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
                 if (!confirm("Reset all sync data? Your local bookmarks and history are preserved, but sync state will start fresh.")) return;
                 try {
                   await invoke("reset_sync_data");
-                  invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[bushido]", e));
+                  invoke<SyncInfo>("get_sync_status").then(setSyncInfo).catch(e => console.warn("[digidaw]", e));
                 } catch (e) {
                   console.error("Reset failed:", e);
                 }
@@ -1211,7 +1211,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     try {
       await invoke("vault_unlock", { masterPassword: pw });
       setVaultUnlocked(true);
-      invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[bushido]", e));
+      invoke<VaultEntry[]>("vault_get_entries", {}).then(setVaultEntries).catch(e => console.warn("[digidaw]", e));
     } catch (e) { useUiStore.getState().showError(String(e)); }
   };
 
@@ -1347,7 +1347,7 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
     <section className="settings-section">
       <h2 className="settings-section-title">About</h2>
       <div className="settings-about">
-        <div className="settings-about-name">Bushido Browser</div>
+        <div className="settings-about-name">Digidaw Space</div>
         <div className="settings-about-version">v{appVersion}</div>
         <div className="settings-about-desc">A fast, private web browser with workspaces, split view, and LAN sync.</div>
         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -1360,9 +1360,8 @@ export default memo(function SettingsPage({ settings, onUpdate, onReloadAllTabs,
           <div>Built with Tauri, React, and WebView2</div>
           <div>Licensed under GPL-3.0</div>
           <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
-            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://bushido-browser.app")}>Website</span>
-            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/visualstudioblyat/bushido")}>GitHub</span>
-            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/visualstudioblyat/bushido/issues")}>Report a Bug</span>
+            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/Dayuss/bushido")}>GitHub</span>
+            <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onOpenUrl("https://github.com/Dayuss/bushido/issues")}>Report a Bug</span>
           </div>
         </div>
       </div>

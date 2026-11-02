@@ -19,7 +19,7 @@ import ShareMenu from "./components/ShareMenu";
 import Onboarding from "./components/Onboarding";
 import GlanceOverlay from "./components/GlanceOverlay";
 import PerfOverlay from "./components/PerfOverlay";
-import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, BushidoSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone, PermissionRequest } from "./types";
+import { Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult, DigidawSettings, DEFAULT_SETTINGS, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone, PermissionRequest } from "./types";
 import { allLeafIds, insertPane, removePane, computeRects, computeDividers, updateRatio, hasLeaf, detectDropZone } from "./splitLayout";
 import { useTabStore } from "./store/tabStore";
 import { useUiStore } from "./store/uiStore";
@@ -62,8 +62,8 @@ interface PageCtxMenu {
   pageUri: string; isEditable: boolean; tabId: string;
 }
 
-const NTP_URL = "bushido://newtab";
-const SETTINGS_URL = "bushido://settings";
+const NTP_URL = "digidaw://newtab";
+const SETTINGS_URL = "digidaw://settings";
 const NEW_TAB_URL = NTP_URL;
 const DEFAULT_WS_COLOR = "#6366f1";
 const WS_COLORS = ["#6366f1", "#f43f5e", "#22c55e", "#f59e0b", "#06b6d4", "#a855f7", "#ec4899", "#14b8a6"];
@@ -87,7 +87,7 @@ function sanitizePanelUrl(input: string): string | null {
   const trimmed = input.trim().replace(/[\x00-\x1f\x7f]/g, "");
   if (!trimmed) return null;
   const lower = trimmed.toLowerCase();
-  const blocked = ["javascript:", "data:", "file:", "vbscript:", "blob:", "about:", "bushido:"];
+  const blocked = ["javascript:", "data:", "file:", "vbscript:", "blob:", "about:", "digidaw:"];
   if (blocked.some(s => lower.startsWith(s))) return null;
   try {
     const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
@@ -203,7 +203,7 @@ export default function App() {
   const historyLoaded = useRef(false);
   const bookmarksLoaded = useRef(false);
   const bookmarkBulkRef = useRef(false);
-  const prevSettingsRef = useRef<BushidoSettings | null>(null);
+  const prevSettingsRef = useRef<DigidawSettings | null>(null);
   const closedTabsRef = useRef<{url: string; title: string; workspaceId: string}[]>([]);
   const tabThumbnails = useRef<Map<string, string>>(new Map());
   const zoomRef = useRef<Record<string, number>>({});
@@ -220,7 +220,7 @@ export default function App() {
   settingsRef.current = settings;
   vaultUnlockedRef.current = vaultUnlocked;
 
-  const secArgs = useCallback((sr: BushidoSettings) => ({
+  const secArgs = useCallback((sr: DigidawSettings) => ({
     disableDevTools: sr.disableDevTools, disableStatusBar: sr.disableStatusBar,
     disableAutofill: sr.disableAutofill, disablePasswordSave: sr.disablePasswordSave,
     blockServiceWorkers: sr.blockServiceWorkers, blockFontEnum: sr.blockFontEnumeration,
@@ -277,7 +277,7 @@ export default function App() {
       panes = computeRects(w.paneLayout, rect);
     } else {
       const t = (allTabs || tabs).find(t => t.id === w.activeTabId);
-      if (!t || t.url.startsWith("bushido://")) panes = [];
+      if (!t || t.url.startsWith("digidaw://")) panes = [];
       else panes = [{ tabId: w.activeTabId, ...rect }];
     }
 
@@ -377,7 +377,7 @@ export default function App() {
           const num = parseInt(id.replace("tab-", ""), 10);
           if (!isNaN(num) && num >= tabCounter) tabCounter = num;
           idMap[(st as any).id || ""] = id;
-          const isInternal = st.url.startsWith("bushido://");
+          const isInternal = st.url.startsWith("digidaw://");
           const isSuspended = st.suspended || false;
           return { id, url: st.url, title: (st.title || "Tab").replace(/<[^>]*>/g, ""), loading: !isInternal && !isSuspended, pinned: st.pinned, workspaceId: st.workspaceId, parentId: st.parentId, suspended: isSuspended, memoryState: isSuspended ? "destroyed" as const : "active" as const, lastActiveAt: Date.now() };
         });
@@ -416,7 +416,7 @@ export default function App() {
           for (const lid of allLeafIds(firstActiveWs.paneLayout)) activePaneIds.add(lid);
         }
         restoredTabs.forEach(t => {
-          if (t.url.startsWith("bushido://") || t.suspended) return;
+          if (t.url.startsWith("digidaw://") || t.suspended) return;
           if (activePaneIds.has(t.id)) {
             invoke("create_tab", { id: t.id, url: t.url, sidebarW: restoredSidebarW, topOffset: restoredTopOffset, profileName: t.workspaceId, ...tabArgs });
             clearLoading(t.id);
@@ -428,7 +428,7 @@ export default function App() {
         });
         if (firstActiveWs?.activeTabId) {
           const activeRestoredTab = restoredTabs.find(t => t.id === firstActiveWs.activeTabId);
-          if (activeRestoredTab?.url?.startsWith("bushido://")) {
+          if (activeRestoredTab?.url?.startsWith("digidaw://")) {
             invoke("layout_webviews", { panes: [], focusedTabId: "__none__", sidebarW: restoredSidebarW, topOffset: restoredTopOffset });
           } else {
             // compute pane rects from restored layout
@@ -503,13 +503,13 @@ export default function App() {
   // update notification: show toast when version changes
   useEffect(() => {
     getVersion().then(version => {
-      const lastVersion = localStorage.getItem("bushido-last-version");
+      const lastVersion = localStorage.getItem("digidaw-last-version");
       if (lastVersion && lastVersion !== version) {
         setUpdateToast(version);
         setTimeout(() => setUpdateToast(null), 8000);
       }
-      localStorage.setItem("bushido-last-version", version);
-    }).catch(e => console.warn("[bushido]", e));
+      localStorage.setItem("digidaw-last-version", version);
+    }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   // auto-update check on startup
@@ -521,7 +521,7 @@ export default function App() {
           setPendingUpdate({ version: update.version, downloading: false });
         }
       } catch (e) {
-        console.warn("[bushido] update check failed:", e);
+        console.warn("[digidaw] update check failed:", e);
       }
     }, 5000); // delay 5s to not block startup
     return () => clearTimeout(t);
@@ -575,7 +575,7 @@ export default function App() {
       invoke("save_settings", { data: JSON.stringify(settings) });
       // update dns resolver level if changed
       if (prevSettingsRef.current && settings.dnsLevel !== prevSettingsRef.current.dnsLevel) {
-        invoke("set_dns_level", { level: settings.dnsLevel }).catch(e => console.warn("[bushido]", e));
+        invoke("set_dns_level", { level: settings.dnsLevel }).catch(e => console.warn("[digidaw]", e));
       }
     }, 500);
     return () => clearTimeout(t);
@@ -586,10 +586,10 @@ export default function App() {
     if (!settingsLoaded.current || !settings.syncEnabled) return;
     const prev = prevSettingsRef.current;
     if (prev) {
-      const keys = Object.keys(settings) as (keyof BushidoSettings)[];
+      const keys = Object.keys(settings) as (keyof DigidawSettings)[];
       keys.forEach(key => {
         if (settings[key] !== prev[key]) {
-          invoke("sync_write_setting", { key, value: JSON.stringify(settings[key]) }).catch(e => console.warn("[bushido]", e));
+          invoke("sync_write_setting", { key, value: JSON.stringify(settings[key]) }).catch(e => console.warn("[digidaw]", e));
         }
       });
     }
@@ -602,7 +602,7 @@ export default function App() {
     const fetch = () => {
       invoke<{ enabled: boolean; paired_devices: { device_id: string; name: string }[] }>("get_sync_status")
         .then(info => setSyncPairedDevices(info.paired_devices || []))
-        .catch(e => console.warn("[bushido]", e));
+        .catch(e => console.warn("[digidaw]", e));
     };
     fetch();
     const unlisten = listen("pair-complete", fetch);
@@ -615,7 +615,7 @@ export default function App() {
     const sync = () => {
       const tabsForSync = tabs.filter(t => t.memoryState !== "destroyed")
         .map(t => ({ id: t.id, url: t.url, title: t.title, favicon: t.favicon }));
-      invoke("sync_write_tabs", { tabs: JSON.stringify(tabsForSync) }).catch(e => console.warn("[bushido]", e));
+      invoke("sync_write_tabs", { tabs: JSON.stringify(tabsForSync) }).catch(e => console.warn("[digidaw]", e));
     };
     sync();
     const iv = setInterval(sync, 30000);
@@ -624,7 +624,7 @@ export default function App() {
 
   // record history from navigation events
   const recordHistory = useCallback((url: string, title: string, favicon?: string) => {
-    if (!historyLoaded.current || url.startsWith("bushido://") || !url.startsWith("http")) return;
+    if (!historyLoaded.current || url.startsWith("digidaw://") || !url.startsWith("http")) return;
     const now = Date.now();
     setHistoryEntries(prev => {
       const idx = prev.findIndex(h => h.url === url);
@@ -639,7 +639,7 @@ export default function App() {
     });
     // sync history to CRDT (fire-and-forget)
     if (settingsRef.current.syncEnabled) {
-      invoke("sync_add_history", { url, title: title || "", favicon: favicon || null, timestamp: now }).catch(e => console.warn("[bushido]", e));
+      invoke("sync_add_history", { url, title: title || "", favicon: favicon || null, timestamp: now }).catch(e => console.warn("[digidaw]", e));
     }
   }, []);
 
@@ -827,7 +827,7 @@ export default function App() {
               return merged;
             });
           } catch {}
-        }).catch(e => console.warn("[bushido]", e));
+        }).catch(e => console.warn("[digidaw]", e));
       }),
       // sync: tab received from another device
       listen<{ from_device: string; url: string; title: string }>("tab-received", (e) => {
@@ -904,10 +904,10 @@ export default function App() {
     // load existing downloads on init
     invoke<DownloadItem[]>("get_downloads").then(items => {
       if (items.length > 0) setDownloads(items);
-    }).catch(e => console.warn("[bushido]", e));
+    }).catch(e => console.warn("[digidaw]", e));
 
     // check vault lock state
-    invoke<boolean>("vault_is_unlocked").then(setVaultUnlocked).catch(e => console.warn("[bushido]", e));
+    invoke<boolean>("vault_is_unlocked").then(setVaultUnlocked).catch(e => console.warn("[digidaw]", e));
 
     return () => { promises.forEach(p => p.then(u => u())); };
   }, []);
@@ -915,7 +915,7 @@ export default function App() {
   // EcoQoS + memory priority: low-power mode when window hidden/minimized
   useEffect(() => {
     const onVisChange = () => {
-      invoke("set_power_mode", { low: document.hidden }).catch(e => console.warn("[bushido]", e));
+      invoke("set_power_mode", { low: document.hidden }).catch(e => console.warn("[digidaw]", e));
     };
     document.addEventListener("visibilitychange", onVisChange);
     return () => document.removeEventListener("visibilitychange", onVisChange);
@@ -958,7 +958,7 @@ export default function App() {
       const ws = workspaces.find(w => w.id === activeWorkspaceId);
       if (!ws?.activeTabId) return;
       const t = tabs.find(tab => tab.id === ws.activeTabId);
-      if (!t || t.url.startsWith("bushido://")) return;
+      if (!t || t.url.startsWith("digidaw://")) return;
       const bannerH = 36;
       const cw = window.innerWidth - layoutOffset;
       const ch = window.innerHeight - topOffset - bannerH;
@@ -974,12 +974,12 @@ export default function App() {
     if (!settings.vaultAutoLock || !settings.vaultLockTimeout || !vaultUnlocked) return;
     const timeoutMs = settings.vaultLockTimeout * 60_000;
     let timer = setTimeout(() => {
-      invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[bushido]", e));
+      invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[digidaw]", e));
     }, timeoutMs);
     const reset = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[bushido]", e));
+        invoke("vault_lock").then(() => setVaultUnlocked(false)).catch(e => console.warn("[digidaw]", e));
       }, timeoutMs);
     };
     // reset timer on user activity signals
@@ -1019,7 +1019,7 @@ export default function App() {
         let changed = false;
         const next = prev.map(t => {
           if (t.id === activeTab || paneTabIdSet.has(t.id)) return t;
-          if (t.pinned || t.url.startsWith("bushido://")) return t;
+          if (t.pinned || t.url.startsWith("digidaw://")) return t;
           if (t.memoryState === "destroyed") return t;
           if (t.mediaState === "playing") return t;
 
@@ -1114,9 +1114,9 @@ export default function App() {
 
   const clearWorkspaceData = useCallback((wsId: string) => {
     // find any active webview tab in this workspace to get a handle
-    const wsTab = tabs.find(t => t.workspaceId === wsId && !t.url.startsWith("bushido://") && t.memoryState !== "destroyed");
+    const wsTab = tabs.find(t => t.workspaceId === wsId && !t.url.startsWith("digidaw://") && t.memoryState !== "destroyed");
     if (wsTab) {
-      invoke("clear_workspace_data", { tabId: wsTab.id }).catch(e => console.warn("[bushido]", e));
+      invoke("clear_workspace_data", { tabId: wsTab.id }).catch(e => console.warn("[digidaw]", e));
     }
   }, [tabs]);
 
@@ -1131,7 +1131,7 @@ export default function App() {
     const sourceWsId = tab.workspaceId;
 
     // close old webview (profile is locked at creation time)
-    if (!savedUrl.startsWith("bushido://")) {
+    if (!savedUrl.startsWith("digidaw://")) {
       invoke("close_tab", { id: tabId });
     }
 
@@ -1159,7 +1159,7 @@ export default function App() {
     }));
 
     // create webview in target workspace's profile
-    if (!savedUrl.startsWith("bushido://")) {
+    if (!savedUrl.startsWith("digidaw://")) {
       const sr = settingsRef.current;
       invoke("create_tab", { id: newId, url: savedUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: targetWsId, ...secArgs(sr) });
     }
@@ -1200,7 +1200,7 @@ export default function App() {
 
   const addTab = useCallback((url = NEW_TAB_URL, parentId?: string) => {
     const id = genId();
-    const isInternal = url.startsWith("bushido://");
+    const isInternal = url.startsWith("digidaw://");
     const title = url === SETTINGS_URL ? "Settings" : "New Tab";
     const tab: Tab = { id, url, title, loading: !isInternal, workspaceId: activeWorkspaceId, parentId, lastActiveAt: Date.now() };
     setTabs(prev => [...prev, tab]);
@@ -1225,7 +1225,7 @@ export default function App() {
   const closeTab = useCallback((id: string) => {
     // if source tab of glance is being closed, close glance too
     if (glanceRef.current?.sourceTabId === id) {
-      invoke("close_glance", { glanceId: glanceRef.current.id }).catch(e => console.warn("[bushido]", e));
+      invoke("close_glance", { glanceId: glanceRef.current.id }).catch(e => console.warn("[digidaw]", e));
       glanceRef.current = null;
       setGlance(null);
     }
@@ -1233,7 +1233,7 @@ export default function App() {
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
       if (!tab) return prev;
-      if (!tab.url.startsWith("bushido://")) {
+      if (!tab.url.startsWith("digidaw://")) {
         closedTabsRef.current.push({ url: tab.url, title: tab.title, workspaceId: tab.workspaceId });
         if (closedTabsRef.current.length > 20) closedTabsRef.current.shift();
       }
@@ -1297,7 +1297,7 @@ export default function App() {
 
     // capture thumbnail of outgoing tab for instant-swap on future restore
     const outgoing = ws?.activeTabId;
-    if (outgoing && outgoing !== id && !tabs.find(t => t.id === outgoing)?.url.startsWith("bushido://")) {
+    if (outgoing && outgoing !== id && !tabs.find(t => t.id === outgoing)?.url.startsWith("digidaw://")) {
       invoke<string>("capture_visible", { id: outgoing }).then(b64 => {
         tabThumbnails.current.set(outgoing, b64);
         if (tabThumbnails.current.size > 100) {
@@ -1357,7 +1357,7 @@ export default function App() {
     setTabs(prev => {
       const tab = prev.find(t => t.id === id);
       const willPin = tab ? !tab.pinned : true;
-      invoke("set_tab_pinned", { id, pinned: willPin }).catch(e => console.warn("[bushido]", e));
+      invoke("set_tab_pinned", { id, pinned: willPin }).catch(e => console.warn("[digidaw]", e));
       return prev.map(t => t.id === id ? { ...t, pinned: willPin } : t);
     });
   }, []);
@@ -1439,7 +1439,7 @@ export default function App() {
     }
     const currentTab = tabs.find(t => t.id === activeTab);
     setTabs(prev => prev.map(t => t.id === activeTab ? { ...t, url: finalUrl, loading: true, blockedCount: 0 } : t));
-    if (currentTab?.url?.startsWith("bushido://") || currentTab?.suspended || currentTab?.memoryState === "destroyed" || currentTab?.memoryState === "suspended") {
+    if (currentTab?.url?.startsWith("digidaw://") || currentTab?.suspended || currentTab?.memoryState === "destroyed" || currentTab?.memoryState === "suspended") {
       const sr = settingsRef.current;
       invoke("create_tab", { id: activeTab, url: finalUrl, sidebarW: layoutOffset, topOffset, httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, isPanel: false, profileName: currentTab?.workspaceId, ...secArgs(sr) }).then(() => {
         // directly position — syncLayout would read stale tab URL from state
@@ -1470,7 +1470,7 @@ export default function App() {
     }
 
     // find a tab to split with
-    const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("bushido://") && !t.suspended && t.memoryState !== "destroyed");
+    const wsTabs = tabs.filter(t => t.workspaceId === activeWorkspaceId && !t.url.startsWith("digidaw://") && !t.suspended && t.memoryState !== "destroyed");
     let splitWith = targetId;
     if (!splitWith) {
       const candidates = wsTabs.filter(t => t.id !== ws.activeTabId).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
@@ -1480,7 +1480,7 @@ export default function App() {
 
     // can't split if active tab is internal
     const activeT = tabs.find(t => t.id === ws.activeTabId);
-    if (activeT?.url.startsWith("bushido://")) return;
+    if (activeT?.url.startsWith("digidaw://")) return;
 
     const newLayout = insertPane(null, ws.activeTabId, splitWith, side);
     if (!newLayout) return;
@@ -1601,7 +1601,7 @@ export default function App() {
       setDropZone(null);
 
       const tab = tabs.find(t => t.id === tabId);
-      if (tab && !tab.url.startsWith("bushido://") && currentDropZone) {
+      if (tab && !tab.url.startsWith("digidaw://") && currentDropZone) {
         const ws = workspaces.find(w => w.id === activeWorkspaceId);
         if (ws) {
           if (tabId === currentDropZone.anchorTabId) { syncLayout(); return; }
@@ -1672,7 +1672,7 @@ export default function App() {
       const order = prev.bookmarks.filter(b => b.folderId === folderId).length;
       return { ...prev, bookmarks: [...prev.bookmarks, { id, url, title, favicon, folderId, createdAt, order }] };
     });
-    invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_add_bookmark", { id, url, title, favicon: favicon || null, folderId, createdAt }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   const removeBookmark = useCallback((id: string) => {
@@ -1680,7 +1680,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.filter(b => b.id !== id),
     }));
-    invoke("sync_remove_bookmark", { id }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_remove_bookmark", { id }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   const editBookmark = useCallback((id: string, title: string, url: string) => {
@@ -1696,7 +1696,7 @@ export default function App() {
       ...prev,
       folders: [...prev.folders, { id, name, parentId, order: prev.folders.length }],
     }));
-    invoke("sync_add_folder", { id, name, parentId, order: 0 }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_add_folder", { id, name, parentId, order: 0 }).catch(e => console.warn("[digidaw]", e));
     return id;
   }, []);
 
@@ -1705,7 +1705,7 @@ export default function App() {
       ...prev,
       folders: prev.folders.map(f => f.id === folderId ? { ...f, name } : f),
     }));
-    invoke("sync_rename_folder", { id: folderId, name }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_rename_folder", { id: folderId, name }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   const deleteBookmarkFolder = useCallback((folderId: string) => {
@@ -1714,7 +1714,7 @@ export default function App() {
       folders: prev.folders.filter(f => f.id !== folderId),
       bookmarks: prev.bookmarks.map(b => b.folderId === folderId ? { ...b, folderId: "" } : b),
     }));
-    invoke("sync_remove_folder", { id: folderId }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_remove_folder", { id: folderId }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   const moveBookmarkToFolder = useCallback((bookmarkId: string, folderId: string) => {
@@ -1722,7 +1722,7 @@ export default function App() {
       ...prev,
       bookmarks: prev.bookmarks.map(b => b.id === bookmarkId ? { ...b, folderId } : b),
     }));
-    invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(e => console.warn("[bushido]", e));
+    invoke("sync_move_bookmark", { id: bookmarkId, folderId }).catch(e => console.warn("[digidaw]", e));
   }, []);
 
   const reorderBookmarks = useCallback((bookmarkId: string, targetId: string, position: "before" | "after") => {
@@ -1831,7 +1831,7 @@ export default function App() {
 
   const removeHistoryEntry = useCallback((url: string) => {
     setHistoryEntries(prev => prev.filter(h => h.url !== url));
-    invoke("delete_history_entry", { url }).catch(e => console.warn("[bushido] delete history entry:", e));
+    invoke("delete_history_entry", { url }).catch(e => console.warn("[digidaw] delete history entry:", e));
   }, []);
 
   const clearHistory = useCallback((range: 'hour' | 'today' | 'all') => {
@@ -1942,7 +1942,7 @@ export default function App() {
   const toggleReader = useCallback(() => {
     if (!activeTab) return;
     const tab = tabs.find(t => t.id === activeTab);
-    if (!tab || tab.url.startsWith("bushido://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") return;
+    if (!tab || tab.url.startsWith("digidaw://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") return;
 
     invoke("toggle_reader", {
       id: activeTab,
@@ -1984,7 +1984,7 @@ export default function App() {
   useEffect(() => {
     if (!activeTab) return;
     const tab = tabs.find(t => t.id === activeTab);
-    if (!tab || tab.url.startsWith("bushido://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") {
+    if (!tab || tab.url.startsWith("digidaw://") || tab.suspended || tab.memoryState === "suspended" || tab.memoryState === "destroyed") {
       setHasVideo(false);
       setPipActive(false);
       return;
@@ -2112,7 +2112,7 @@ export default function App() {
   // global shortcut bridge: Rust eval() calls this directly on the main webview
   // also handles child webview shortcuts forwarded via title encoding → global-shortcut event
   useEffect(() => {
-    (window as any).__bushidoGlobalShortcut = (action: string) => {
+    (window as any).__digidawGlobalShortcut = (action: string) => {
       switch (action) {
         case "toggle-compact": setCompactMode(p => { const next = !p; setSettings(s => ({ ...s, compactMode: next })); return next; }); break;
         case "toggle-sidebar": setSidebarOpen(p => !p); break;
@@ -2137,13 +2137,13 @@ export default function App() {
         case "zoom-reset": { setZoom(activeTab, 1); break; }
       }
     };
-    return () => { delete (window as any).__bushidoGlobalShortcut; };
+    return () => { delete (window as any).__digidawGlobalShortcut; };
   }, [toggleBookmark, addTab, closeTab, activeTab, toggleSplit, openScreenshot]);
 
   // listen for child webview shortcut bridge events
   useEffect(() => {
     const p = listen<string>("global-shortcut", (e) => {
-      const fn = (window as any).__bushidoGlobalShortcut;
+      const fn = (window as any).__digidawGlobalShortcut;
       if (fn) fn(e.payload);
     });
     return () => { p.then(u => u()); };
@@ -2292,7 +2292,7 @@ export default function App() {
     const sr = settingsRef.current;
     const base = { httpsOnly: sr.httpsOnly, adBlocker: sr.adBlocker, cookieAutoReject: sr.cookieAutoReject, ...secArgs(sr) };
     tabs.forEach(t => {
-      if (t.url.startsWith("bushido://") || t.suspended || t.memoryState === "destroyed") return;
+      if (t.url.startsWith("digidaw://") || t.suspended || t.memoryState === "destroyed") return;
       invoke("close_tab", { id: t.id }).then(() => {
         invoke("create_tab", { id: t.id, url: t.url, sidebarW: layoutOffset, topOffset, isPanel: false, profileName: t.workspaceId, ...base });
       });
@@ -2309,7 +2309,7 @@ export default function App() {
     }, 500);
   }, [tabs, panels, layoutOffset, topOffset, secArgs, workspaces, activeWorkspaceId, syncLayout]);
 
-  const updateSettings = useCallback((patch: Partial<BushidoSettings>) => {
+  const updateSettings = useCallback((patch: Partial<DigidawSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
       // sync compactMode toggle from settings to app state
@@ -2326,7 +2326,7 @@ export default function App() {
       if (!window.confirm(`Quit with ${tabs.length} tabs open?`)) return;
     }
     if (settings.clearDataOnExit) {
-      await invoke("save_history", { data: "[]" }).catch(e => console.warn("[bushido]", e));
+      await invoke("save_history", { data: "[]" }).catch(e => console.warn("[digidaw]", e));
     }
     invoke("close_window");
   }, [settings.confirmBeforeQuit, settings.clearDataOnExit, tabs.length]);
@@ -2392,7 +2392,7 @@ export default function App() {
         />
       )}
       <div className="titlebar" data-tauri-drag-region>
-        <div className="titlebar-title">{current?.title || "Bushido"}</div>
+        <div className="titlebar-title">{current?.title || "Digidaw"}</div>
         <div className="titlebar-controls">
           <button className="win-btn" onClick={minimizeWindow} title="Minimize">
             <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
@@ -2649,7 +2649,7 @@ export default function App() {
             await invoke("close_window");
           }
         } catch (e) {
-          console.warn("[bushido] update install failed:", e);
+          console.warn("[digidaw] update install failed:", e);
           setPendingUpdate(null);
         }
       }}>
@@ -2721,7 +2721,7 @@ export default function App() {
             setVaultUnlocked(true);
             setVaultMasterModal(null);
             // retry autofill on all tabs now that vault is unlocked
-            invoke("vault_retry_autofill").catch(e => console.warn("[bushido]", e));
+            invoke("vault_retry_autofill").catch(e => console.warn("[digidaw]", e));
             // retry save if pending
             if (vaultSavePrompt) {
               await invoke("vault_save_entry", { domain: vaultSavePrompt.domain, username: vaultSavePrompt.username, password: vaultSavePrompt.password }).catch(() => showError("Failed to save password"));

@@ -1,6 +1,6 @@
 (function() {
-  if (window.__bushidoShortcuts) return;
-  Object.defineProperty(window, '__bushidoShortcuts', { value: true, writable: false, configurable: false });
+  if (window.__digidawShortcuts) return;
+  Object.defineProperty(window, '__digidawShortcuts', { value: true, writable: false, configurable: false });
   function handler(e) {
     var action = null;
     if (e.ctrlKey && e.shiftKey && (e.code === 'KeyB')) action = 'toggle-compact';
@@ -17,7 +17,7 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(JSON.stringify({ __bushido: 'shortcut', action: action }));
+        window.chrome.webview.postMessage(JSON.stringify({ __digidaw: 'shortcut', action: action }));
       }
     }
   }

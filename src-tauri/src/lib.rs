@@ -425,7 +425,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     }
 
     // internal pages — handled by React, no webview needed
-    if url.starts_with("bushido://") {
+    if url.starts_with("digidaw://") {
         return Ok(());
     }
 
@@ -657,14 +657,14 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     };
                     if !css.is_empty() {
                         let js = format!(
-                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                            "(function(){{var s=document.createElement('style');s.id='digidaw-cosmetic';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
                             serde_json::to_string(&css).unwrap_or_default()
                         );
                         let _ = wv.eval(&js);
                     }
                     if !script.is_empty() {
                         let js = format!(
-                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                            "(function(){{if(window.__digidawSL)return;window.__digidawSL=true;{}}})();",
                             script
                         );
                         let _ = wv.eval(&js);
@@ -1050,7 +1050,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                 let raw: String = serde_json::from_str(&json_str).unwrap_or_default();
                                 let msg: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
 
-                                match msg.get("__bushido").and_then(|v| v.as_str()) {
+                                match msg.get("__digidaw").and_then(|v| v.as_str()) {
                                     Some("shortcut") => {
                                         let valid = ["toggle-compact","new-tab","close-tab","focus-url",
                                                      "find","toggle-sidebar","bookmark","history",
@@ -1120,7 +1120,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                                 if entries.is_empty() { return; }
                                                 if let Some(wv) = app_clone.get_webview(&tab_id) {
                                                     let data = serde_json::json!({
-                                                        "__bushidoVaultFill": true,
+                                                        "__digidawVaultFill": true,
                                                         "entries": entries,
                                                     });
                                                     let js = format!("window.postMessage({}, '*')", data);
@@ -1171,7 +1171,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                         );
                                         if !selectors.is_empty() {
                                             let json_arr = serde_json::to_string(&selectors).unwrap_or_default();
-                                            let js = format!("window.__bushidoApplyCosmetic({})", json_arr);
+                                            let js = format!("window.__digidawApplyCosmetic({})", json_arr);
                                             if let Some(ref s) = *sender_ref {
                                                 let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
                                                 let _ = s.ExecuteScript(
@@ -1431,7 +1431,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                     // inject CSS immediately
                                     if !css.is_empty() {
                                         let js = format!(
-                                            "(function(){{var s=document.createElement('style');s.id='bushido-cosmetic-early';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
+                                            "(function(){{var s=document.createElement('style');s.id='digidaw-cosmetic-early';s.textContent={};(document.head||document.documentElement).appendChild(s)}})();",
                                             serde_json::to_string(&css).unwrap_or_default()
                                         );
                                         let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1443,7 +1443,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                     // inject scriptlets immediately (before page scripts)
                                     if !script.is_empty() {
                                         let js = format!(
-                                            "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                            "(function(){{if(window.__digidawSL)return;window.__digidawSL=true;{}}})();",
                                             script
                                         );
                                         let wide: Vec<u16> = js.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1486,7 +1486,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                 if script.is_empty() { return; }
 
                                 let js = format!(
-                                    "(function(){{if(window.__bushidoSL)return;window.__bushidoSL=true;{}}})();",
+                                    "(function(){{if(window.__digidawSL)return;window.__digidawSL=true;{}}})();",
                                     script
                                 );
 
@@ -1721,8 +1721,8 @@ async fn suspend_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
         // inject content-visibility:hidden to stop rendering + force-lose WebGL contexts
         let _ = wv.eval(
             "(function(){try{\
-                let s=document.getElementById('__bushido_bg_style');\
-                if(!s){s=document.createElement('style');s.id='__bushido_bg_style';document.head.appendChild(s)}\
+                let s=document.getElementById('__digidaw_bg_style');\
+                if(!s){s=document.createElement('style');s.id='__digidaw_bg_style';document.head.appendChild(s)}\
                 s.textContent='*{content-visibility:hidden !important}';\
                 document.querySelectorAll('canvas').forEach(c=>{\
                     let gl=c.getContext('webgl')||c.getContext('webgl2');\
@@ -1790,7 +1790,7 @@ async fn resume_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
         // remove background rendering block
         let _ = wv.eval(
             "(function(){try{\
-                let s=document.getElementById('__bushido_bg_style');\
+                let s=document.getElementById('__digidaw_bg_style');\
                 if(s)s.remove();\
             }catch(e){}})()"
         );
@@ -1972,7 +1972,7 @@ async fn vault_retry_autofill(app: tauri::AppHandle) -> Result<(), String> {
             break;
         }
         if let Some(wv) = app.get_webview(tab_id) {
-            let _ = wv.eval("if(window.__bushidoVaultRetry)window.__bushidoVaultRetry()");
+            let _ = wv.eval("if(window.__digidawVaultRetry)window.__digidawVaultRetry()");
         }
     }
     Ok(())
@@ -2141,7 +2141,7 @@ async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
 #[tauri::command]
 async fn set_tab_pinned(app: tauri::AppHandle, id: String, pinned: bool) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        let js = format!("window.__bushidoPinned = {};", pinned);
+        let js = format!("window.__digidawPinned = {};", pinned);
         let _ = wv.eval(&js);
     }
     Ok(())
@@ -2161,7 +2161,7 @@ async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward:
             );
             wv.eval(&js).map_err(|e| e.to_string())?;
             let count_js = format!(
-                "(function(){{var q='{}';var t=(document.body.innerText||'').toLowerCase();var c=t.split(q.toLowerCase()).length-1;window.chrome.webview.postMessage(JSON.stringify({{__bushido:'match-count',count:c}}))}})()",
+                "(function(){{var q='{}';var t=(document.body.innerText||'').toLowerCase();var c=t.split(q.toLowerCase()).length-1;window.chrome.webview.postMessage(JSON.stringify({{__digidaw:'match-count',count:c}}))}})()",
                 escaped
             );
             let _ = wv.eval(&count_js);
@@ -2173,7 +2173,7 @@ async fn find_in_page(app: tauri::AppHandle, id: String, query: String, forward:
 #[tauri::command]
 async fn detect_video(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        let js = r#"(function(){var videos=document.querySelectorAll('video');var has=false;videos.forEach(function(v){if(v.readyState>=2||v.src||v.querySelector('source'))has=true});if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify({__bushido:'video',hasVideo:has}))}})()"#;
+        let js = r#"(function(){var videos=document.querySelectorAll('video');var has=false;videos.forEach(function(v){if(v.readyState>=2||v.src||v.querySelector('source'))has=true});if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify({__digidaw:'video',hasVideo:has}))}})()"#;
         wv.eval(js).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2194,10 +2194,10 @@ async fn toggle_reader(app: tauri::AppHandle, id: String, font_size: u32, font: 
         _ => ("#09090b", "#d4d4d8", "#818cf8"),
     };
     let css = format!(
-        "#__bushido_reader{{position:fixed;inset:0;z-index:999999;background:{bg};color:{text};overflow-y:auto;padding:48px 24px;font-family:{font_family};font-size:{fs}px;line-height:1.7}}.bushido-reader-content{{max-width:{lw}px;margin:0 auto}}.bushido-reader-content h1{{font-size:2em;margin-bottom:.5em;line-height:1.2}}.bushido-reader-content img{{max-width:100%;height:auto;border-radius:8px;margin:16px 0}}.bushido-reader-content a{{color:{link}}}.bushido-reader-content p{{margin-bottom:1em}}"
+        "#__digidaw_reader{{position:fixed;inset:0;z-index:999999;background:{bg};color:{text};overflow-y:auto;padding:48px 24px;font-family:{font_family};font-size:{fs}px;line-height:1.7}}.digidaw-reader-content{{max-width:{lw}px;margin:0 auto}}.digidaw-reader-content h1{{font-size:2em;margin-bottom:.5em;line-height:1.2}}.digidaw-reader-content img{{max-width:100%;height:auto;border-radius:8px;margin:16px 0}}.digidaw-reader-content a{{color:{link}}}.digidaw-reader-content p{{margin-bottom:1em}}"
     );
     let js = format!(
-        r#"(function(){{if(document.getElementById('__bushido_reader')){{document.getElementById('__bushido_reader').remove();var s=document.getElementById('__bushido_reader_style');if(s)s.remove();document.querySelectorAll('[data-bushido-hidden]').forEach(function(el){{el.style.display=el.dataset.bushidoOrigDisplay||'';delete el.dataset.bushidoHidden;delete el.dataset.bushidoOrigDisplay}});return}}var article=document.querySelector('article')||document.querySelector('[role="main"]')||document.querySelector('main');if(!article){{var candidates=document.querySelectorAll('div,section');var best=null,bestLen=0;candidates.forEach(function(el){{var text=el.innerText||'';if(text.length>bestLen){{bestLen=text.length;best=el}}}});article=best}}if(!article)return;var title=document.title;var content=article.innerHTML;Array.from(document.body.children).forEach(function(el){{if(el.id==='__bushido_reader')return;el.dataset.bushidoOrigDisplay=el.style.display;el.dataset.bushidoHidden='true';el.style.display='none'}});var reader=document.createElement('div');reader.id='__bushido_reader';reader.innerHTML='<div class="bushido-reader-content"><h1>'+title+'</h1>'+content+'</div>';document.body.appendChild(reader);var style=document.createElement('style');style.id='__bushido_reader_style';style.textContent=`{css}`;document.head.appendChild(style)}})()"#
+        r#"(function(){{if(document.getElementById('__digidaw_reader')){{document.getElementById('__digidaw_reader').remove();var s=document.getElementById('__digidaw_reader_style');if(s)s.remove();document.querySelectorAll('[data-digidaw-hidden]').forEach(function(el){{el.style.display=el.dataset.digidawOrigDisplay||'';delete el.dataset.digidawHidden;delete el.dataset.digidawOrigDisplay}});return}}var article=document.querySelector('article')||document.querySelector('[role="main"]')||document.querySelector('main');if(!article){{var candidates=document.querySelectorAll('div,section');var best=null,bestLen=0;candidates.forEach(function(el){{var text=el.innerText||'';if(text.length>bestLen){{bestLen=text.length;best=el}}}});article=best}}if(!article)return;var title=document.title;var content=article.innerHTML;Array.from(document.body.children).forEach(function(el){{if(el.id==='__digidaw_reader')return;el.dataset.digidawOrigDisplay=el.style.display;el.dataset.digidawHidden='true';el.style.display='none'}});var reader=document.createElement('div');reader.id='__digidaw_reader';reader.innerHTML='<div class="digidaw-reader-content"><h1>'+title+'</h1>'+content+'</div>';document.body.appendChild(reader);var style=document.createElement('style');style.id='__digidaw_reader_style';style.textContent=`{css}`;document.head.appendChild(style)}})()"#
     );
     if let Some(wv) = app.get_webview(&id) {
         wv.eval(&js).map_err(|e| e.to_string())?;
@@ -2208,7 +2208,7 @@ async fn toggle_reader(app: tauri::AppHandle, id: String, font_size: u32, font: 
 #[tauri::command]
 async fn toggle_pip(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        let js = r#"(function(){if(document.pictureInPictureElement){document.exitPictureInPicture();return}var existing=document.getElementById('__bushido_pip_host');if(existing){existing.remove();return}var v=document.querySelector('video');if(!v)return;v.removeAttribute('disablePictureInPicture');v.removeAttribute('disablepictureinpicture');var host=document.createElement('div');host.id='__bushido_pip_host';host.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none';var shadow=host.attachShadow({mode:'closed'});var btn=document.createElement('div');btn.innerHTML='<svg width="18" height="18" viewBox="0 0 16 16" fill="none" style="vertical-align:middle;margin-right:6px"><rect x="1" y="2.5" width="14" height="11" rx="1.5" stroke="white" stroke-width="1.3"/><rect x="8" y="7" width="6" height="5" rx="1" fill="white" opacity="0.4" stroke="white" stroke-width="1"/></svg>Picture in Picture';btn.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.9);color:#fff;padding:14px 24px;border-radius:10px;cursor:pointer;font:600 15px system-ui;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;display:flex;align-items:center;border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(12px);transition:background 0.15s';btn.onmouseenter=function(){btn.style.background='rgba(99,102,241,0.9)'};btn.onmouseleave=function(){btn.style.background='rgba(0,0,0,0.9)'};btn.onclick=function(e){e.stopPropagation();v.requestPictureInPicture().then(function(){host.remove()}).catch(function(){btn.innerHTML='PiP not available';btn.style.background='rgba(239,68,68,0.9)';setTimeout(function(){host.remove()},2000)})};shadow.appendChild(btn);document.documentElement.appendChild(host)})()"#;
+        let js = r#"(function(){if(document.pictureInPictureElement){document.exitPictureInPicture();return}var existing=document.getElementById('__digidaw_pip_host');if(existing){existing.remove();return}var v=document.querySelector('video');if(!v)return;v.removeAttribute('disablePictureInPicture');v.removeAttribute('disablepictureinpicture');var host=document.createElement('div');host.id='__digidaw_pip_host';host.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none';var shadow=host.attachShadow({mode:'closed'});var btn=document.createElement('div');btn.innerHTML='<svg width="18" height="18" viewBox="0 0 16 16" fill="none" style="vertical-align:middle;margin-right:6px"><rect x="1" y="2.5" width="14" height="11" rx="1.5" stroke="white" stroke-width="1.3"/><rect x="8" y="7" width="6" height="5" rx="1" fill="white" opacity="0.4" stroke="white" stroke-width="1"/></svg>Picture in Picture';btn.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.9);color:#fff;padding:14px 24px;border-radius:10px;cursor:pointer;font:600 15px system-ui;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;display:flex;align-items:center;border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(12px);transition:background 0.15s';btn.onmouseenter=function(){btn.style.background='rgba(99,102,241,0.9)'};btn.onmouseleave=function(){btn.style.background='rgba(0,0,0,0.9)'};btn.onclick=function(e){e.stopPropagation();v.requestPictureInPicture().then(function(){host.remove()}).catch(function(){btn.innerHTML='PiP not available';btn.style.background='rgba(239,68,68,0.9)';setTimeout(function(){host.remove()},2000)})};shadow.appendChild(btn);document.documentElement.appendChild(host)})()"#;
         wv.eval(js).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2736,7 +2736,7 @@ pub fn run() {
     let autoplay_arg = {
         let settings_path = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("com.bushido.browser")
+            .join("com.digidaw.space")
             .join("settings.json");
         let policy = std::fs::read_to_string(&settings_path).ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -2772,10 +2772,10 @@ pub fn run() {
     // init data dir and crash logging FIRST
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.bushido.browser");
+        .join("com.digidaw.space");
     let _ = std::fs::create_dir_all(&data_dir);
     crash_log::init(&data_dir);
-    crash_log::log_info("startup", &format!("Bushido Browser v0.9.2 starting, pid={}", std::process::id()));
+    crash_log::log_info("startup", &format!("Digidaw Space v0.9.2 starting, pid={}", std::process::id()));
 
     // init adblock-rust engine (cached binary or cold compile)
     let engine = blocker::init_engine(&data_dir);
@@ -2881,7 +2881,7 @@ pub fn run() {
                 };
                 if let Some(action) = action {
                     if let Some(win) = app.get_webview("main") {
-                        let js = format!("window.__bushidoGlobalShortcut && window.__bushidoGlobalShortcut('{}')", action);
+                        let js = format!("window.__digidawGlobalShortcut && window.__digidawGlobalShortcut('{}')", action);
                         let _ = win.eval(&js);
                     }
                 }
@@ -3206,6 +3206,6 @@ pub fn run() {
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
             crash_log::log_error("startup", &format!("Tauri run() failed: {}", e));
-            eprintln!("FATAL: Bushido failed to start: {}", e);
+            eprintln!("FATAL: Digidaw failed to start: {}", e);
         });
 }

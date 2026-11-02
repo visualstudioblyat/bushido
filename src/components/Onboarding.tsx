@@ -184,8 +184,8 @@ export default memo(function Onboarding({ onComplete, onImportBookmarks, onImpor
 
           {/* ── Welcome ── */}
           <div className="ob-step">
-            <img src={logoSrc} alt="Bushido" className="ob-logo-img" />
-            <h1 className="ob-wordmark">Bushido</h1>
+            <img src={logoSrc} alt="Digidaw" className="ob-logo-img" />
+            <h1 className="ob-wordmark">Digidaw</h1>
             <p className="ob-tagline">your browser. your rules.</p>
             <p className="ob-subtitle">Private by default. No accounts. No tracking. No compromises.</p>
             <button className="ob-btn-primary" onClick={goNext}>Get Started</button>
@@ -283,12 +283,12 @@ export default memo(function Onboarding({ onComplete, onImportBookmarks, onImpor
               <button className={`ob-theme-btn${mode === "light" ? " active" : ""}`} onClick={() => handleMode("light")}>Light</button>
             </div>
 
-            {/* Live preview — miniature Bushido layout */}
+            {/* Live preview — miniature Digidaw layout */}
             <div className="ob-preview">
               <div className="ob-preview-browser" data-theme={mode}>
                 {/* Titlebar */}
                 <div className="ob-preview-titlebar">
-                  <span className="ob-preview-title">Bushido</span>
+                  <span className="ob-preview-title">Digidaw</span>
                   <div className="ob-preview-winctrls">
                     <div className="ob-preview-winbtn"/>
                     <div className="ob-preview-winbtn"/>
@@ -332,7 +332,7 @@ export default memo(function Onboarding({ onComplete, onImportBookmarks, onImpor
           {/* ── Tour ── */}
           <div className="ob-step">
             <h2 className="ob-screen-title">Power Features</h2>
-            <p className="ob-subtitle">A few things that make Bushido different.</p>
+            <p className="ob-subtitle">A few things that make Digidaw different.</p>
 
             <div className="ob-features">
               {FEATURES.map(f => (
@@ -360,7 +360,7 @@ export default memo(function Onboarding({ onComplete, onImportBookmarks, onImpor
               </svg>
             </div>
             <h1 className="ob-wordmark">You're all set.</h1>
-            <p className="ob-tagline">Welcome to Bushido.</p>
+            <p className="ob-tagline">Welcome to Digidaw.</p>
             <button className="ob-btn-primary" onClick={handleFinish}>Start Browsing</button>
           </div>
 

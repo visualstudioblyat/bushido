@@ -1,6 +1,6 @@
 (function() {
-  if (window.__bushidoPreload) return;
-  window.__bushidoPreload = true;
+  if (window.__digidawPreload) return;
+  window.__digidawPreload = true;
 
   var timer = null;
   var currentUrl = null;
@@ -32,7 +32,7 @@
     timer = setTimeout(function() {
       currentUrl = href;
       window.chrome.webview.postMessage(JSON.stringify({
-        __bushido: 'preload',
+        __digidaw: 'preload',
         url: href
       }));
     }, 300);
@@ -47,7 +47,7 @@
 
     if (currentUrl) {
       window.chrome.webview.postMessage(JSON.stringify({
-        __bushido: 'preload-cancel',
+        __digidaw: 'preload-cancel',
         url: currentUrl
       }));
       currentUrl = null;

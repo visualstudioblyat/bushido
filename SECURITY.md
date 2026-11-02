@@ -6,9 +6,9 @@ Open an issue. This is fully open source —no private disclosure process, no em
 
 ## Security Model
 
-Bushido is a Tauri v2 browser rendering untrusted web content in WebView2 child webviews. The security boundary is between the privileged React UI (main webview) and untrusted tab/panel webviews.
+Digidaw is a Tauri v2 browser rendering untrusted web content in WebView2 child webviews. The security boundary is between the privileged React UI (main webview) and untrusted tab/panel webviews.
 
-For the full technical breakdown of every mitigation, see the [Security Architecture](https://docs.bushido-browser.app/docs/privacy/security) docs page.
+For the full technical breakdown of every mitigation, see the [Security Architecture](https://docs.digidaw-space.app/docs/privacy/security) docs page.
 
 ### What's Hardened
 
@@ -99,7 +99,7 @@ Always-on via dedicated `fingerprint.js` (30+ vectors). Decoupled from the ad bl
 
 **LAN Sync Security**
 - **SPAKE2 zero-knowledge pairing** —6-digit code authenticated via SPAKE2 on Ed25519. The code is never transmitted. Both sides derive a shared secret that only matches if the same code was entered. Passive eavesdroppers and active MITMs learn nothing.
-- **HMAC-SHA256 confirmation** —after SPAKE2 key derivation, both sides compute `HMAC-SHA256(shared_key, "bushido-pair-confirm")` and exchange results. Detects wrong codes and MITM attacks before any key material is exchanged.
+- **HMAC-SHA256 confirmation** —after SPAKE2 key derivation, both sides compute `HMAC-SHA256(shared_key, "digidaw-pair-confirm")` and exchange results. Detects wrong codes and MITM attacks before any key material is exchanged.
 - **XChaCha20Poly1305 key exchange** —Noise public keys encrypted with AEAD during pairing. 24-byte random nonce, authenticated ciphertext. Tampering detected, not just eavesdropping.
 - **DPAPI key storage** —all sync keys (Noise private key, paired device public keys) encrypted at rest with Windows DPAPI (`CryptProtectData`). Tied to the Windows user account.
 - **Rate-limited pairing** —max 3 failed attempts per device per 5-minute window. Brute-force protection on the 6-digit code space.
@@ -119,5 +119,5 @@ Always-on via dedicated `fingerprint.js` (30+ vectors). Decoupled from the ad bl
 ## Dependencies
 
 - **WebView2** —Evergreen distribution, auto-updated by Windows. Engine-level patches come from Microsoft.
-- **adblock-rust** —EasyList + EasyPrivacy filter rules. Updated with each Bushido release.
+- **adblock-rust** —EasyList + EasyPrivacy filter rules. Updated with each Digidaw release.
 - **Tauri v2** —latest stable.

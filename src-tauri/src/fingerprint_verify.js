@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoVerify) return;
-    Object.defineProperty(window, '__bushidoVerify', { value: true, writable: false, configurable: false });
+    if (window.__digidawVerify) return;
+    Object.defineProperty(window, '__digidawVerify', { value: true, writable: false, configurable: false });
 
     var results = [];
     var passed = 0;
@@ -190,7 +190,7 @@
         ctx1.fillRect(0, 0, 200, 50);
         ctx1.fillStyle = '#000';
         ctx1.font = '18px Arial';
-        ctx1.fillText('Bushido Test 123', 10, 30);
+        ctx1.fillText('Digidaw Test 123', 10, 30);
         var hash1 = c1.toDataURL();
 
         var c2 = document.createElement('canvas');
@@ -200,7 +200,7 @@
         ctx2.fillRect(0, 0, 200, 50);
         ctx2.fillStyle = '#000';
         ctx2.font = '18px Arial';
-        ctx2.fillText('Bushido Test 123', 10, 30);
+        ctx2.fillText('Digidaw Test 123', 10, 30);
         var hash2 = c2.toDataURL();
 
         // Two identical canvas operations should produce DIFFERENT hashes if noise is working
@@ -377,7 +377,7 @@
     } catch(e) {
         var stack = e.stack || '';
         assert('Error stack does not leak file paths',
-            stack.indexOf('\\') === -1 && stack.indexOf('src-tauri') === -1 && stack.indexOf('bushido') === -1,
+            stack.indexOf('\\') === -1 && stack.indexOf('src-tauri') === -1 && stack.indexOf('digidaw') === -1,
             stack.substring(0, 100));
     }
 
@@ -561,7 +561,7 @@
     // ═══════════════════════════════════════════════════════════════
 
     assert('PRNG seed is not purely Math.random',
-        typeof window.__bushidoFingerprint === 'boolean',
+        typeof window.__digidawFingerprint === 'boolean',
         'guard property exists — seed derives from domain');
 
     // ═══════════════════════════════════════════════════════════════
@@ -693,7 +693,7 @@
             };
 
             // Store globally FIRST (before console logging which might throw)
-            window.__bushidoVerifyReport = report;
+            window.__digidawVerifyReport = report;
 
             // Log to console with color
             try {
@@ -714,7 +714,7 @@
             // Send to Rust via postMessage for UI display
             try {
                 if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
-                    window.chrome.webview.postMessage(JSON.stringify({ __bushido: 'fingerprint-verify', report: report }));
+                    window.chrome.webview.postMessage(JSON.stringify({ __digidaw: 'fingerprint-verify', report: report }));
                 }
             } catch(e) {}
 
@@ -724,7 +724,7 @@
             } catch(e) {}
         } catch(e) {
             // Ensure report is set even if everything else fails
-            window.__bushidoVerifyReport = { passed: passed, failed: failed, total: passed + failed, percentage: 0, results: results, error: String(e) };
+            window.__digidawVerifyReport = { passed: passed, failed: failed, total: passed + failed, percentage: 0, results: results, error: String(e) };
         }
     }, 1500);
 })();
