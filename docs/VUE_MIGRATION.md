@@ -23,17 +23,14 @@ keeping **Bun + Vite + Tauri**. Done as a parallel track so the shipping React a
 - **Tauri**: `invoke` from `@tauri-apps/api/core` works unchanged in Vue.
 
 ## Ported (vertical slice — proves the stack)
-- [x] `stores/ui.ts` (from `src/store/uiStore.ts`)
+- [x] `stores/*` — all six zustand stores + barrel (commit `9bcf0f1`)
 - [x] `components/NewTabPage.vue`
 - [x] `App.vue` shell + `main.ts` + `env.d.ts`
 
-## Remaining (by rough size/risk)
-Stores: `tabStore`, `dataStore`, `vaultStore`, `syncStore`, `featureStore`, `index`.
-Simple components: `FindBar`, `SplitOverlay`, `ShareMenu`, `GlanceOverlay`, `PerfOverlay`,
-  `NetworkPanel`, `HistoryPanel`, `PairingWizard`, `DownloadPanel`, `CommandPalette`,
-  `ScreenshotOverlay`, `AnnotationEditor`, `Onboarding`.
-Large/complex (do last, carefully): `SettingsPage.tsx` (~1.4k), `Sidebar.tsx` (~1.9k),
-  `App.tsx` (~2.9k — webview layout, tab lifecycle, split view, sync, event wiring).
+## Remaining
+
+Tracked per-file in [PORT_STATUS.md](./PORT_STATUS.md). Short version: leaf overlays →
+panels → interactive → screenshot flow → `Sidebar` → `SettingsPage` → `App.tsx` shell last.
 
 ## Cutover (final step, one commit)
 When `src-vue/` reaches parity:
