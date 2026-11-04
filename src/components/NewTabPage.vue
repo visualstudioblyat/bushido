@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import type { FrecencyResult } from "../../src/types";
+import type { FrecencyResult } from "../types";
 
 const props = withDefaults(defineProps<{
   topSites: FrecencyResult[];

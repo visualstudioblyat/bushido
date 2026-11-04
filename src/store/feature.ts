@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { WebPanel } from "../../src/types";
+import type { WebPanel } from "../types";
 
 // Pinia port of src/store/featureStore.ts. Zustand's functional updaters
 // (setReaderTabs, setPanels, setGlance, ...) collapse into direct ref

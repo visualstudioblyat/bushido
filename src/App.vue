@@ -11,17 +11,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
-import { DEFAULT_SETTINGS } from "../src/types";
+import { DEFAULT_SETTINGS } from "./types";
 import type {
   Tab, Workspace, SessionData, HistoryEntry, BookmarkData, FrecencyResult,
   DigidawSettings, DownloadItem, PaneRect, DividerInfo, WebPanel, DropZone,
   PermissionRequest, Bookmark, BookmarkFolder,
-} from "../src/types";
+} from "./types";
 import {
   allLeafIds, insertPane, removePane, computeRects, computeDividers,
   updateRatio, hasLeaf, detectDropZone,
-} from "../src/splitLayout";
-import type { PageCtxMenu } from "../src/store/storeTypes";
+} from "./splitLayout";
+import type { PageCtxMenu } from "./store/storeTypes";
 
 // blocked URL schemes — defense-in-depth (Rust side also blocks these)
 const BLOCKED_SCHEMES = ["javascript:", "data:", "file:", "vbscript:", "blob:", "ms-msdt:", "search-ms:", "ms-officecmd:"];
@@ -121,12 +121,12 @@ import ShareMenu from "./components/ShareMenu.vue";
 import Onboarding from "./components/Onboarding.vue";
 import GlanceOverlay from "./components/GlanceOverlay.vue";
 import PerfOverlay from "./components/PerfOverlay.vue";
-import { useTabStore } from "./stores/tabs";
-import { useUiStore } from "./stores/ui";
-import { useDataStore } from "./stores/data";
-import { useFeatureStore, type GlanceState, type ReaderSettings } from "./stores/feature";
-import { useVaultStore } from "./stores/vault";
-import { useSyncStore } from "./stores/sync";
+import { useTabStore } from "./store/tabs";
+import { useUiStore } from "./store/ui";
+import { useDataStore } from "./store/data";
+import { useFeatureStore, type GlanceState, type ReaderSettings } from "./store/feature";
+import { useVaultStore } from "./store/vault";
+import { useSyncStore } from "./store/sync";
 
 // --- Pinia stores (React: useTabStore(s => ...) selectors) ---
 const tabStore = useTabStore();

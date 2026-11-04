@@ -1,6 +1,6 @@
-export { useTabStore } from "./tabStore";
-export { useUiStore } from "./uiStore";
-export { useDataStore } from "./dataStore";
-export { useFeatureStore } from "./featureStore";
-export { useVaultStore } from "./vaultStore";
-export { useSyncStore } from "./syncStore";
+export { useTabStore } from "./tabs";
+export { useUiStore } from "./ui";
+export { useDataStore } from "./data";
+export { useFeatureStore } from "./feature";
+export { useVaultStore } from "./vault";
+export { useSyncStore } from "./sync";

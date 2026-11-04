@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
-import type { Tab, Bookmark, HistoryEntry } from "../../src/types";
+import type { Tab, Bookmark, HistoryEntry } from "../types";
 
 // Vue port of src/components/CommandPalette.tsx.
 interface CmdResult {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DividerInfo } from "../../src/types";
+import type { DividerInfo } from "../types";
 
 // Vue port of src/components/SplitOverlay.tsx.
 defineProps<{ dividers: DividerInfo[]; draggingDiv: number | null }>();

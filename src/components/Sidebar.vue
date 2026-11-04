@@ -2,8 +2,8 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult, WebPanel, SyncTab } from "../../src/types";
-import logoSrc from "../../src/assets/logo.png";
+import type { Tab, Workspace, Bookmark, BookmarkFolder, FrecencyResult, WebPanel, SyncTab } from "../types";
+import logoSrc from "../assets/logo.png";
 
 // Vue port of src/components/Sidebar.tsx. Callback props are kept as function
 // props (1:1 with the React Props) rather than emits — App.vue wires them the

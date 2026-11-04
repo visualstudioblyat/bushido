@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { DownloadItem } from "../../src/types";
+import type { DownloadItem } from "../types";
 
 // Vue port of src/components/DownloadPanel.tsx.
 // Note: the React version reads `dropIdx` through a stale closure at mouseup

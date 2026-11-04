@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { h, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import logoSrc from "../../src/assets/logo.png";
+import logoSrc from "../assets/logo.png";
 
 // Vue port of src/components/Onboarding.tsx.
 

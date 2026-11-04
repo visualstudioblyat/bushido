@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { HistoryEntry, BookmarkData, DownloadItem, DigidawSettings } from "../../src/types";
-import { DEFAULT_SETTINGS } from "../../src/types";
+import type { HistoryEntry, BookmarkData, DownloadItem, DigidawSettings } from "../types";
+import { DEFAULT_SETTINGS } from "../types";
 
 // Pinia port of src/store/dataStore.ts.
 export const useDataStore = defineStore("data", () => {

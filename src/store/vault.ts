@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { PermissionRequest } from "../../src/types";
+import type { PermissionRequest } from "../types";
 
 // Pinia port of src/store/vaultStore.ts.
 // All setters were trivial, so call sites mutate the refs directly.

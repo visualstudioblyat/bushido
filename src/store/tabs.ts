@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Tab, Workspace } from "../../src/types";
+import type { Tab, Workspace } from "../types";
 
 // Pinia port of src/store/tabStore.ts.
 export const useTabStore = defineStore("tabs", () => {

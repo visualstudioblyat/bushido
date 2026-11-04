@@ -1,5 +1,9 @@
 # Vue Migration
 
+> **Done.** The React → Vue migration is complete: the entry point is now
+> `src/main.ts` (Vue 3 + Pinia), the React track has been deleted, and the
+> cutover checklist below has been executed. Kept for history.
+
 Migrating the Digidaw Space frontend from **React + Zustand** to **Vue 3 + Pinia**,
 keeping **Bun + Vite + Tauri**. Done as a parallel track so the shipping React app
 (`src/`) stays green until the Vue app (`src-vue/`) reaches full parity.

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { DropZone, PageCtxMenu } from "../../src/store/storeTypes";
+import type { DropZone, PageCtxMenu } from "./storeTypes";
 
 // Pinia port of the React/zustand useUiStore (src/store/uiStore.ts).
 export const useUiStore = defineStore("ui", () => {

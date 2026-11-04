@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import type { HistoryEntry } from "../../src/types";
+import type { HistoryEntry } from "../types";
 
 // Vue port of src/components/HistoryPanel.tsx.
 // React's optional onRemoveEntry callback becomes the `removable` prop

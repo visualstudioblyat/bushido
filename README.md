@@ -52,7 +52,7 @@ Manifest V3 restricted what ad-blocking extensions can do. Digidaw doesn't care 
 
 | Binary Size | ~27MB (utilizing system native webview) |
 | Shell | [Tauri v2](https://v2.tauri.app/) (Rust) |
-| Frontend | React + TypeScript |
+| Frontend | Vue 3 + TypeScript |
 | Rendering | System WebView (WebView2 / WebKit) |
 | Ad Blocking | adblock-rust engine + WebView2 COM interception + cosmetic filtering + scriptlet injection |
 | Fingerprint Resistance | JS-level spoofing at document_start, hardened against cross-realm and introspection attacks |

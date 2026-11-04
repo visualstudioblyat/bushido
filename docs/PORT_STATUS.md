@@ -1,5 +1,9 @@
 # Vue Port Status
 
+> **Done.** All components + keys have been ported and the cutover has been executed
+> (`index.html` → `src/main.ts`, React track removed). Snapshot below is the final
+> state at cutover time.
+
 Per-file migration checklist for the React → Vue port. Strategy and conventions
 live in [VUE_MIGRATION.md](./VUE_MIGRATION.md); this doc tracks what's done and what's left.
 
