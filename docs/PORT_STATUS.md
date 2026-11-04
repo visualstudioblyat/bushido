@@ -3,7 +3,7 @@
 Per-file migration checklist for the React → Vue port. Strategy and conventions
 live in [VUE_MIGRATION.md](./VUE_MIGRATION.md); this doc tracks what's done and what's left.
 
-Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow) · wave 5a (Sidebar) · wave 6 (SettingsPage)
+Snapshot: 2026-11-04 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `5c5eb25` · wave 2 `e2292a7` · wave 3 `0c9ce6b` · wave 4 (screenshot flow) · wave 5a (Sidebar) · wave 6 (SettingsPage) · wave 7 (App shell)
 
 **Legend:** ✅ ported · 🟡 partial (skeleton, not at parity) · ⬜ not started · ➖ shared, imported from `src/` (no port needed)
 
@@ -12,11 +12,11 @@ Snapshot: 2026-11-02 · branch `vue/port-stores` · stores `9bcf0f1` · wave 1 `
 | Area | Done | Total | Notes |
 |---|---|---|---|
 | Stores | 7/7 | 7 | All zustand stores → Pinia setup stores (`9bcf0f1`) |
-| Components | 17/17 | 17 | + wave 6 `SettingsPage` (all 12 tabs; last component) |
-| Entry/shell | 0/2 | 2 | `main.ts` exists; `App.vue` is a proof-of-concept shell only |
+| Components | 17/17 | 17 | + wave 6 `SettingsPage` (all 12 tabs) |
+| Entry/shell | 2/2 | 2 | wave 7: `App.tsx` → `App.vue` at parity (`3ab0cbe`) |
 | Shared TS/CSS | ➖ | 5 | Imported directly from `src/`, kept as source of truth |
 
-By line count: ~5,856 of ~8,736 lines of component/entry code (≈67%). The React app is the shipping entry until parity.
+React/Vue parity reached for all component + entry code (~8,736/~8,736 lines). The React app remains the shipping entry until cutover (see VUE_MIGRATION.md).
 
 ## Stores
 
@@ -35,7 +35,7 @@ By line count: ~5,856 of ~8,736 lines of component/entry code (≈67%). The Reac
 | React | Vue | Status | Notes |
 |---|---|---|---|
 | `main.tsx` | `main.ts` | ✅ | Pinia registered; mounts `App.vue` |
-| `App.tsx` (2,879 lines) | `App.vue` (53 lines) | 🟡 | Current file is a **vertical-slice proof** (NewTabPage + Tauri IPC status). Real port not started — this is the wiring hub: all 6 stores, ~132 `invoke` calls, Tauri event listeners, tab lifecycle, split layout, permissions |
+| `App.tsx` (2,879 lines) | `App.vue` (2,894 lines) | ✅ | Full port (wave 7). Session restore + progressive restore, ~30 Tauri event listeners, tab/workspace lifecycle, split layout + divider/drag-to-split, debounced saves, sync CRDT diff, vault/permission/page-ctx UI, keyboard + global-shortcut bridges. React `useRef` mirrors dropped (closures read refs fresh); effects → `watch` with `onCleanup`; intervals/listeners registered once reading fresh state. `inputRef` for Sidebar passed as getter/setter shim (template wouldn't unwrap bare refs). |
 
 ## Components
 
@@ -88,6 +88,6 @@ Dependency- and risk-aware; each wave is independently verifiable via
 3. ~~**Interactive**: `CommandPalette`, `PairingWizard`, `Onboarding`~~ ✅ done (`0c9ce6b`)
 4. ~~**Screenshot flow**: `ScreenshotOverlay` → `AnnotationEditor` (port together, they pair)~~ ✅ done
 5. **Big ones, one PR each**: ~~`Sidebar` (drag & drop is the risk hotspot)~~ ✅ wave 5a → `SettingsPage` (IPC-heavy) wave 5b
-6. **App shell last**: port `App.tsx` into `App.vue` incrementally — tab lifecycle + split layout + Tauri events — wiring each wave as it lands, then cutover per VUE_MIGRATION.md
+6. ~~**App shell last**: port `App.tsx` into `App.vue` — tab lifecycle + split layout + Tauri events~~ ✅ done (wave 7). Next: cutover per VUE_MIGRATION.md.
 
 Update this file (status column + snapshot line) as waves land.
