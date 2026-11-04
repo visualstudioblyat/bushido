@@ -1,9 +1,9 @@
 """
-Bushido Fingerprint Integrity Test — Automated Pre-Ship Verification
+Digidaw Fingerprint Integrity Test — Automated Pre-Ship Verification
 
 Two modes:
   --quick (default): Headless Edge + CDP injection. Tests JS in isolation. ~10s.
-  --full: Builds & launches actual Bushido binary. Tests real WebView2 pipeline. ~90s.
+  --full: Builds & launches actual Digidaw binary. Tests real WebView2 pipeline. ~90s.
 
 Usage:
     pip install websockets aiohttp
@@ -31,7 +31,7 @@ EDGE_PATHS = [
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(SCRIPT_DIR, '..', 'src')
 PROJECT_DIR = os.path.join(SCRIPT_DIR, '..', '..')
-APPDATA_DIR = os.path.join(os.environ.get("APPDATA", ""), "app.bushido-browser.desktop")
+APPDATA_DIR = os.path.join(os.environ.get("APPDATA", ""), "com.digidaw.space")
 REPORT_PATH = os.path.join(APPDATA_DIR, "fp-verify-report.json")
 SESSION_PATH = os.path.join(APPDATA_DIR, "session.json")
 
@@ -119,7 +119,7 @@ async def run_quick():
     verify_js = read_script('fingerprint_verify.js')
 
     print("=" * 60)
-    print("  BUSHIDO FP TEST — QUICK (headless Edge)")
+    print("  DIGIDAW FP TEST — QUICK (headless Edge)")
     print("=" * 60)
 
     proc = subprocess.Popen([
@@ -179,7 +179,7 @@ async def run_quick():
             })
 
             result = await cdp_send(ws, "Runtime.evaluate", {
-                "expression": "JSON.stringify(window.__bushidoVerifyReport || null)",
+                "expression": "JSON.stringify(window.__digidawVerifyReport || null)",
                 "returnByValue": True
             })
             val = result.get("result", {}).get("value")
@@ -198,12 +198,12 @@ async def run_quick():
 
 
 # ═══════════════════════════════════════════════════════════════
-# FULL MODE: Real Bushido binary
+# FULL MODE: Real Digidaw binary
 # ═══════════════════════════════════════════════════════════════
 
 async def run_full():
     print("=" * 60)
-    print("  BUSHIDO FP TEST — FULL (actual browser)")
+    print("  DIGIDAW FP TEST — FULL (actual browser)")
     print("=" * 60)
 
     # Delete old report
@@ -253,7 +253,7 @@ async def run_full():
         print(f"Frontend build failed:\n{frontend.stderr[-500:]}")
         # Try anyway, dist might already exist
 
-    binary = os.path.join(PROJECT_DIR, "src-tauri", "target", "debug", "bushido-browser.exe")
+    binary = os.path.join(PROJECT_DIR, "src-tauri", "target", "debug", "digidaw-space.exe")
     if not os.path.exists(binary):
         print(f"ERROR: Binary not found at {binary}")
         return 2

@@ -1,4 +1,4 @@
-use bushido_lib::dns_resolver;
+use digidaw_lib::dns_resolver;
 
 #[tokio::main]
 async fn main() {

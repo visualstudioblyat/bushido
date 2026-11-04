@@ -320,7 +320,7 @@ pub async fn save_screenshot(data: String, suggested_name: String) -> Result<Str
 
     let name = if suggested_name.is_empty() {
         let now = chrono::Local::now();
-        format!("Bushido Screenshot {}.png", now.format("%Y-%m-%d %H%M%S"))
+        format!("Digidaw Screenshot {}.png", now.format("%Y-%m-%d %H%M%S"))
     } else {
         suggested_name
     };

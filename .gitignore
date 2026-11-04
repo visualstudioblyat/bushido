@@ -11,3 +11,7 @@ Thumbs.db
 nul
 lol.PNG
 src-tauri/isolation/
+dist-vue/
+docs/*
+!docs/VUE_MIGRATION.md
+!docs/PORT_STATUS.md

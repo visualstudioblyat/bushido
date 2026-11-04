@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoSP) return;
-    Object.defineProperty(window, '__bushidoSP', { value: true, writable: false, configurable: false });
+    if (window.__digidawSP) return;
+    Object.defineProperty(window, '__digidawSP', { value: true, writable: false, configurable: false });
 
     // cache pristine native APIs at document_start so scriptlets can trust them
     // even if injected slightly later (ContentLoading timing)
@@ -17,5 +17,5 @@
         jsonStringify: JSON.stringify,
     };
     Object.freeze(n);
-    Object.defineProperty(window, '__bushidoNatives', { value: n, writable: false, configurable: false, enumerable: false });
+    Object.defineProperty(window, '__digidawNatives', { value: n, writable: false, configurable: false, enumerable: false });
 })();

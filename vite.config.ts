@@ -1,16 +1,8 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
-  plugins: [
-    react({
-      babel: {
-        plugins: [
-          ["babel-plugin-react-compiler", { target: "18" }],
-        ],
-      },
-    }),
-  ],
+  plugins: [vue()],
   clearScreen: false,
   server: {
     port: 1420,
@@ -25,7 +17,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ["react", "react-dom"],
+          vendor: ["vue", "pinia"],
           tauri: ["@tauri-apps/api"],
         },
       },

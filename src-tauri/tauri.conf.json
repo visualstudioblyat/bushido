@@ -1,18 +1,18 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicoverbruggen/tauri-plugin-theme/main/.schema/config.schema.json",
-  "productName": "Bushido",
+  "productName": "Digidaw Space",
   "version": "0.14.0",
-  "identifier": "app.bushido-browser.desktop",
+  "identifier": "com.digidaw.space",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
   },
   "app": {
     "windows": [
       {
-        "title": "Bushido",
+        "title": "Digidaw Space",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -29,7 +29,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/visualstudioblyat/bushido/releases/latest/download/latest.json"
+        "https://github.com/Dayuss/bushido/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNFNjY0MjRGMEUxNEE4MjQKUldRa3FCUU9UMEptUHRJTDRHNDRsRGFxTklVMnI3dnlvVDlzZTVvajF2NTRUWUkzdHhmQTM5azkK"
     }
@@ -44,10 +44,10 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "publisher": "Bushido Browser",
-    "copyright": "Copyright 2026 Bushido Browser contributors. Licensed under GPL-3.0.",
+    "publisher": "Digidaw Space",
+    "copyright": "Copyright 2026 Digidaw Space contributors. Based on Bushido Browser (c) visualstudioblyat. Licensed under GPL-3.0.",
     "shortDescription": "A privacy-first web browser",
-    "longDescription": "Bushido is a fast, private web browser with workspaces, split view, ad blocking, fingerprint protection, and LAN sync. Built with Tauri and WebView2.",
+    "longDescription": "Digidaw is a fast, private web browser with workspaces, split view, ad blocking, fingerprint protection, and LAN sync. Built with Tauri and WebView2.",
     "windows": {
       "nsis": {
         "displayLanguageSelector": false,

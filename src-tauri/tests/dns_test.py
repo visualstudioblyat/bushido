@@ -70,7 +70,7 @@ def test(name, condition, detail=""):
 def run():
     global PORT, BASE
     print("=" * 60)
-    print("  BUSHIDO DoH RESOLVER TEST SUITE")
+    print("  DIGIDAW DoH RESOLVER TEST SUITE")
     print("=" * 60)
 
     if PORT == 0:

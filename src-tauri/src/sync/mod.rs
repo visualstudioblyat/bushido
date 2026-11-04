@@ -1,3 +1,7 @@
+// TODO(sync-phase-c): CRDT (loro_doc/BookmarkDoc) and some SyncDoc readers are
+// built but not yet wired into Tauri commands; silence dead_code until wired.
+#![allow(dead_code)]
+
 pub mod discovery;
 pub mod keys;
 pub mod loro_doc;
@@ -1350,7 +1354,7 @@ pub async fn simulate_sync(
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // ── Step 2: Create ghost LoroDoc with sample bookmarks ──
-        let ghost_doc_dir = std::env::temp_dir().join(format!("bushido_ghost_{}", std::process::id()));
+        let ghost_doc_dir = std::env::temp_dir().join(format!("digidaw_ghost_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&ghost_doc_dir);
 
         // random peer_id each time — if we reuse 9999, the real doc's VV already
@@ -1369,7 +1373,7 @@ pub async fn simulate_sync(
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
         let sample_bookmarks = format!(r#"{{
             "bookmarks": [
-                {{"id":"ghost-{ts}-1","url":"https://github.com/nicoverbruggen/bushido","title":"Bushido Browser — GitHub","folderId":"root","createdAt":{ts}}},
+                {{"id":"ghost-{ts}-1","url":"https://github.com/nicoverbruggen/digidaw","title":"Digidaw Space — GitHub","folderId":"root","createdAt":{ts}}},
                 {{"id":"ghost-{ts}-2","url":"https://www.rust-lang.org","title":"Rust Programming Language","favicon":"https://www.rust-lang.org/favicon.ico","folderId":"ghost-folder-{ts}","createdAt":{ts2}}},
                 {{"id":"ghost-{ts}-3","url":"https://tauri.app","title":"Tauri — Build Desktop Apps","folderId":"ghost-folder-{ts}","createdAt":{ts3}}}
             ],

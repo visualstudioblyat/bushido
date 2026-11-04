@@ -603,7 +603,7 @@ mod tests {
     fn temp_dir() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut p = std::env::temp_dir();
-        p.push(format!("bushido_syncdoc_{}_{}", std::process::id(), n));
+        p.push(format!("digidaw_syncdoc_{}_{}", std::process::id(), n));
         let _ = std::fs::remove_dir_all(&p);
         let _ = std::fs::create_dir_all(&p);
         p

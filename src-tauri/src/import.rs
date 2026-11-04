@@ -142,7 +142,7 @@ fn import_chromium_bookmarks(profile_dir: &PathBuf) -> Result<Vec<ImportedBookma
 fn import_chromium_history(profile_dir: &PathBuf) -> Result<Vec<ImportedHistory>, String> {
     let src = profile_dir.join("History");
     // copy to temp — the file is locked by the running browser
-    let tmp = std::env::temp_dir().join(format!("bushido_import_{}.sqlite", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("digidaw_import_{}.sqlite", std::process::id()));
     fs::copy(&src, &tmp).map_err(|e| format!("Failed to copy history db: {}", e))?;
 
     let conn = rusqlite::Connection::open_with_flags(&tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -171,7 +171,7 @@ fn import_chromium_history(profile_dir: &PathBuf) -> Result<Vec<ImportedHistory>
 
 fn import_firefox_bookmarks(profile_dir: &PathBuf) -> Result<Vec<ImportedBookmark>, String> {
     let src = profile_dir.join("places.sqlite");
-    let tmp = std::env::temp_dir().join(format!("bushido_ff_import_{}.sqlite", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("digidaw_ff_import_{}.sqlite", std::process::id()));
     fs::copy(&src, &tmp).map_err(|e| format!("Failed to copy places.sqlite: {}", e))?;
 
     let conn = rusqlite::Connection::open_with_flags(&tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -200,7 +200,7 @@ fn import_firefox_bookmarks(profile_dir: &PathBuf) -> Result<Vec<ImportedBookmar
 
 fn import_firefox_history(profile_dir: &PathBuf) -> Result<Vec<ImportedHistory>, String> {
     let src = profile_dir.join("places.sqlite");
-    let tmp = std::env::temp_dir().join(format!("bushido_ff_hist_{}.sqlite", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("digidaw_ff_hist_{}.sqlite", std::process::id()));
     fs::copy(&src, &tmp).map_err(|e| format!("Failed to copy places.sqlite: {}", e))?;
 
     let conn = rusqlite::Connection::open_with_flags(&tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)

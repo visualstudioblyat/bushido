@@ -1,6 +1,6 @@
 (function() {
-  if (window.__bushidoMedia) return;
-  Object.defineProperty(window, '__bushidoMedia', { value: true, writable: false, configurable: false });
+  if (window.__digidawMedia) return;
+  Object.defineProperty(window, '__digidawMedia', { value: true, writable: false, configurable: false });
   var lastState = '';
   var lastTime = 0;
 
@@ -19,7 +19,7 @@
   function report(state, force) {
     var media = document.querySelector('video, audio');
     var msg = {
-      __bushido: 'media',
+      __digidaw: 'media',
       state: state,
       title: document.title,
       currentTime: media ? media.currentTime : 0,
@@ -43,8 +43,8 @@
 
   // Event listeners on media elements
   function attachListeners(media) {
-    if (media.__bushidoListeners) return;
-    media.__bushidoListeners = true;
+    if (media.__digidawListeners) return;
+    media.__digidawListeners = true;
 
     media.addEventListener('play', function() { report('playing', true); });
     media.addEventListener('pause', function() { report('paused', true); });

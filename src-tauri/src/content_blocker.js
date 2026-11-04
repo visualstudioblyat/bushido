@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoPrivacy) return;
-    Object.defineProperty(window, '__bushidoPrivacy', { value: true, writable: false, configurable: false });
+    if (window.__digidawPrivacy) return;
+    Object.defineProperty(window, '__digidawPrivacy', { value: true, writable: false, configurable: false });
 
     // WebRTC leak prevention
     try {

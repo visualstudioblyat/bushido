@@ -14,11 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 20
-          cache: npm
+          bun-version: latest
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -34,10 +33,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: TypeScript type check
-        run: npx tsc --noEmit
+        run: bunx tsc --noEmit
 
       - name: Rust clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
@@ -46,7 +45,7 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Frontend tests
-        run: npm test
+        run: bun run test
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -56,9 +55,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Bushido ${{ github.ref_name }}'
+          releaseName: 'Digidaw Space ${{ github.ref_name }}'
           releaseBody: |
-            See [CHANGELOG.md](https://github.com/visualstudioblyat/bushido/blob/main/CHANGELOG.md) for details.
+            See [CHANGELOG.md](https://github.com/Dayuss/bushido/blob/main/CHANGELOG.md) for details.
 
             **Windows SmartScreen Note:** This build is not code-signed. Windows may show a SmartScreen warning — click "More info" then "Run anyway" to proceed.
           releaseDraft: false
@@ -73,18 +72,18 @@ jobs:
           VERSION="${VERSION#v}"
 
           # Read the signature
-          SIG=$(cat src-tauri/target/release/bundle/nsis/Bushido_${VERSION}_x64-setup.nsis.zip.sig)
+          SIG=$(cat "src-tauri/target/release/bundle/nsis/Digidaw Space_${VERSION}_x64-setup.nsis.zip.sig")
 
           # Generate latest.json
           cat > latest.json << EOF
           {
             "version": "${VERSION}",
-            "notes": "See https://github.com/visualstudioblyat/bushido/releases/tag/v${VERSION}",
+            "notes": "See https://github.com/Dayuss/bushido/releases/tag/v${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
               "windows-x86_64": {
                 "signature": "${SIG}",
-                "url": "https://github.com/visualstudioblyat/bushido/releases/download/v${VERSION}/Bushido_${VERSION}_x64-setup.nsis.zip"
+                "url": "https://github.com/Dayuss/bushido/releases/download/v${VERSION}/Digidaw Space_${VERSION}_x64-setup.nsis.zip"
               }
             }
           }
@@ -92,6 +91,6 @@ jobs:
 
           # Upload artifacts to the release
           gh release upload "v${VERSION}" \
-            "src-tauri/target/release/bundle/nsis/Bushido_${VERSION}_x64-setup.nsis.zip" \
+            "src-tauri/target/release/bundle/nsis/Digidaw Space_${VERSION}_x64-setup.nsis.zip" \
             latest.json \
             --clobber

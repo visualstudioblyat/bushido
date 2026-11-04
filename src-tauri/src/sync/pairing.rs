@@ -14,7 +14,7 @@ use tokio::time::{timeout, Duration};
 type HmacSha256 = Hmac<Sha256>;
 
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
-const CONFIRM_LABEL: &[u8] = b"bushido-pair-confirm";
+const CONFIRM_LABEL: &[u8] = b"digidaw-pair-confirm";
 
 /// Result of a successful pairing.
 pub struct PairResult {
@@ -66,8 +66,8 @@ pub async fn run_initiator(
     // 3. SPAKE2-A
     let (spake_state, spake_msg) = Spake2::<Ed25519Group>::start_a(
         &Password::new(code.as_bytes()),
-        &Identity::new(b"bushido-a"),
-        &Identity::new(b"bushido-b"),
+        &Identity::new(b"digidaw-a"),
+        &Identity::new(b"digidaw-b"),
     );
 
     // 4. Send our SPAKE msg
@@ -159,8 +159,8 @@ pub async fn run_responder(
     // 2. SPAKE2-B
     let (spake_state, spake_msg) = Spake2::<Ed25519Group>::start_b(
         &Password::new(code.as_bytes()),
-        &Identity::new(b"bushido-a"),
-        &Identity::new(b"bushido-b"),
+        &Identity::new(b"digidaw-a"),
+        &Identity::new(b"digidaw-b"),
     );
 
     // 3. Recv initiator's SPAKE msg

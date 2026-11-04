@@ -110,7 +110,7 @@ export interface FrecencyResult {
   type: 'history' | 'bookmark' | 'search';
 }
 
-export interface BushidoSettings {
+export interface DigidawSettings {
   searchEngine: "google" | "duckduckgo" | "brave" | "bing" | "custom";
   customSearchUrl: string;
   onStartup: "restore" | "newtab" | "custom";
@@ -236,7 +236,7 @@ export interface SyncLogEntry {
   device?: string;
 }
 
-export const DEFAULT_SETTINGS: BushidoSettings = {
+export const DEFAULT_SETTINGS: DigidawSettings = {
   searchEngine: "google",
   customSearchUrl: "",
   onStartup: "restore",

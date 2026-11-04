@@ -1,7 +1,7 @@
 (function() {
     'use strict';
-    if (window.__bushidoCookieBlocker) return;
-    Object.defineProperty(window, '__bushidoCookieBlocker', { value: true, writable: false, configurable: false });
+    if (window.__digidawCookieBlocker) return;
+    Object.defineProperty(window, '__digidawCookieBlocker', { value: true, writable: false, configurable: false });
 
     const REJECT_SELECTORS = [
         // specific frameworks
@@ -52,7 +52,7 @@
     function notifyCookieRejected() {
         try {
             if (window.chrome && window.chrome.webview) {
-                window.chrome.webview.postMessage(JSON.stringify({ __bushido: 'cookie-rejected' }));
+                window.chrome.webview.postMessage(JSON.stringify({ __digidaw: 'cookie-rejected' }));
             }
         } catch(e) {}
     }
