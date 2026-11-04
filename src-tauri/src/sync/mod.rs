@@ -1,3 +1,7 @@
+// TODO(sync-phase-c): CRDT (loro_doc/BookmarkDoc) and some SyncDoc readers are
+// built but not yet wired into Tauri commands; silence dead_code until wired.
+#![allow(dead_code)]
+
 pub mod discovery;
 pub mod keys;
 pub mod loro_doc;

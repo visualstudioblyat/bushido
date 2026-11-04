@@ -42,6 +42,8 @@ struct BlockerState {
     shortcut_script: String,
     media_script: String,
     fingerprint_script: String,
+    // only consumed under debug_assertions (fp verify injection)
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fingerprint_verify_script: String,
     vault_script: String,
     glance_script: String,
@@ -450,6 +452,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let shortcut_script = bs.shortcut_script.clone();
     let media_script = bs.media_script.clone();
     let fingerprint_script = bs.fingerprint_script.clone();
+    #[cfg(debug_assertions)]
     let fingerprint_verify_script = bs.fingerprint_verify_script.clone();
     let vault_script = bs.vault_script.clone();
     let glance_script = bs.glance_script.clone();
@@ -477,6 +480,7 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
     let inject_shortcut = shortcut_script.clone();
     let inject_media = media_script.clone();
     let inject_fingerprint = fingerprint_script.clone();
+    #[cfg(debug_assertions)]
     let inject_fp_verify = fingerprint_verify_script.clone();
     let inject_vault = vault_script.clone();
     let inject_glance = glance_script.clone();
@@ -1326,17 +1330,17 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                     move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
                         if let (Some(wv), Some(args)) = (sender, args) {
                             let mut success = windows_core::BOOL(0);
-                            let _ = unsafe { args.IsSuccess(&mut success) };
+                            let _ = args.IsSuccess(&mut success);
                             if success.0 == 0 {
                                 // WebErrorStatus is COREWEBVIEW2_WEB_ERROR_STATUS(i32) newtype
                                 let mut status: i32 = 0;
-                                let _ = unsafe { args.WebErrorStatus(&mut status as *mut i32 as *mut _) };
+                                let _ = args.WebErrorStatus(&mut status as *mut i32 as *mut _);
                                 // skip user-cancelled navigations
                                 if status == 14 { return Ok(()); }
 
                                 // get the current URL for display
                                 let mut source = windows::core::PWSTR::null();
-                                let page_url = unsafe { wv.Source(&mut source).ok().and_then(|_| source.to_string().ok()) }
+                                let page_url = wv.Source(&mut source).ok().and_then(|_| source.to_string().ok())
                                     .unwrap_or_default();
                                 let domain = page_url.split("//").nth(1).unwrap_or(&page_url).split('/').next().unwrap_or(&page_url);
 
@@ -1403,10 +1407,10 @@ async fn create_tab(app: tauri::AppHandle, id: String, url: String, sidebar_w: f
                                     r#"document.documentElement.innerHTML = '<head><style>*{{margin:0;padding:0;box-sizing:border-box}}body{{background:#0d0d14;color:#e0e0e8;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;-webkit-font-smoothing:antialiased}}.wrap{{max-width:420px;padding:40px}}.icon{{font-size:48px;margin-bottom:20px;display:block;filter:grayscale(0.3);opacity:0.9}}h1{{font-size:22px;font-weight:600;margin-bottom:10px;letter-spacing:-0.3px;line-height:1.3}}p{{color:rgba(224,224,232,0.5);font-size:13.5px;line-height:1.6;margin-bottom:24px}}p strong{{color:rgba(224,224,232,0.7);font-weight:500}}button{{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#e0e0e8;padding:9px 24px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;transition:background 0.2s,border-color 0.2s}}button:hover{{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.14)}}.link{{color:rgba(99,102,241,0.8);text-decoration:none;font-size:13px;font-weight:500;transition:color 0.15s}}.link:hover{{color:rgba(99,102,241,1)}}.extra{{margin-top:8px}}.code{{color:rgba(224,224,232,0.2);font-size:10px;margin-top:20px;font-family:monospace;letter-spacing:0.5px}}</style></head><body><div class="wrap"><span class="icon">{icon}</span><h1>{title}</h1><p>{desc}</p>{extra}<div class="code">ERR_{code}</div></div></body>';"#,
                                     icon = icon, title = title, desc = desc, extra = extra, code = status
                                 );
-                                let _ = unsafe { wv.ExecuteScript(
+                                let _ = wv.ExecuteScript(
                                     &windows_core::HSTRING::from(&js),
                                     None,
-                                ) };
+                                );
                             }
                         }
                         Ok(())
@@ -2116,12 +2120,15 @@ async fn print_tab(app: tauri::AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 async fn toggle_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if let Some(wv) = app.get_webview(&id) {
-        wv.with_webview(|webview| {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                if let Ok(core) = webview.controller().CoreWebView2() {
-                    let _ = core.OpenDevToolsWindow();
-                }
-            }));
+        wv.with_webview(|_webview| {
+            #[cfg(windows)]
+            {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                    if let Ok(core) = _webview.controller().CoreWebView2() {
+                        let _ = core.OpenDevToolsWindow();
+                    }
+                }));
+            }
         }).map_err(|e| e.to_string())?;
     }
     Ok(())
